@@ -372,6 +372,7 @@ def govern_creation(
                 raise conflict()
             # ACTIVE here is governed locator readiness, never native run state.
             binding.lifecycle = "ACTIVE"
+            binding.display_title = (prepared.configuration.title or "").strip()[:240] or None
         db.flush()
     return replace(fresh, governed=True)
 

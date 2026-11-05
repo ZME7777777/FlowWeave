@@ -1,9 +1,10 @@
 # 原生子会话接入设计
 
-> 状态：`FR-702 FROZEN`，仅冻结接入契约，不表示子会话已经实现或可用。
+> 状态：`FR-717 ACCEPTED`。FR-702 冻结的子会话契约已实现，并完成分层验收。
 > 日期：2026-10-26。
 > 授权范围：完整合入已评估的 OpenHands upstream main；FlowWeave 只增加子会话产品能力。
-> 不实施 Git Worktree 产品功能，不初始化仓库，不迁移会话工作目录，不部署或替换现有 Runtime。
+> FlowWeave 仅接入 shared 子会话，沿用父工作目录。Git 初始化遵循固定 OpenHands 原生生命周期。
+> 本轮代码保留在独立工作树，发布和已有 Runtime 升级由用户另行决策。
 > 后续任务及唯一执行状态见 [Runtime 任务进度](flowrun-runtime-task-progress.md)。
 
 ## 1. 产品边界
@@ -109,9 +110,15 @@ baseline 追加三个正式路由，均使用 Agent Server 现有会话认证：
 
 准备前先通过原生 RunSlot 准入，继而持久预留身份；原生不可变启动计划使用子 Conversation
 对应 Cipher 整体加密，只在 Runtime 持久状态目录保存。计划在初始化前提交，恢复时保持原
-配置和 child ID，即便 base_state 已写而 meta 尚未写。该原生路径不创建 Worktree，也不初始化
+配置和 child ID，即便 base_state 已写而 meta 尚未写。该子准备路径不创建 Worktree，也不初始化
 Git 仓库；父配置中的平台绑定级授权须由 FR-723 使用 FR-720／721 的固定原生契约，
 在首轮前替换／重新激活。
+
+FR-717 实际镜像确认，固定源码 `b9f976b2ca05b947ee28eb34ebe590ff0409307f` 的
+`EventService.start()` 在没有 `child_launch_gate` 的普通会话启动／重载时，会对非 Git 工作目录
+原生执行 `git init`，供 Changes 读取未跟踪文件。它保留普通仓库目录，并且没有创建 linked
+worktree 或 `worktrees` 注册。本轮沿用这一上游行为。验收分别核对子准备的 shared 策略、
+父子相同工作目录及 Git 元数据，不能用“整个 Workspace 不存在 `.git`”代替无 Worktree 验证。
 
 prepared／dispatching 门禁阻止普通 send、run、goal、ask、condense 和 live Conversation
 访问；只读事件／配置及既有凭据激活仍可用。release 在取得 RunSlot 后才写 dispatching，

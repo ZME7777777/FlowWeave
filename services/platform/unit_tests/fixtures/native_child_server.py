@@ -1,8 +1,9 @@
 """Isolated native server for the opt-in FlowWeave transport test.
 
 Run with the four noneditable packages installed from source.lock.json. Only
-LLM completion is controlled; native tools, provenance, routes and persistence
-are real. No FlowWeave authorization service is installed in this fixture.
+LLM completion is controlled unless FLOWWEAVE_NATIVE_REAL_MODEL=1; native tools,
+provenance, routes and persistence are real. No FlowWeave authorization service
+is installed in this fixture.
 """
 
 from __future__ import annotations
@@ -52,14 +53,50 @@ def main():
         if serve_only
         else secrets.token_urlsafe(32)
     )
-    workspace = state / "workspace"
-    workspace.mkdir(exist_ok=serve_only)
+    image_mode = os.environ.get("FLOWWEAVE_NATIVE_IMAGE") == "1"
+    workspace = Path("/runtime/workspace/project") if image_mode else state / "workspace"
+    workspace.mkdir(parents=True, exist_ok=serve_only)
+    if image_mode:
+        import select
+        import socketserver
+
+        fixture = json.loads((state / "fixture.json").read_text())
+        gateway_port = fixture["gateway_port"]
+        working = Path(fixture["working_directory"])
+        assert working.is_relative_to(workspace)
+        working.mkdir(parents=True, exist_ok=True)
+
+        class GatewayTransport(socketserver.BaseRequestHandler):
+            def handle(self):
+                with socket.create_connection(
+                    ("host.docker.internal", gateway_port), timeout=10
+                ) as upstream:
+                    self.request.settimeout(40)
+                    while True:
+                        readable, _, _ = select.select([self.request, upstream], [], [], 40)
+                        if not readable:
+                            return
+                        for source in readable:
+                            data = source.recv(65536)
+                            if not data:
+                                return
+                            (upstream if source is self.request else self.request).sendall(data)
+
+        gateway_server = socketserver.ThreadingTCPServer(
+            ("127.0.0.1", gateway_port), GatewayTransport
+        )
+        gateway_server.daemon_threads = True
+        threading.Thread(target=gateway_server.serve_forever, daemon=True).start()
     config = {
         "session_api_keys": [runtime_key],
         "secret_key": secrets.token_urlsafe(32),
-        "conversations_path": str(state / "conversations"),
+        "conversations_path": "/runtime/state/conversations"
+        if image_mode
+        else str(state / "conversations"),
         "workspace_path": str(workspace),
-        "bash_events_dir": str(state / "bash-events"),
+        "bash_events_dir": "/runtime/state/bash-events"
+        if image_mode
+        else str(state / "bash-events"),
         "preload_tools": False,
     }
     config_file = state / "config.json"
@@ -69,7 +106,9 @@ def main():
     config_file.write_text(json.dumps(config))
     config_file.chmod(0o600)
     os.environ["OPENHANDS_AGENT_SERVER_CONFIG_PATH"] = str(config_file)
-    os.environ["OH_PERSISTENCE_DIR"] = str(state / ".openhands")
+    os.environ["OH_PERSISTENCE_DIR"] = (
+        "/runtime/state/persistence" if image_mode else str(state / ".openhands")
+    )
     os.environ["OH_SESSION_API_KEYS_0"] = runtime_key
     os.environ["OPENHANDS_BUILD_GIT_SHA"] = lock["source_commit"]
     os.environ["OPENHANDS_BUILD_GIT_REF"] = lock["source_commit"]
@@ -183,13 +222,18 @@ def main():
         )
         return LLMResponse(message=message, raw_response=raw, metrics=MetricsSnapshot())
 
-    LLM.acompletion = completion
+    if os.environ.get("FLOWWEAVE_NATIVE_REAL_MODEL") != "1":
+        LLM.acompletion = completion
     with socket.socket() as bound:
         bound.bind(("127.0.0.1", 0))
-        port = bound.getsockname()[1]
+        port = int(os.environ.get("FLOWWEAVE_NATIVE_PORT") or bound.getsockname()[1])
     host = f"http://127.0.0.1:{port}"
     app = create_app(Config.model_validate(config))
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
+    server = uvicorn.Server(
+        uvicorn.Config(
+            app, host="0.0.0.0" if image_mode else "127.0.0.1", port=port, log_level="error"
+        )
+    )
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
     try:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hmac
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from uuid import UUID
 
 from pydantic import SecretStr
@@ -145,9 +145,7 @@ def _resolve_launcher(
         )
         if not hmac.compare_digest(runtime_key.get_secret_value(), expected):
             raise denied()
-        return AuthorizedParent(
-            principal, frozen, replace(handle, workspace_root=frozen.working_directory)
-        )
+        return AuthorizedParent(principal, frozen, handle)
 
 
 def prepare_launcher(

@@ -123,6 +123,7 @@ class NativeChildConfiguration(BaseModel):
     parent_conversation_id: UUID
     workspace: NativeChildWorkspace
     persistence_dir: str | None
+    title: str | None = None
     agent: dict[str, Any] = Field(repr=False)
 
 

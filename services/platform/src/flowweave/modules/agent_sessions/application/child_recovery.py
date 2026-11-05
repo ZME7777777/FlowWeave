@@ -19,7 +19,11 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentChildConversation,
     AgentConversationBinding,
 )
-from flowweave.modules.users.application.security import tenant_bypass, tenant_user
+from flowweave.modules.users.application.security import (
+    tenant_bypass,
+    tenant_user,
+    user_runtime_project_root,
+)
 from flowweave.runtime.base import RuntimeConversationIdentity, RuntimeHandle
 from flowweave.runtime.child_governance import NativeGovernedChildPreparation
 from flowweave.runtime.routing import runtime_for
@@ -149,11 +153,17 @@ def probe(
     for family in families:
         frozen = family.capability
         parent_id = str(frozen.policy.parent_conversation_id)
+        with tenant_user(str(frozen.owner_user_id)):
+            workspace_root = (
+                user_runtime_project_root()
+                if frozen.host_kind == "AGENT_WORKSPACE"
+                else frozen.working_directory
+            )
         handle = RuntimeHandle(
             f"env-chat:{resource_name}",
             parent_id,
             runtime_resource_name=resource_name,
-            workspace_root=frozen.working_directory,
+            workspace_root=workspace_root,
             protocol_profile="OH_FW_V4",
         )
         runtime = runtime_for("openhands", handle)
@@ -212,7 +222,7 @@ def probe(
                 handle.job_id,
                 child.conversation_id,
                 runtime_resource_name=resource_name,
-                workspace_root=frozen.working_directory,
+                workspace_root=workspace_root,
                 protocol_profile="OH_FW_V4",
             )
             config = runtime.child_conversation_configuration(child_handle)

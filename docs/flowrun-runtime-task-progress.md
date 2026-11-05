@@ -1,9 +1,9 @@
 # FlowRun OpenHands Runtime 重构进度
 
 > 创建日期：2026-08-21
-> 状态：`CHILD CONVERSATIONS IN PROGRESS`
+> 状态：`CHILD CONVERSATIONS COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`FR-717`
+> 下一可执行切片：`NONE`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 > 子会话设计：`docs/agent-child-conversations-design.md`
@@ -1116,11 +1116,56 @@ pending_ids 显示原父进度入口提示，不当作已完成删除。
 不等同 FR-717 的实际 Runtime 门禁。Web typecheck、受影响 ESLint、diff、唯一 CURRENT／
 依赖核对通过；无迁移，唯一 head 仍为 0180。下一可执行 FR-717，继续按整目标完成验收。
 
-### FR-717 原生子会话全链路故障与两宿主验收 — PENDING
+### FR-717 原生子会话全链路故障与两宿主验收 — DONE
 
 依赖：FR-725 DONE、FR-728 DONE。固定真实 Runtime／TCP、隔离 PostgreSQL、两宿主
 Chromium 验证创建、续聊、父工具、并发、RLS、未读、多标签、删除和 replacement，
 确认没有 Worktree 创建且 V1／V2 不变；不自动发布或升级已有 Runtime。
+
+验收（2026-11-05）：使用本地独立 PostgreSQL、真实平台 API、固定 linux/amd64 Runtime
+镜像和线上已配置的 `gpt-5.6-luna`，以 low reasoning 完成 Workspace、FlowRun node-session
+两宿主完整用例，最终 2 passed。线上模型凭据始终留在原服务进程，测试经受保护的临时转发
+调用真实上游 HTTP／SSE。测试数据库仅保存临时转发凭据，生产会话不参与该样本。
+
+实际镜像为 `sha256:7e7ee2e0b91be6d51d8a308fff83b030c24eef63d8ef61ceb26e907794b55056`，
+source lock 为 `b9f976b2ca05b947ee28eb34ebe590ff0409307f`，归档 SHA-256 为
+`4f53a19445c7c5cfabe022414dd33942fc3c086b0be5b60fd87e9fa0ccc5899f`，四包 1.58.2。
+真实 Dockerfile 构建中的 contract/security 检查通过，Chromium 可用。每次原生服务启动还逐字节
+核对固定归档对应的 537 个已安装 Python 文件。完整 main 与既有扩展均由此固定身份承载。
+
+两宿主均验证正式父工具 start/list/read/wait/send/interrupt、首轮 PROVISIONING 授权、同 proof
+重放返回原 child、用户 submission 重试返回原 cursor、直属身份和共享目录、绑定级凭据过滤。
+关闭原容器后以同一镜像、外部挂载和持久密钥启动新容器，恢复原父子 ID、首轮及续聊事件，
+并由正式 child recovery 探针核对原 action/tool-call、receipt、governance、workspace 和 persistence。
+随后 Chromium 从父悬浮卡打开子标题标签，读取真实历史、上传及中央预览附件、续聊获得真实
+`BROWSER_READY`，核对四条正式用户气泡、结果引用保留父草稿，以及关闭视图的请求与路由。
+两个实际页面截图均已检查。
+
+完整链路最后执行真实原生家族删除。首个 child 删除成功后人为丢失回执，Worker 任务保持
+原父子定位，显式重试复用同一任务，完成 child → parent barrier → child 复核及私有记录清理。
+直接核对原生 GET 404、父子持久目录缺失、任务 COMPLETE/SUCCEEDED，私有附件移除而共享
+文件及无关 owner 附件保留。最终缺失按实际 HTTP 与持久目录确认，避免把 child adapter 的
+404 包装码误当作普通会话错误码。所有测试原生容器均已退出。
+
+独立综合回归为 463 passed、9 skipped，其中两项真实模型用例已在上述独立门禁通过，七项
+为宿主不适用参数。140 项契约／传输／迁移单测、6 项旧 V1/V2 协议回归通过，四项 V3/V4
+两宿主真实 TCP 包含在综合套件中。23 项子标签／队列／草稿／快捷键／未读／删除 Chromium
+回归通过，使用受控 API 与 WebSocket。并发预留、权限/RLS、消息竞争、断流及游标恢复、
+多标签迟到结果、删除失败恢复和 replacement 控制面矩阵由这些定向测试覆盖。Provider
+编排矩阵使用受控物理 Provider，原生持久恢复另经上述真实容器重建验证，两类证据分别保留。
+
+本片修正实际验收发现的两项产品问题。原生子标题在准备治理时投影到 binding，重试保留
+已有标题。Workspace launcher 保留宿主正式用户根，恢复探针也以冻结 owner 取得用户根，
+并继续独立核对父子的实际子目录，修复把工作子目录误作 Runtime 根导致恢复拒绝的问题。
+新增标题／原根定向回归均通过。Web typecheck、受影响 ESLint、Ruff format/check、子模块
+Pyright、diff 和状态依赖核对通过。对依赖独立 SDK 环境的测试夹具额外执行 strict Pyright
+出现未安装 SDK 及未标注测试类型诊断，未将该额外检查记为通过。无新增迁移，唯一 head 为 0180。
+
+固定上游普通会话启动／重载会原生 git init，实际样本已观察并记录在子会话设计中。
+shared 子会话没有 linked Worktree 或 worktrees 注册，目录没有切换。现有 V1/V2、旧
+generation 父工具拒绝策略、V4 Workspace 冻结镜像，以及非活动子队列待选中并正式 hydration
+后恢复的边界继续遵守原设计。全部子会话切片现已闭环，当前与下一切片均为 NONE，代码保留
+在 `codex/child-conversations`，合并和发布交由用户决策。
 
 ### FR-701 远程侧栏与草稿修复合并发布 — DONE
 

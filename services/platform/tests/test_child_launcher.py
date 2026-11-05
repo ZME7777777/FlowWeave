@@ -70,6 +70,8 @@ def parent_profile(request):
 def parent_graph(
     request, db_session_factory, settings, monkeypatch, gateway_base_url, parent_profile
 ):
+    import os
+
     identity = (
         FROZEN_V3_IDENTITY
         if parent_profile == "OH_FW_V3"
@@ -79,6 +81,10 @@ def parent_graph(
         update={
             "runtime_adapter": "openhands",
             "agent_child_gateway_base_url": gateway_base_url,
+            "terminal_environment_backend": "docker"
+            if os.environ.get("FLOWWEAVE_CHILD_BROWSER_BASE_URL")
+            and "real_model_native_child" in request.node.name
+            else settings.terminal_environment_backend,
         }
     )
     owner, other, workspace_id, runtime_id, host_id, scope_id, native_id, binding_id = [
@@ -86,7 +92,18 @@ def parent_graph(
     ]
     resource = "fr719-test-resource"
     image = "sha256:" + "a" * 64
+    runtime_image = os.environ.get("FLOWWEAVE_NATIVE_CHILD_IMAGE")
+    if runtime_image and "real_model_native_child" in request.node.name:
+        import subprocess
+
+        image = subprocess.check_output(
+            ["docker", "image", "inspect", runtime_image, "--format", "{{.Id}}"], text=True
+        ).strip()
     kind = request.param
+    browser_mode = bool(
+        os.environ.get("FLOWWEAVE_CHILD_BROWSER_BASE_URL")
+        and "real_model_native_child" in request.node.name
+    )
     if kind == "AGENT_WORKSPACE":
         host_id = workspace_id
         scope_id = workspace_id
@@ -95,7 +112,9 @@ def parent_graph(
         "child_conversations": child_capability_manifest()
         if parent_profile == "OH_FW_V3"
         else governed_child_capability_manifest(),
-        "nodes": {},
+        "nodes": {"node": {"node_asset_id": str(uuid4())}}
+        if browser_mode and kind == "FLOW_NODE"
+        else {},
     }
     spec = RuntimeAgentSpec(
         tools=(RuntimeTool("task_tracker"),),
@@ -111,7 +130,12 @@ def parent_graph(
             ]
         )
         if kind == "AGENT_WORKSPACE":
-            db.add(AgentWorkspace(id=workspace_id, scope_key=workspace_id))
+            db.add(
+                AgentWorkspace(
+                    id=workspace_id,
+                    scope_key="platform-default" if browser_mode else workspace_id,
+                )
+            )
             db.add(
                 AgentWorkspaceRuntime(
                     id=runtime_id,
@@ -122,6 +146,16 @@ def parent_graph(
                     status="ACTIVE",
                 )
             )
+            if browser_mode:
+                from flowweave.modules.agent_workspaces.application import (
+                    service as workspace_service,
+                )
+
+                db.flush()
+                allocation = workspace_service._ensure_allocation(
+                    db, db.get(AgentWorkspace, workspace_id)
+                )
+                db.get(AgentWorkspaceRuntime, runtime_id).workspace_allocation_id = allocation.id
             db.add(
                 ManagedSandbox(
                     id=str(uuid4()),
@@ -142,6 +176,58 @@ def parent_graph(
                 name="native parent",
                 state="RUNNING",
             )
+            definition = {}
+            if browser_mode:
+                from copy import deepcopy
+
+                from conftest import _seed_ready_environment
+
+                from flowweave.runtime.base import FLOWWEAVE_LLM_TIMEOUT_POLICY
+                from flowweave.shared.models import EnvironmentVersion
+
+                seeded_id = _seed_ready_environment(db_session_factory)
+                seeded = db.get(EnvironmentVersion, seeded_id)
+
+                environment_manifest = deepcopy(seeded.manifest_json)
+                environment_manifest["image_id"] = image
+                environment_manifest["build"]["runtime_image_digest"] = image
+                environment_manifest["build"]["platform"] = "linux/amd64"
+                environment_manifest["child_conversations"] = governed_child_capability_manifest()
+                environment_manifest["execution_policy"] = {
+                    "llm_timeouts": FLOWWEAVE_LLM_TIMEOUT_POLICY.manifest_document()
+                }
+                environment = EnvironmentVersion(
+                    environment_id=seeded.environment_id,
+                    version_no=2,
+                    state="READY",
+                    base_image_reference=seeded.base_image_reference,
+                    base_image_digest=seeded.base_image_digest,
+                    image_reference="flowweave/native-acceptance",
+                    image_digest=image,
+                    runtime_protocol_profile="OH_FW_V4",
+                    manifest_json=environment_manifest,
+                )
+                db.add(environment)
+                db.flush()
+                run.environment_version_id = environment.id
+                definition = {
+                    "name": "Native child acceptance",
+                    "nodes": [
+                        {
+                            "instance_key": "node",
+                            "node_asset_id": manifest["nodes"]["node"]["node_asset_id"],
+                            "alias": "Native parent",
+                            "asset": {
+                                "id": manifest["nodes"]["node"]["node_asset_id"],
+                                "name": "Native parent",
+                                "execution_mode": "AGENT",
+                            },
+                            "gates": [],
+                        }
+                    ],
+                    "edges": [],
+                    "port_mappings": [],
+                }
             node = NodeRun(
                 id=str(uuid4()), flow_run_id=host_id, flow_node_snapshot_key="node", sequence_no=1
             )
@@ -149,7 +235,7 @@ def parent_graph(
                 id=str(uuid4()),
                 flow_run_id=host_id,
                 version=1,
-                definition_json={},
+                definition_json=definition,
                 definition_hash="a" * 64,
                 runtime_manifest_json=manifest,
                 runtime_manifest_hash=runtime_manifest_hash(manifest),
@@ -172,6 +258,8 @@ def parent_graph(
                 status="ACTIVE",
             )
             db.add_all([run, node, snapshot, attempt, session])
+            if browser_mode:
+                run.active_snapshot_id = snapshot.id
             monkeypatch.setattr(
                 child_launcher.sandboxes,
                 "active_node_runtime_connection",
@@ -272,6 +360,11 @@ def test_freeze_and_two_phase_auth_do_not_create_a_child(parent_graph):
     assert str(g.frozen.policy.scope_id) == g.binding.id
     assert "/prefix/api/v1/agent-child-launchers/" in g.frozen.launch_url
     prepared = prepare(g)
+    assert prepared.handle.workspace_root == (
+        f"/runtime/workspace/project/users/{g.owner}"
+        if g.kind == "AGENT_WORKSPACE"
+        else g.binding.working_directory
+    )
     assert child_launcher.project_launcher(g.db, prepared, proof(g), runtime_key=g.key) == prepared
     assert not g.db.scalar(select(AgentChildConversation.id))
     assert len(list(g.db.scalars(select(AgentConversationBinding.id)))) == 1
@@ -441,8 +534,9 @@ def test_native_verifier_is_required_and_receives_opaque_proof(parent_graph, mon
 
 
 @pytest.fixture
-def launcher_http(parent_graph, monkeypatch):
+def launcher_http(parent_graph, monkeypatch, request):
     import asyncio
+    import os
     from concurrent.futures import ThreadPoolExecutor
     from contextlib import asynccontextmanager
     from unittest.mock import AsyncMock, Mock
@@ -505,6 +599,16 @@ def launcher_http(parent_graph, monkeypatch):
             audit_writer=Mock(),
             conversation_hydration_cache=Mock(),
         )
+        live_container = None
+        if (
+            os.environ.get("FLOWWEAVE_CHILD_REAL_MODEL_CONFIG")
+            and "real_model_native_child" in request.node.name
+        ):
+            from flowweave.bootstrap.container import build_container
+
+            live_container = build_container(g.config, role="api")
+            live_container.runtime = container.runtime
+            container = live_container
         monkeypatch.setattr(bootstrap, "build_container", lambda *_args, **_kwargs: container)
         app = bootstrap.create_app(g.config)
         client = TestClient(app)
@@ -512,6 +616,8 @@ def launcher_http(parent_graph, monkeypatch):
             yield g, client, calls
         finally:
             client.close()
+            if live_container is not None:
+                asyncio.run(live_container.close())
 
 
 @pytest.mark.parametrize(
@@ -581,10 +687,35 @@ def test_only_exact_native_path_bypasses_cookie_login(launcher_http):
 @pytest.mark.parametrize("gateway_base_url", ["local"], indirect=True)
 @pytest.mark.parametrize("parent_profile", ["OH_FW_V3", "OH_FW_V4"], indirect=True)
 def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeypatch):
+    _exercise_native_child_transport(launcher_http, monkeypatch)
+
+
+@pytest.mark.parametrize("gateway_base_url", ["local"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+def test_real_model_native_child_user_and_parent_tools(launcher_http, monkeypatch):
+    import json
+    import os
+
+    config = os.environ.get("FLOWWEAVE_CHILD_REAL_MODEL_CONFIG")
+    if not config:
+        pytest.skip("Set FLOWWEAVE_CHILD_REAL_MODEL_CONFIG to isolated model transport settings")
+    _exercise_native_child_transport(
+        launcher_http,
+        monkeypatch,
+        json.loads(Path(config).read_text()),
+        runtime_image=os.environ.get("FLOWWEAVE_NATIVE_CHILD_IMAGE"),
+    )
+
+
+def _exercise_native_child_transport(
+    launcher_http, monkeypatch, model_config=None, runtime_image=None
+):
     """Real native action -> platform authorization -> native child lifecycle.
 
     V3 retains refusal; V4 creates exactly one child and one first user event.
-    Only LLM completion, physical mount mapping and Runtime connection are fixtures.
+    Deterministic mode controls LLM completion and maps host mount paths. Image
+    mode uses real mounts and optionally the configured live model transport.
+    Both modes use an isolated platform database and local Runtime connection.
     """
     import asyncio
     import json
@@ -603,23 +734,76 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
     from flowweave.runtime.openhands import OpenHandsRuntime
 
     g, client, _ = launcher_http
+
+    def formal_events(http, conversation_root):
+        events = []
+        page_id = None
+        for _ in range(40):
+            response = http.get(
+                conversation_root + "/events/search",
+                params={"limit": 100, "page_id": page_id} if page_id else {"limit": 100},
+            )
+            response.raise_for_status()
+            page = response.json()
+            events.extend(page["items"])
+            page_id = page.get("next_page_id")
+            if page_id is None:
+                return events
+        raise AssertionError("Isolated event pagination exceeded its bounded test budget")
+
     environment = (
         "FLOWWEAVE_NATIVE_CHILD_V3_PYTHON"
         if g.profile == "OH_FW_V3"
         else "FLOWWEAVE_NATIVE_CHILD_PYTHON"
     )
     python = os.environ.get(environment)
-    if not python:
+    if not python and not runtime_image:
         pytest.skip(f"Set {environment} to the corresponding fixed native environment")
     repo = Path(__file__).resolve().parents[3]
     root = repo / ".tmp/fr723/native"
     root.mkdir(parents=True, exist_ok=True)
     state = Path(tempfile.mkdtemp(dir=root))
     state.chmod(0o700)
+    if runtime_image and g.kind == "AGENT_WORKSPACE":
+        from flowweave.modules.agent_workspaces import public as workspace_host
+
+        monkeypatch.setattr(
+            workspace_host,
+            "agent_workspace_record_path",
+            lambda *_: state / "workspace" / "users" / g.owner,
+        )
+    if runtime_image and g.kind == "FLOW_NODE":
+        from pathlib import PurePosixPath
+
+        from flowweave.modules.sandboxes.application.runtime_allocation import (
+            NodeAttemptWorkspaceContext,
+        )
+
+        monkeypatch.setattr(
+            child_launcher.sandboxes,
+            "node_attempt_workspace_context",
+            lambda *_args, **_kwargs: NodeAttemptWorkspaceContext(
+                # Compute is already owned by this isolated native fixture.
+                # The host read must not provision another physical Runtime.
+                attempt_owned=True,
+                host_mount_root=state / "workspace",
+                host_working_directory=state / "workspace" / g.binding.host_id,
+                runtime_mount_root=PurePosixPath("/runtime/workspace/project"),
+                runtime_working_directory=PurePosixPath(g.binding.working_directory),
+            ),
+        )
     for directory in ("home", "tmp", "cache"):
         (state / directory).mkdir()
     config = state / "fixture.json"
-    config.write_text(json.dumps({"runtime_key": g.key.get_secret_value()}))
+    config.write_text(
+        json.dumps(
+            {
+                "runtime_key": g.key.get_secret_value(),
+                "gateway_port": urlsplit(g.config.agent_child_gateway_base_url).port,
+                "working_directory": g.binding.working_directory,
+            }
+        )
+    )
     config.chmod(0o600)
     env = {name: os.environ[name] for name in ("PATH", "LANG") if name in os.environ}
     env.update(
@@ -637,6 +821,8 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
     source_lock_path = state / "source.lock.json"
     source_lock_path.write_text(json.dumps(source_lock))
     env["FLOWWEAVE_NATIVE_CHILD_LOCK"] = str(source_lock_path)
+    if model_config:
+        env["FLOWWEAVE_NATIVE_REAL_MODEL"] = "1"
     if g.profile == "OH_FW_V4":
         env["FLOWWEAVE_CHILD_INTERACTIONS"] = "1"
     script = Path(__file__).parents[1] / "unit_tests/fixtures/native_child_server.py"
@@ -653,20 +839,103 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
         return result
 
     monkeypatch.setattr(child_launcher, "project_launcher", record_authorization)
-    server = None
-    thread = None
-    with (state / "native.log").open("w") as log:
-        process = subprocess.Popen(
-            [str(Path(python).absolute()), str(script), str(state), str(repo), "serve"],
-            env=env,
+    if model_config and os.environ.get("FLOWWEAVE_CHILD_BROWSER_BASE_URL"):
+        from flowweave.modules.agent_sessions.application.conversation_cache import (
+            ConversationHydrationCache,
+        )
+        from flowweave.modules.model_providers.application import service as model_providers
+        from flowweave.shared.schemas import ModelProviderWrite, ProviderModelWrite
+
+        with tenant_user(g.owner):
+            provider = model_providers.save_provider(
+                g.db,
+                ModelProviderWrite(
+                    name="Isolated native acceptance",
+                    base_url=model_config["container_base_url"]
+                    if runtime_image
+                    else model_config["base_url"],
+                    api_key=model_config["api_key"],
+                    models=[ProviderModelWrite(model_name=model_config["model"], is_default=True)],
+                ),
+            )
+            g.binding.model_provider_id = provider["id"]
+            g.binding.model_name = model_config["model"]
+            g.binding.reasoning_effort = "low"
+            g.db.commit()
+        client.app.state.container.conversation_hydration_cache = ConversationHydrationCache()
+    container_name = "fr717-native-" + uuid4().hex
+    if runtime_image:
+        import socket
+
+        with socket.socket() as bound:
+            bound.bind(("127.0.0.1", 0))
+            native_port = bound.getsockname()[1]
+
+    def launch_native(log):
+        if runtime_image:
+            command = [
+                "docker",
+                "run",
+                "--rm",
+                "-i",
+                "--platform",
+                "linux/amd64",
+                "--name",
+                container_name,
+                "--add-host",
+                "host.docker.internal:host-gateway",
+                "-p",
+                f"127.0.0.1:{native_port}:{native_port}",
+                "-v",
+                f"{state}:{state}",
+                "-v",
+                f"{repo}:{repo}:ro",
+                "-e",
+                "FLOWWEAVE_NATIVE_IMAGE=1",
+                "-e",
+                f"FLOWWEAVE_NATIVE_PORT={native_port}",
+            ]
+            for source, target in [
+                ("workspace", "/runtime/workspace/project"),
+                ("conversations", "/runtime/state/conversations"),
+                ("bash-events", "/runtime/state/bash-events"),
+                (".openhands", "/runtime/state/persistence"),
+            ]:
+                (state / source).mkdir(exist_ok=True)
+                command.extend(["-v", f"{state / source}:{target}"])
+            for name, value in env.items():
+                if name not in {"PATH", "LANG"}:
+                    command.extend(["-e", f"{name}={value}"])
+            command.extend(
+                [
+                    runtime_image,
+                    "/runtime/.venv/bin/python",
+                    str(script),
+                    str(state),
+                    str(repo),
+                    "serve",
+                ]
+            )
+            process_env = dict(os.environ)
+        else:
+            command = [str(Path(python).absolute()), str(script), str(state), str(repo), "serve"]
+            process_env = env
+        return subprocess.Popen(
+            command,
+            env=process_env,
             cwd=state,
             stdin=subprocess.PIPE,
             stdout=log,
             stderr=log,
             text=True,
         )
+
+    server = None
+    thread = None
+    with (state / "native.log").open("w") as log:
+        process = launch_native(log)
         try:
-            deadline = time.monotonic() + 30
+            deadline = time.monotonic() + (240 if runtime_image else 30)
             while not (state / "server-ready.json").exists():
                 assert process.poll() is None, (
                     f"Native fixture failed; inspect {state / 'native.log'}"
@@ -676,7 +945,7 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
             info = json.loads((state / "server-ready.json").read_text())
             assert info["verified_python_files"] == (536 if g.profile == "OH_FW_V3" else 537)
             with httpx.Client(base_url=info["host"], trust_env=False, timeout=10) as http:
-                deadline = time.monotonic() + 10
+                deadline = time.monotonic() + (90 if runtime_image else 10)
                 while True:
                     try:
                         if http.get("/health").status_code == 200:
@@ -689,7 +958,7 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
 
             def mounted_workspace(request):
                 assert original_workspace(request) == request.workspace_ref
-                return str(state / "workspace")
+                return g.binding.working_directory if runtime_image else str(state / "workspace")
 
             # Simulate the container mount without writing /runtime on the host.
             monkeypatch.setattr(native, "_request_workspace_path", mounted_workspace)
@@ -704,6 +973,8 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
                     # Simulate container mount paths on actual HTTP responses;
                     # keep the production state/config identity checks enabled.
                     value = original_request(method, path, **kwargs)
+                    if runtime_image:
+                        return value
                     parts = path.strip("/").split("/")
                     if (
                         method == "GET"
@@ -731,7 +1002,7 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
             server = uvicorn.Server(
                 uvicorn.Config(
                     client.app,
-                    host="127.0.0.1",
+                    host="0.0.0.0" if runtime_image else "127.0.0.1",
                     port=gateway.port,
                     lifespan="off",
                     log_level="error",
@@ -746,7 +1017,17 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
             spec = replace(
                 g.bound_spec,
                 provider=RuntimeProvider(
-                    "fixture", "https://model.example.test", "openai/test", "unused"
+                    "fixture",
+                    (
+                        model_config["container_base_url"]
+                        if runtime_image
+                        else model_config["base_url"]
+                    )
+                    if model_config
+                    else "https://model.example.test",
+                    "openai/" + model_config["model"] if model_config else "openai/test",
+                    model_config["api_key"] if model_config else "unused",
+                    reasoning_effort="low" if model_config else None,
                 ),
             )
             request = StartAttemptRequest(
@@ -754,8 +1035,16 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
                 execution_key="agent-workspace:native-parent",
                 node={},
                 bindings=[],
-                workspace_ref=f"/runtime/workspace/project/{g.binding.host_id}",
-                workspace_root=f"/runtime/workspace/project/{g.binding.host_id}",
+                workspace_ref=g.binding.working_directory
+                if runtime_image
+                else f"/runtime/workspace/project/{g.binding.host_id}",
+                workspace_root=(
+                    f"/runtime/workspace/project/users/{g.owner}"
+                    if g.kind == "AGENT_WORKSPACE"
+                    else g.binding.working_directory
+                )
+                if runtime_image
+                else f"/runtime/workspace/project/{g.binding.host_id}",
                 conversation_id=g.binding.openhands_conversation_id,
                 agent_spec=spec,
                 environment_image=g.image,
@@ -786,7 +1075,27 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
                         "LATE_ONLY": "fixture-additive",
                     },
                 )
-            native.send_message(handle, "delegate")
+            parent_prompt = (
+                (
+                    "This is an isolated native child integration test. "
+                    "Use each child tool in order. "
+                    "First call start_governed_child_conversation exactly once "
+                    "with task='review child 🌳', title='child'. "
+                    "Then list_child_conversations, "
+                    "wait_for_child_conversation until the child finishes, "
+                    "read_child_conversation, "
+                    "send_child_conversation_message with text='parent follow-up', "
+                    "wait_for_child_conversation until it finishes again, "
+                    "then interrupt_child_conversation "
+                    "on that same child even though it has finished. End with PARENT_READY. "
+                    "Do not create another child. Always use the returned conversation_id. "
+                    "For waits, omit checkpoint and use timeout_seconds=0. "
+                    "Do not copy the opaque checkpoint string. Repeat a wait if still running."
+                )
+                if model_config
+                else "delegate"
+            )
+            native.send_message(handle, parent_prompt)
             with httpx.Client(
                 base_url=info["host"],
                 headers={"X-Session-API-Key": g.key.get_secret_value()},
@@ -794,11 +1103,17 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
                 trust_env=False,
             ) as http:
                 conversation_root = f"/api/conversations/{handle.conversation_id}"
-                deadline = time.monotonic() + 15
-                while http.get(conversation_root).json()["execution_status"] != "finished":
+                deadline = time.monotonic() + (240 if model_config else 15)
+                while True:
+                    status = http.get(conversation_root).json()["execution_status"]
+                    if status == "finished":
+                        break
+                    assert status not in {"error", "stuck"}, (
+                        "Native parent failed; inspect isolated log"
+                    )
                     assert time.monotonic() < deadline, "Native parent did not finish"
-                    time.sleep(0.05)
-                events = http.get(conversation_root + "/events/search").json()["items"]
+                    time.sleep(0.1)
+                events = formal_events(http, conversation_root)
                 actions = [
                     e
                     for e in events
@@ -821,17 +1136,46 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
                         for e in events
                         if e["kind"] == "ActionEvent" and e.get("tool_name") in CHILD_TOOL_NAMES
                     ]
-                    assert len(all_actions) == 6
+                    if model_config:
+                        assert set(CHILD_TOOL_NAMES).issubset({e["tool_name"] for e in all_actions})
+                    else:
+                        assert len(all_actions) == 6
                     all_observations = [
                         e
                         for e in events
                         if e["kind"] == "ObservationEvent"
                         and e.get("action_id") in {a["id"] for a in all_actions}
                     ]
-                    assert len(all_observations) == 6
-                    assert not any(e["observation"].get("is_error") for e in all_observations), (
-                        all_observations
-                    )
+                    if model_config:
+                        repaired_actions = {
+                            e["parent_id"]
+                            for e in events
+                            if e["kind"] == "AgentErrorEvent"
+                            and any(
+                                a["id"] == e.get("parent_id")
+                                and a.get("tool_call_id") == e.get("tool_call_id")
+                                for a in all_actions
+                            )
+                        }
+                        settled_actions = {
+                            e["action_id"] for e in all_observations
+                        } | repaired_actions
+                        assert settled_actions == {e["id"] for e in all_actions}
+                    else:
+                        assert len(all_observations) == len(all_actions)
+                    if model_config:
+                        successful_actions = {
+                            e["action_id"]
+                            for e in all_observations
+                            if not e["observation"].get("is_error")
+                        }
+                        assert set(CHILD_TOOL_NAMES).issubset(
+                            {e["tool_name"] for e in all_actions if e["id"] in successful_actions}
+                        )
+                    else:
+                        assert not any(
+                            e["observation"].get("is_error") for e in all_observations
+                        ), all_observations
                 assert authorized_calls
                 assert all(
                     call
@@ -871,11 +1215,11 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
                         headers={"X-Session-API-Key": g.key.get_secret_value()},
                         trust_env=False,
                     ) as child_http:
-                        deadline = time.monotonic() + 10
+                        deadline = time.monotonic() + (120 if model_config else 10)
                         while child_http.get(child_root).json()["execution_status"] != "finished":
                             assert time.monotonic() < deadline
                             time.sleep(0.05)
-                        child_events = child_http.get(child_root + "/events/search").json()["items"]
+                        child_events = formal_events(child_http, child_root)
                         users = [
                             e
                             for e in child_events
@@ -930,6 +1274,28 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
                 hydration = client.get(browser_root + "/hydration")
                 assert hydration.status_code == 200, hydration.text
                 assert client.get(browser_root + "/context").status_code == 200
+                if model_config:
+                    child_handle = replace(handle, conversation_id=child_id)
+                    deadline = time.monotonic() + 120
+                    while native.input_readiness(child_handle).execution_status not in {
+                        "idle",
+                        "finished",
+                        "paused",
+                    }:
+                        assert time.monotonic() < deadline
+                        time.sleep(0.1)
+                    assert native.read_active_events(child_handle).events
+                if runtime_image:
+                    from flowweave.modules.agent_sessions.application import child_recovery
+                    from flowweave.runtime.dependencies import runtime_context
+
+                    families = child_recovery.collect(g.db, g.runtime_id)
+                    g.db.commit()
+                    with runtime_context(native):
+                        original_identities = child_recovery.probe(
+                            families, handle.runtime_resource_name
+                        )
+                    assert set(original_identities) == {handle.conversation_id, child_id}
                 # A real server shutdown/restart must preserve native gate,
                 # initial event and the platform reservation with the same proof.
                 process.stdin.write("stop\n")
@@ -937,16 +1303,8 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
                 process.wait(timeout=15)
                 assert process.returncode == 0
                 (state / "server-ready.json").unlink()
-                process = subprocess.Popen(
-                    [str(Path(python).absolute()), str(script), str(state), str(repo), "serve"],
-                    env=env,
-                    cwd=state,
-                    stdin=subprocess.PIPE,
-                    stdout=log,
-                    stderr=log,
-                    text=True,
-                )
-                deadline = time.monotonic() + 30
+                process = launch_native(log)
+                deadline = time.monotonic() + (240 if runtime_image else 30)
                 while not (state / "server-ready.json").exists():
                     assert process.poll() is None
                     assert time.monotonic() < deadline
@@ -958,7 +1316,7 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
                     trust_env=False,
                     timeout=10,
                 ) as reloaded:
-                    deadline = time.monotonic() + 10
+                    deadline = time.monotonic() + (90 if runtime_image else 10)
                     while True:
                         try:
                             if reloaded.get("/health").status_code == 200:
@@ -980,7 +1338,7 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
                         )
                     assert restored.status_code == 200, restored.text
                     assert restored.json() == accepted.json()
-                    saved_events = reloaded.get(child_root + "/events/search").json()["items"]
+                    saved_events = formal_events(reloaded, child_root)
                     assert (
                         len(
                             [
@@ -994,7 +1352,79 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
                     names = reloaded.get(child_root).json()["secret_registry"]["secret_sources"]
                     assert "FLOWWEAVE_HISTORY_ACCESS" not in names
                     assert "ORDINARY" in names
+                if runtime_image:
+                    with runtime_context(native):
+                        restored_identities = child_recovery.probe(
+                            families, handle.runtime_resource_name, original_identities
+                        )
+                    assert set(restored_identities) == set(original_identities)
+            browser_base = os.environ.get("FLOWWEAVE_CHILD_BROWSER_BASE_URL")
+            if model_config and browser_base:
+                # The parent and child have just completed real model calls
+                # through this provider. Record that verified connection for
+                # the normal browser model selector and send gate.
+                with tenant_user(g.owner):
+                    model_providers.mark_provider_connection_state(
+                        g.db, g.binding.model_provider_id, "CONNECTED"
+                    )
+                if g.kind == "AGENT_WORKSPACE":
+                    assert client.get("/api/v1/agent-workspaces/default").status_code == 200
+                fixture = state / "browser-fixture.json"
+                parent_id = g.binding.id
+                route = f"/agent/conversations/{parent_id}"
+                if g.kind == "FLOW_NODE":
+                    attempt = g.db.get(NodeAttempt, g.binding.conversation_scope_id)
+                    node = g.db.get(NodeRun, attempt.node_run_id)
+                    route = (
+                        f"/flow-runs/{g.binding.host_id}/nodes/{node.flow_node_snapshot_key}"
+                        f"/attempts/{attempt.id}/agent-sessions/{parent_id}"
+                    )
+                    host_response = client.get(
+                        f"/api/v1/flow-runs/{g.binding.host_id}/node-attempts/{attempt.id}/agent-sessions/host"
+                    )
+                    assert host_response.status_code == 200, host_response.text
+                fixture.write_text(
+                    json.dumps(
+                        {
+                            "gateway": g.config.agent_child_gateway_base_url,
+                            "route": route,
+                            "parentId": parent_id,
+                            "childId": accepted.json()["binding_id"],
+                            "childTitle": "child",
+                        }
+                    )
+                )
+                fixture.chmod(0o600)
+                browser_env = dict(
+                    os.environ,
+                    E2E_BASE_URL=browser_base,
+                    FLOWWEAVE_CHILD_BROWSER_FIXTURE=str(fixture),
+                )
+                with (state / "browser.log").open("w") as browser_log:
+                    browser = subprocess.run(
+                        [
+                            "pnpm",
+                            "--filter",
+                            "@flowweave/web",
+                            "exec",
+                            "playwright",
+                            "test",
+                            "e2e/agent-child-runtime-acceptance.spec.ts",
+                            "--output",
+                            str(state / "browser-output"),
+                        ],
+                        cwd=repo,
+                        env=browser_env,
+                        stdout=browser_log,
+                        stderr=browser_log,
+                        timeout=240,
+                    )
+                assert browser.returncode == 0, (
+                    f"Inspect isolated browser proof at {state / 'browser.log'}"
+                )
             assert bool(g.db.scalar(select(AgentChildConversation.id))) == (g.profile == "OH_FW_V4")
+            if runtime_image:
+                _exercise_real_child_family_deletion(g, native, state, monkeypatch)
         finally:
             if server is not None:
                 server.should_exit = True
@@ -1011,9 +1441,115 @@ def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeyp
             try:
                 process.wait(timeout=15)
             except subprocess.TimeoutExpired:
+                if runtime_image:
+                    subprocess.run(
+                        ["docker", "stop", "-t", "5", container_name],
+                        capture_output=True,
+                        timeout=20,
+                    )
                 process.terminate()
                 process.wait(timeout=10)
             assert process.returncode == 0, f"Native fixture failed; inspect {state / 'native.log'}"
+
+
+def _exercise_real_child_family_deletion(g, native, state, monkeypatch):
+    """Lose a real delete acknowledgement, then resume the same durable Worker job."""
+    import httpx
+
+    from flowweave.modules.agent_sessions.application import child_deletion
+    from flowweave.modules.tasks.application import handlers
+    from flowweave.modules.tasks.application import service as tasks
+    from flowweave.runtime.base import RuntimeHandle
+    from flowweave.runtime.dependencies import runtime_context
+    from flowweave.shared.models import BackgroundTask
+
+    parent_id = g.binding.id
+    parent_native_id = g.binding.openhands_conversation_id
+    relation = g.db.scalar(select(AgentChildConversation))
+    child_id = relation.child_binding_id
+    child_native_id = g.db.get(AgentConversationBinding, child_id).openhands_conversation_id
+    relative = Path("users") / g.owner if g.kind == "AGENT_WORKSPACE" else Path(g.binding.host_id)
+    working = state / "workspace" / relative
+    uploads = working / "uploads"
+    uploads.mkdir(exist_ok=True)
+    owned = uploads / f"{child_id}-{uuid4().hex}--owned.txt"
+    owned.write_text("child-owned attachment")
+    shared = working / "shared-project.txt"
+    shared.write_text("keep shared project")
+    unrelated = uploads / f"{uuid4()}-{uuid4().hex}--unrelated.txt"
+    unrelated.write_text("keep unrelated attachment")
+    # The fixed upstream initializes an ordinary repository on native run.
+    # Shared children must create neither linked trees nor worktree metadata.
+    for git_dir in (state / "workspace").rglob(".git"):
+        assert git_dir.is_dir()
+        assert not (git_dir / "commondir").exists()
+        assert not (git_dir / "worktrees").exists()
+    monkeypatch.setattr(
+        child_deletion.workspace_host, "agent_workspace_record_path", lambda *_: working
+    )
+    monkeypatch.setattr(
+        child_deletion.sandboxes,
+        "node_attempt_workspace_context",
+        lambda *_args, **_kwargs: SimpleNamespace(host_working_directory=working),
+    )
+    requested = child_deletion.request(g.db, g.db.get(AgentConversationBinding, parent_id))
+    g.db.commit()
+    assert requested is not None
+    original_delete = native.delete_conversation
+    calls = []
+
+    def lost_ack(handle):
+        original_delete(handle)
+        calls.append(handle.conversation_id)
+        if len(calls) == 1:
+            raise DomainError("FIXTURE_NATIVE_DELETE_TIMEOUT", "Lost delete acknowledgement", 504)
+
+    monkeypatch.setattr(native, "delete_conversation", lost_ack)
+
+    def execute():
+        with g.sessions() as db, runtime_context(native):
+            task, lease = tasks.claim(
+                db,
+                "native-family-acceptance",
+                lease_seconds=120,
+                task_types=frozenset({child_deletion.TASK_TYPE}),
+            )
+            assert task.id == requested["task_id"]
+            try:
+                handlers.handle(db, task, lease)
+            except DomainError:
+                tasks.fail(db, lease, "FIXTURE_NATIVE_DELETE_TIMEOUT", permanent=True)
+                raise
+            assert tasks.succeed(db, lease)
+
+    with pytest.raises(DomainError, match="Lost delete acknowledgement"):
+        execute()
+    g.db.expire_all()
+    assert g.db.get(AgentConversationBinding, parent_id).lifecycle == "DELETE_PENDING"
+    assert g.db.get(AgentConversationBinding, child_id) is not None
+    retried = child_deletion.request(g.db, g.db.get(AgentConversationBinding, parent_id))
+    assert retried["task_id"] == requested["task_id"]
+    g.db.commit()
+    execute()
+    g.db.expire_all()
+    assert g.db.get(AgentConversationBinding, parent_id) is None
+    assert g.db.get(AgentConversationBinding, child_id) is None
+    assert g.db.scalar(select(AgentChildConversation)) is None
+    task = g.db.get(BackgroundTask, requested["task_id"])
+    assert task.state == "SUCCEEDED" and task.payload_json["phase"] == "COMPLETE"
+    g.db.commit()
+    for conversation_id in (parent_native_id, child_native_id):
+        handle = RuntimeHandle("fixture", conversation_id, protocol_profile="OH_FW_V4")
+        response = httpx.get(
+            native._base_url_for_handle(handle) + f"/api/conversations/{conversation_id}",
+            headers={"X-Session-API-Key": g.key.get_secret_value()},
+            trust_env=False,
+        )
+        assert response.status_code == 404
+        assert not (state / "conversations" / UUID(conversation_id).hex).exists()
+    assert not owned.exists()
+    assert shared.read_text() == "keep shared project"
+    assert unrelated.read_text() == "keep unrelated attachment"
 
 
 def test_old_active_binding_cannot_acquire_parent_capability(parent_graph):
@@ -1069,10 +1605,7 @@ def test_downgrade_refuses_to_discard_parent_capability(parent_graph):
     config.attributes["database_url"] = g.config.database_url
     with pytest.raises(DBAPIError, match="Cannot discard frozen"):
         command.downgrade(config, "0176_agent_child_conversations")
-    assert (
-        g.db.scalar(text("SELECT version_num FROM alembic_version"))
-        == original_head
-    )
+    assert g.db.scalar(text("SELECT version_num FROM alembic_version")) == original_head
     assert child_parent.read_parent_capability(g.binding) == g.frozen
 
 
@@ -1639,6 +2172,7 @@ def fake_creation_runtime(g, verify, resolve):
                 parent_conversation_id=identity.parent_conversation_id,
                 workspace=parent.workspace,
                 persistence_dir=f"/state/{identity.conversation_id.hex}",
+                title=request.title,
                 agent=child_creation.expected_agent(parent),
             )
         assert saved[creation].governance_id == overrides.governance_id
@@ -1677,6 +2211,26 @@ def post_child(g, client):
         headers={"X-Session-API-Key": g.key.get_secret_value()},
         json={"task": "private-child-task", "token": "native-proof"},
     )
+
+
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+def test_native_child_title_is_projected_once_and_replay_preserves_user_title(launcher_http):
+    from urllib.parse import urlsplit
+
+    g, client, _ = launcher_http
+    path = urlsplit(g.frozen.launch_url).path.removeprefix("/prefix")
+    payload = {"task": "review", "title": "Review tests", "token": "native-proof"}
+    headers = {"X-Session-API-Key": g.key.get_secret_value()}
+    g.db.commit()
+    response = client.post(path, headers=headers, json=payload)
+    assert response.status_code == 200, response.text
+    child = g.db.get(AgentConversationBinding, response.json()["binding_id"])
+    assert child.display_title == "Review tests"
+    child.display_title = "User title"
+    g.db.commit()
+    assert client.post(path, headers=headers, json=payload).status_code == 200
+    g.db.refresh(child)
+    assert child.display_title == "User title"
 
 
 @pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)

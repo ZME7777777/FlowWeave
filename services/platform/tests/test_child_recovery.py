@@ -72,6 +72,7 @@ def recovery(child_http, monkeypatch):
 
     def reload(handle, *, expected=None):
         assert x.g.sessions.kw["bind"].pool.checkedout() == 0
+        assert handle.workspace_root == x.loc.parent_handle.workspace_root
         calls.append((handle.runtime_resource_name, handle.conversation_id, expected))
         identity = RuntimeConversationIdentity(
             handle.conversation_id,
