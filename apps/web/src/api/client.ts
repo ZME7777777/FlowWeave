@@ -628,6 +628,7 @@ export const api = {
   deleteDirectory: (id: string) => request<void>(`/node-directories/${encodeURIComponent(id)}`, json('DELETE')),
   cases: () => request<Case[]>('/cases'),
   createCase: (body: import('../types').CaseBasics) => request<Case>('/cases', json('POST', body)),
+  copyCase: (id: string) => request<Case & { copy_report?: { copied: Array<{ item: string; reason: string }>; skipped: Array<{ item: string; reason: string }> } }>(`/cases/${encodeURIComponent(id)}/copy`, json('POST')),
   updateCase: (id: string, body: import('../types').CaseBasics & { expected_row_version: number }) =>
     request<Case>(`/cases/${encodeURIComponent(id)}`, json('PUT', body)),
   uploadCaseMaterial: async (id: string, expectedRowVersion: number, file: File): Promise<Case> => {

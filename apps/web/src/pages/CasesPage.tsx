@@ -635,11 +635,17 @@ export function CasesPage({ onNavigate, sessionRoute }: { onNavigate: (path: str
     } catch (error) { setBatchNotice(`导入失败：${error instanceof Error ? error.message : String(error)}`); }
     finally { setBatchBusy(false); }
   };
-  const batchCopy = () => runBatch('批量复制', async item => {
-    const full = await api.case(item.id);
-    const created = await api.createCase({ name: `${full.name} 副本`.slice(0, 220), description: full.description ?? '', objective: full.objective, work_directory_id: full.work_directory_id ?? null, materials: (full.materials ?? []).filter(material => material.kind === 'LINK'), stages: full.stages.map(stage => ({ stage_key: stage.stage_key, name: stage.name, objective: stage.objective })) } as never);
-    replace(created);
-  });
+  const batchCopy = async () => {
+    const partial: string[] = [];
+    await runBatch('批量复制', async item => {
+      const created = await api.copyCase(item.id);
+      replace(created);
+      const skipped = created.copy_report?.skipped ?? [];
+      if (skipped.length) partial.push(`${item.name}：${skipped.map(entry => `${entry.item}（${entry.reason}）`).join('、')}`);
+    });
+    // A partial copy is still a created Case; say exactly what was not carried over.
+    if (partial.length) setBatchNotice(`已复制，但以下内容未带入，需手动配置 — ${partial.join('；')}`);
+  };
   const batchExport = async () => {
     setBatchBusy(true); setBatchNotice('');
     try {

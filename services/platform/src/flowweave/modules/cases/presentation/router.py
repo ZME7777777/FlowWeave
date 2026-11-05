@@ -62,6 +62,11 @@ async def create_case(payload: CaseCreateWrite, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.create_case(session, payload))
 
 
+@router.post("/cases/{case_id}/copy", status_code=201)
+async def copy_case(case_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(db, lambda session: service.copy_case(session, case_id))
+
+
 @router.put("/cases/{case_id}")
 async def update_case(case_id: str, payload: CaseUpdateWrite, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.update_case(session, case_id, payload))

@@ -585,6 +585,120 @@ def create_case(db: Session, payload: CaseCreateWrite) -> dict[str, Any]:
     return _case_dict(db, item)
 
 
+def copy_case(db: Session, case_id: str) -> dict[str, Any]:
+    """Create a new Case from a source Case's *configuration*, never its runtime.
+
+    Copied: name/description/objective, work directory, LINK and FILE materials (file bytes are
+    re-written into the new Case's own directory), every stage, each stage's reusable launch
+    template (as an independent copy - ``flow_run_id`` is unique per stage), and the Case Agent
+    session configuration (re-validated against what is available now).
+
+    Never copied: coordinator conversations/rounds, execution copies and their binding, decision
+    proposals, control plans, event inbox, pause/resume state, or the Case work directory
+    contents. Anything that cannot be carried over is reported in ``copy_report`` instead of
+    failing the whole copy or being silently dropped.
+    """
+
+    source = _case(db, case_id)
+    stages = list(
+        db.scalars(select(CaseStage).where(CaseStage.case_id == source.id).order_by(CaseStage.position))
+    )
+    workspace = agent_workspaces.ensure_default_agent_workspace(db)
+    report: dict[str, list[dict[str, str]]] = {"copied": [], "skipped": []}
+
+    item = Case(
+        name=f"{source.name} 副本"[:220],
+        description=source.description,
+        objective=source.objective,
+        work_directory_id=source.work_directory_id,
+        materials_json=[],
+    )
+    db.add(item)
+    db.flush()
+    directory = agent_workspaces.create_case_work_directory(
+        db, workspace.id, item.id, f"Case · {item.name[:120]} · {item.id[:8]}"
+    )
+    item.control_work_directory_id = str(directory["id"])
+
+    materials: list[dict[str, Any]] = []
+    for material in source.materials_json or []:
+        if material["kind"] == "LINK":
+            materials.append(dict(material))
+            continue
+        try:
+            content = agent_workspaces.read_case_material_file(
+                db, workspace.id, source.id, material["value"]
+            )
+            stored = agent_workspaces.write_case_material_file(
+                db, workspace.id, item.id, content
+            )
+            materials.append({"kind": "FILE", "name": material["name"], "value": stored})
+        except DomainError as exc:
+            report["skipped"].append(
+                {"item": f"资料 {material['name']}", "reason": exc.code}
+            )
+    item.materials_json = materials
+
+    for stage in stages:
+        copied_stage = CaseStage(
+            case_id=item.id,
+            stage_key=stage.stage_key,
+            name=stage.name,
+            objective=stage.objective,
+            position=stage.position,
+            state="ACTIVE" if stage.position == 0 else "PENDING",
+            execution_mode=stage.execution_mode,
+        )
+        db.add(copied_stage)
+        if not stage.flow_run_id:
+            continue
+        template = db.get(FlowRun, stage.flow_run_id)
+        if template is None:
+            report["skipped"].append({"item": f"「{stage.name}」的流程模板", "reason": "TEMPLATE_UNAVAILABLE"})
+            continue
+        try:
+            with savepoint(db):
+                if stage.execution_mode == "STEPWISE":
+                    if template.parent_flow_run_id is None:
+                        raise conflict("source stepwise template is not a record")
+                    clone = orchestration.copy_nested_stepwise_run_record(
+                        db,
+                        template.parent_flow_run_id,
+                        template.id,
+                        StepwiseRunRecordCopyWrite(name=f"{item.name} · {stage.name} 模板"[:220]),
+                    )
+                else:
+                    clone = orchestration.copy_automatic_run_draft(
+                        db,
+                        template.id,
+                        AutomaticRunCopyWrite(name=f"{item.name} · {stage.name} 模板"[:220]),
+                    )
+            copied_stage.flow_run_id = str(clone["id"])
+            report["copied"].append({"item": f"「{stage.name}」的流程模板", "reason": "COPIED"})
+        except DomainError as exc:
+            report["skipped"].append(
+                {"item": f"「{stage.name}」的流程模板", "reason": exc.code or "TEMPLATE_NOT_COPIED"}
+            )
+
+    if source.session_config_json:
+        try:
+            config = CaseControlConversationWrite.model_validate(source.session_config_json)
+            item.session_config_json = validate_case_session_config(db, config)
+            report["copied"].append({"item": "Case Agent 会话配置", "reason": "COPIED"})
+        except (DomainError, ValueError) as exc:
+            report["skipped"].append(
+                {
+                    "item": "Case Agent 会话配置",
+                    "reason": getattr(exc, "code", "SESSION_CONFIG_INVALID"),
+                }
+            )
+
+    item.state = "ACTIVE" if stages else "DRAFT"
+    write_case_files(db, item)
+    finish(db)
+    return {**_case_dict(db, item), "copy_report": report}
+
+
 def _editable_case(db: Session, case_id: str, expected_row_version: int) -> Case:
     item = db.scalar(select(Case).where(Case.id == case_id).with_for_update())
     if item is None:
