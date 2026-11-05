@@ -19,7 +19,7 @@ parent_profile = child_fixtures.parent_profile
 gateway_base_url = child_fixtures.gateway_base_url
 launcher_http = child_fixtures.launcher_http
 child_http = child_fixtures.child_http
-pytestmark = pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+pytestmark = pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 
 
 @pytest.fixture

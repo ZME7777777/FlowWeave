@@ -37,7 +37,8 @@ class EnvironmentVersion(Base):
     __table_args__ = (
         UniqueConstraint("environment_id", "version_no", name="uq_environment_version"),
         CheckConstraint(
-            "runtime_protocol_profile IN ('OH_FW_V1', 'OH_FW_V2', 'OH_FW_V3', 'OH_FW_V4')",
+            "runtime_protocol_profile IN ('OH_FW_V1', 'OH_FW_V2', 'OH_FW_V3', "
+            "'OH_FW_V4', 'OH_FW_V5')",
             name="ck_environment_version_runtime_protocol_profile",
         ),
     )

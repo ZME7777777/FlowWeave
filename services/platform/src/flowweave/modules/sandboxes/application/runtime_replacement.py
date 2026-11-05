@@ -582,7 +582,7 @@ def process_flow_run_runtime_replacement(
                 409,
             )
         if binding is not None and source_runtime is not None and source.state == "READY":
-            workspace_root = ""
+            workspace_root = binding.working_directory or ""
             if binding.node_attempt_id and binding.flow_run_id:
                 workspace_root = str(
                     node_attempt_workspace_context(
@@ -684,7 +684,7 @@ def process_flow_run_runtime_replacement(
             _require_task_lease(db, lease)
 
         if binding is not None:
-            workspace_root = ""
+            workspace_root = binding.working_directory or ""
             if binding.node_attempt_id and binding.flow_run_id:
                 workspace_root = str(
                     node_attempt_workspace_context(

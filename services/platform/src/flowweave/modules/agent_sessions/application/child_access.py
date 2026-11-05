@@ -36,7 +36,7 @@ class AuthorizedAccess:
 def verify(
     parent: child_launcher.AuthorizedParent, request: NativeQueryRequest | NativeCommandRequest
 ) -> NativeQueryInvocation | NativeCommandInvocation:
-    if parent.capability.profile != "OH_FW_V4":
+    if parent.capability.profile not in {"OH_FW_V4", "OH_FW_V5"}:
         raise denied()
     runtime = get_runtime()
     return (
@@ -66,7 +66,7 @@ def authorize(
         )
         if (
             fresh != parent
-            or fresh.capability.profile != "OH_FW_V4"
+            or fresh.capability.profile not in {"OH_FW_V4", "OH_FW_V5"}
             or claim.policy != fresh.capability.policy
             or claim.audience != audience
         ):

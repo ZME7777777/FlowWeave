@@ -95,7 +95,7 @@ def family(
             "AGENT_CHILDREN_DELETE_REQUIRED", "历史子关联需要显式清理，无法自动删除", 409
         )
     frozen = read_parent_capability(parent)
-    if frozen.profile != "OH_FW_V4":
+    if frozen.profile not in {"OH_FW_V4", "OH_FW_V5"}:
         raise _conflict()
     host = AgentSessionHostContext.create(
         host_kind=parent.host_kind,
@@ -168,7 +168,7 @@ def request(db: Session, parent: AgentConversationBinding) -> dict[str, Any] | N
 
 def _route(db: Session, parent: AgentConversationBinding) -> DeleteRoute:
     frozen = read_parent_capability(parent)
-    if frozen.profile != "OH_FW_V4":
+    if frozen.profile not in {"OH_FW_V4", "OH_FW_V5"}:
         raise _conflict()
     if parent.host_kind == "AGENT_WORKSPACE":
         from flowweave.modules.agent_sessions.application import conversations
@@ -185,7 +185,7 @@ def _route(db: Session, parent: AgentConversationBinding) -> DeleteRoute:
         session = db.get(FlowRunRuntime, parent.runtime_session_id, populate_existing=True)
         if (
             connection.runtime_session_id != parent.runtime_session_id
-            or connection.protocol_profile.value != "OH_FW_V4"
+            or connection.protocol_profile.value != frozen.profile
         ):
             raise _conflict()
         handle = RuntimeHandle(
@@ -194,7 +194,7 @@ def _route(db: Session, parent: AgentConversationBinding) -> DeleteRoute:
             runtime_resource_id=connection.managed_runtime_id,
             runtime_resource_name=connection.resource_name,
             workspace_root=frozen.working_directory,
-            protocol_profile="OH_FW_V4",
+            protocol_profile=frozen.profile,
         )
         if session is None or connection.generation != session.active_generation:
             raise _conflict()

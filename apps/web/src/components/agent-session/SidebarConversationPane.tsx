@@ -390,9 +390,9 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
     });
   }, [persistDraft]);
   return <SideConversationSurface label="侧边聊天" loading={Boolean(bindingId && hydrationQuery.loading)}
-    conversation={bindingId ? {
+    conversation={bindingId || events.length ? {
       historyPrepend: hydrationQuery.historyPrepend, onHistoryAnchorCaptured: hydrationQuery.onHistoryAnchorCaptured, onHistoryAnchorRestored: hydrationQuery.onHistoryAnchorRestored,
-      events, isGenerating: running || sending, isPaused: paused, conversationScope: bindingId,
+      events, isGenerating: running || sending, isPaused: paused, conversationScope: bindingId ?? draftConversationId,
       requestSubmitting: sending, condensationPending: condensing,
       onOpenAttachment: attachment => onPreviewAttachment(attachment, bindingId),
       onOpenConversationReference, taskControl: hydrationQuery.data?.events.task_control,

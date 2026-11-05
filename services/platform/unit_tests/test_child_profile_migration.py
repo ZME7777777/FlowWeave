@@ -16,6 +16,11 @@ from testcontainers.postgres import PostgresContainer
     [
         ("0175_add_oh_fw_v3_protocol_profile", ("OH_FW_V1", "OH_FW_V2"), "OH_FW_V3"),
         ("0178_add_oh_fw_v4_protocol_profile", ("OH_FW_V1", "OH_FW_V2", "OH_FW_V3"), "OH_FW_V4"),
+        (
+            "0202_add_oh_fw_v5_protocol_profile",
+            ("OH_FW_V1", "OH_FW_V2", "OH_FW_V3", "OH_FW_V4"),
+            "OH_FW_V5",
+        ),
     ],
 )
 def test_child_profile_migration_preserves_old_profiles_and_refuses_lossy_downgrade(

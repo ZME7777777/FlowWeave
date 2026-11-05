@@ -1289,7 +1289,10 @@ def conversation_activity(
         if item.id in waiting_user_input_binding_ids:
             _mirror_case_control_waiting(db, item)
     activity_binding_ids = (
-        running_binding_ids | set(condensing_binding_ids) | child_activity_parent_ids | set(waiting_user_input_binding_ids)
+        running_binding_ids
+        | set(condensing_binding_ids)
+        | child_activity_parent_ids
+        | set(waiting_user_input_binding_ids)
     )
     activity_bindings = [
         item for item in bindings if item.id in activity_binding_ids or item.unread
@@ -1933,7 +1936,7 @@ def _create_native_conversation(
         V3_PACKAGE_VERSION,
         V3_SOURCE_COMMIT,
     )
-    from flowweave.runtime.child_governance_contract import V4_PACKAGE_VERSION, V4_SOURCE_COMMIT
+    from flowweave.runtime.child_governance_contract import GOVERNED_CHILD_SOURCES
     from flowweave.runtime.protocol_profiles import child_manifest_for_protocol_profile
     from flowweave.shared.domain.openhands import OpenHandsServerIdentity
 
@@ -1943,8 +1946,9 @@ def _create_native_conversation(
         if allow_child_capability
         else "OH_FW_V1"
     )
-    parent_source = V4_SOURCE_COMMIT if profile == "OH_FW_V4" else V3_SOURCE_COMMIT
-    parent_version = V4_PACKAGE_VERSION if profile == "OH_FW_V4" else V3_PACKAGE_VERSION
+    parent_source, _, parent_version = GOVERNED_CHILD_SOURCES.get(
+        profile, (V3_SOURCE_COMMIT, "", V3_PACKAGE_VERSION)
+    )
     parent_identity = OpenHandsServerIdentity(parent_version, parent_source, parent_source)
     agent_spec = build_agent_spec(
         config,
@@ -1955,10 +1959,12 @@ def _create_native_conversation(
         runtime_root=runtime_root,
         system_message_suffix_append=system_message_suffix_append,
         protocol_profile=profile,
-        runtime_server_identity=(parent_identity if profile in {"OH_FW_V3", "OH_FW_V4"} else None),
+        runtime_server_identity=(
+            parent_identity if profile in {"OH_FW_V3", "OH_FW_V4", "OH_FW_V5"} else None
+        ),
         ask_user=ask_user,
     )
-    if profile in {"OH_FW_V3", "OH_FW_V4"}:
+    if profile in {"OH_FW_V3", "OH_FW_V4", "OH_FW_V5"}:
         agent_spec = attach_parent_capability(
             db,
             binding,
@@ -2019,7 +2025,7 @@ def _create_native_conversation(
         conversation_secrets=conversation_secrets,
     )
     request = mcp_authentication.prepare_request(db, request, f"conversation:{binding.id}")
-    if profile == "OH_FW_V4":
+    if profile in {"OH_FW_V4", "OH_FW_V5"}:
         # The native parent's first Tool can arrive before bootstrap is ACTIVE.
         # Its immutable authority must already be independently readable.
         db.commit()
@@ -2864,7 +2870,7 @@ def bootstrap_conversation(
         return _activate_bootstrapped_goal(db, binding, command, normalized_goal_objective)
     try:
         _ensure_history_references(db, workspace, binding, source_references)
-        if handle.protocol_profile == "OH_FW_V4":
+        if handle.protocol_profile in {"OH_FW_V4", "OH_FW_V5"}:
             db.commit()
         delivered = get_runtime().send_message(handle, prompt, image_urls)
     except DomainError as exc:
@@ -3724,8 +3730,9 @@ def _open_question_binding_ids(
 ) -> dict[str, str]:
     """Binding id -> action id of the latest ask_user with no user reply yet (bounded, best effort).
 
-    ask_user parks the run in waiting_for_user_input (ready for input); the fact is read from the formal
-    events. Only recently active, non-running conversations are probed to keep this poll cheap.
+    ask_user parks the run in waiting_for_user_input (ready for input).
+    The fact is read from the formal events. Only recently active, non-running
+    conversations are probed to keep this poll cheap.
     """
 
     candidates = [
@@ -3760,7 +3767,7 @@ def _mirror_case_control_waiting(db: Session, binding: AgentConversationBinding)
 def _mirror_case_control_reply(
     db: Session, binding: AgentConversationBinding, reply_event_id: str | None
 ) -> None:
-    """A user reply in a Case control conversation also resumes a WAITING_HUMAN (open ask_user) pause."""
+    """A Case control reply also resumes its WAITING_HUMAN ask_user pause."""
 
     from flowweave.modules.cases.public import note_case_control_reply
 
@@ -4412,9 +4419,7 @@ def _resolve_message_references(
                     "子结果引用需要正式回复事件",
                     422,
                 )
-            locator = child_sessions.parent_reference_locator(
-                db, target, source_binding_id.strip()
-            )
+            locator = child_sessions.parent_reference_locator(db, target, source_binding_id.strip())
             result = child_sessions.result_reference(locator, source_event_id.strip())
             resolved.append(
                 {

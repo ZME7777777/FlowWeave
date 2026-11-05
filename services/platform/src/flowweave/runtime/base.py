@@ -526,6 +526,7 @@ class RuntimeHandle:
             "OH_FW_V2",
             "OH_FW_V3",
             "OH_FW_V4",
+            "OH_FW_V5",
         }:
             object.__setattr__(self, "llm_timeout_policy", FLOWWEAVE_LLM_TIMEOUT_POLICY)
 
@@ -838,7 +839,10 @@ class RuntimePort(Protocol):
     ) -> NativeCommandResult: ...
 
     def send_child_message(
-        self, handle: RuntimeHandle, submission_id: UUID, content: str,
+        self,
+        handle: RuntimeHandle,
+        submission_id: UUID,
+        content: str,
         image_urls: tuple[str, ...] = (),
     ) -> str: ...
 

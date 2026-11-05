@@ -212,7 +212,7 @@ def child_http(launcher_http, monkeypatch):
     )
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 def test_child_message_retry_attachment_and_read_are_child_scoped(child_http):
     x = child_http
     upload = x.client.post(
@@ -237,7 +237,7 @@ def test_child_message_retry_attachment_and_read_are_child_scoped(child_http):
     assert x.client.get(x.root).status_code == 200
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 @pytest.mark.parametrize("operation", ["interrupt", "resume", "condense"])
 def test_child_controls_only_target_native_child(child_http, operation):
     x = child_http
@@ -250,7 +250,7 @@ def test_child_controls_only_target_native_child(child_http, operation):
     assert not x.submissions
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 @pytest.mark.parametrize(
     "target", ["user", "parent", "workspace", "generation", "pending", "native"]
 )
@@ -291,7 +291,7 @@ def test_child_surface_fails_closed_on_scope_and_gate_changes(child_http, target
     assert not x.submissions
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 def test_child_private_uploads_cannot_be_forged_or_shared(child_http):
     x = child_http
     foreign = f"{x.loc.handle.workspace_root}/uploads/{x.loc.parent_id}-{uuid4().hex}--file.txt"
@@ -310,7 +310,7 @@ def test_child_private_uploads_cannot_be_forged_or_shared(child_http):
     assert not x.submissions
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 @pytest.mark.parametrize("operation", ["list", "read", "wait", "send", "interrupt"])
 def test_parent_native_proof_query_and_command_gateway(child_http, operation):
     x = child_http
@@ -340,7 +340,7 @@ def test_parent_native_proof_query_and_command_gateway(child_http, operation):
     )
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 def test_child_result_reference_uses_formal_event_and_parent_only(child_http):
     x = child_http
     x.events[(x.loc.handle.conversation_id, "assistant-result")] = RuntimeEvent(
@@ -358,7 +358,7 @@ def test_child_result_reference_uses_formal_event_and_parent_only(child_http):
         assert loc == x.loc
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 def test_child_send_lost_ack_and_post_send_revocation_do_not_erase_native_submission(
     child_http, monkeypatch
 ):
@@ -394,7 +394,7 @@ def test_child_send_lost_ack_and_post_send_revocation_do_not_erase_native_submis
     assert len(x.submissions) == 2
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 @pytest.mark.parametrize("reason", ["busy", "capacity"])
 def test_child_native_send_refusal_does_not_enqueue_platform_message(
     child_http, monkeypatch, reason
@@ -412,7 +412,7 @@ def test_child_native_send_refusal_does_not_enqueue_platform_message(
     assert not x.submissions
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 @pytest.mark.parametrize("drift", ["audience", "policy", "target", "revoked-after-verify"])
 def test_parent_callback_rechecks_scope_after_native_verification(child_http, monkeypatch, drift):
     x = child_http
@@ -448,7 +448,7 @@ def test_parent_callback_rechecks_scope_after_native_verification(child_http, mo
     assert not calls
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 def test_child_model_only_updates_child_and_stays_inside_owner_provider_policy(
     child_http, monkeypatch
 ):
@@ -482,7 +482,7 @@ def test_child_model_only_updates_child_and_stays_inside_owner_provider_policy(
     assert x.controls == [(x.loc.handle.conversation_id, "test-model")]
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 def test_child_credential_sync_resolves_owner_secrets_and_records_only_on_success(
     child_http, monkeypatch
 ):
@@ -522,7 +522,7 @@ def test_child_credential_sync_resolves_owner_secrets_and_records_only_on_succes
     assert missing.status_code == 404 and len(calls) == 1
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 @pytest.mark.parametrize("parent_graph", ["FLOW_NODE"], indirect=True)
 def test_cancelled_flow_node_child_remains_readable_and_cannot_resume(child_http):
     x = child_http
@@ -534,7 +534,7 @@ def test_cancelled_flow_node_child_remains_readable_and_cannot_resume(child_http
     assert not x.controls
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 def test_child_condensation_reuses_durable_task_and_worker_child_authorization(
     child_http, monkeypatch
 ):
@@ -553,7 +553,7 @@ def test_child_condensation_reuses_durable_task_and_worker_child_authorization(
     assert not x.submissions
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 def test_child_results_are_resolved_for_parent_transport_and_reject_sibling_target(
     child_http, monkeypatch
 ):
@@ -606,7 +606,7 @@ def test_child_results_are_resolved_for_parent_transport_and_reject_sibling_targ
             child_sessions.parent_reference_locator(x.g.db, parent, str(uuid4()))
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 def test_child_confirmation_uses_native_digest_and_never_sends_a_user_message(
     child_http, monkeypatch
 ):
@@ -650,7 +650,7 @@ def test_child_confirmation_uses_native_digest_and_never_sends_a_user_message(
     assert not x.submissions
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 def test_child_condensation_pending_is_separate_from_native_running(child_http):
     x = child_http
     response = x.client.post(
@@ -665,7 +665,7 @@ def test_child_condensation_pending_is_separate_from_native_running(child_http):
     assert not x.controls and not x.submissions
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 @pytest.mark.parametrize("parent_graph", ["AGENT_WORKSPACE"], indirect=True)
 def test_child_user_surface_rejects_physical_image_drift(child_http):
     from flowweave.shared.models import ManagedSandbox
@@ -681,7 +681,7 @@ def test_child_user_surface_rejects_physical_image_drift(child_http):
     assert response.status_code == 404 and not x.submissions
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 def test_child_workspace_and_annotation_context_use_authorized_sources(child_http):
     x = child_http
     event_id = str(uuid4())
@@ -724,7 +724,7 @@ def test_child_workspace_and_annotation_context_use_authorized_sources(child_htt
     assert annotations[0]["comment"] == "review this selection"
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 @pytest.mark.parametrize(
     "invalid",
     ["sibling", "missing", "mismatched", "tool", "empty", "uuid", "workspace", "private-upload"],

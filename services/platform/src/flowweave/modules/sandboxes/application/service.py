@@ -91,8 +91,9 @@ def _has_governed_parent(db: Session, runtime_session_id: str) -> bool:
                 select(AgentConversationBinding.id)
                 .where(
                     AgentConversationBinding.runtime_session_id == runtime_session_id,
-                    AgentConversationBinding.child_parent_manifest_json["profile"].as_string()
-                    == "OH_FW_V4",
+                    AgentConversationBinding.child_parent_manifest_json["profile"]
+                    .as_string()
+                    .in_(("OH_FW_V4", "OH_FW_V5")),
                 )
                 .limit(1)
             )

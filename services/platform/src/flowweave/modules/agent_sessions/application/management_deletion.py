@@ -106,7 +106,8 @@ def start(
         db.scalars(
             select(AgentConversationBinding.id).where(
                 AgentConversationBinding.workspace_id == workspace_id,
-                AgentConversationBinding.lifecycle == "ACTIVE",
+                AgentConversationBinding.lifecycle.in_(("ACTIVE", "DELETE_PENDING")),
+                conversations.ordinary_conversation_clause(),
                 ~AgentConversationBinding.id.in_(
                     select(AgentSidebarConversation.sidebar_binding_id)
                 ),
@@ -148,6 +149,7 @@ def process(db: Session, workspace_id: str, lease: Lease) -> None:
     completed = set(payload.get("deleted_ids", [])) | {
         item["id"] for item in payload.get("skipped", [])
     }
+    pending = set(payload.get("pending_ids", []))
     for binding_id in payload["binding_ids"]:
         if binding_id in completed:
             continue
@@ -157,13 +159,24 @@ def process(db: Session, workspace_id: str, lease: Lease) -> None:
             with savepoint(db):
                 # Re-authorize the exact saved user/directory selection for
                 # every item; this also checks native readiness before delete.
-                result = conversations.delete_management_conversations(
-                    db,
-                    workspace_id,
-                    (binding_id,),
-                    f"batch-job:{lease.task_id}",
-                    work_directory_id=payload.get("work_directory_id"),
-                )
+                if (
+                    binding_id in pending
+                    and db.scalar(
+                        select(AgentConversationBinding.id).where(
+                            AgentConversationBinding.id == binding_id
+                        )
+                    )
+                    is None
+                ):
+                    result = {"deleted_ids": [binding_id], "pending_ids": [], "skipped": []}
+                else:
+                    result = conversations.delete_management_conversations(
+                        db,
+                        workspace_id,
+                        (binding_id,),
+                        f"batch-job:{lease.task_id}",
+                        work_directory_id=payload.get("work_directory_id"),
+                    )
                 # The legacy synchronous helper returns domain failures as
                 # skips. Transient failures must retry without committing a
                 # DELETE_PENDING locator or losing prior checkpoints.
@@ -179,8 +192,11 @@ def process(db: Session, workspace_id: str, lease: Lease) -> None:
         except BaseException:
             db.rollback()
             raise
+        pending.discard(binding_id)
+        pending.update(result.get("pending_ids", []))
         payload = {
             **payload,
+            "pending_ids": sorted(pending),
             "deleted_ids": [*payload.get("deleted_ids", []), *result["deleted_ids"]],
             "skipped": [*payload.get("skipped", []), *result["skipped"]],
         }
@@ -203,4 +219,8 @@ def process(db: Session, workspace_id: str, lease: Lease) -> None:
         # Worker restart resumes the remainder with the same stable item key.
         db.commit()
         run_commit_actions(db)
+        if binding_id in pending:
+            raise DomainError(
+                "AGENT_DELETION_FAMILY_PENDING", "父子会话正在后台清理，完成后继续删除", 503
+            )
         completed.add(binding_id)

@@ -99,7 +99,7 @@ def read_creation(
     parent: child_launcher.AuthorizedParent, request: NativeChildLaunchRequest
 ) -> VerifiedCreation | NativeChildInvocation:
     verified = child_launcher.verify_launcher(parent, request)
-    if parent.capability.profile != "OH_FW_V4":
+    if parent.capability.profile not in {"OH_FW_V4", "OH_FW_V5"}:
         # Preserve the older authorization boundary and its explicit product gate.
         if not isinstance(verified, NativeChildInvocation):
             raise child_contract_error()

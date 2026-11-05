@@ -133,7 +133,7 @@ async function chooseChild(page: Page, childId: string) {
 for (const host of ['workspace', 'node'] as const) {
   test(`child card opens independent titled side tabs and closes only views (${host})`, async ({ page }) => {
     const state = await openParent(page, host);
-    const parent = page.locator(`[data-conversation-binding-id="${parentId}"]`);
+    const parent = page.locator(`[data-conversation-binding-id="${parentId}"]:visible`);
     await expect(parent.getByRole('img', { name: '会话正在运行', exact: true })).toHaveCount(0);
     await expect(parent).toContainText('子会话 · 1 个运行中');
     await chooseChild(page, children[0].id);
@@ -147,9 +147,9 @@ for (const host of ['workspace', 'node'] as const) {
     const heights = await page.locator('.agent-child-conversation-panel.active').evaluate(element => ({ pane: element.clientHeight, body: element.parentElement!.clientHeight }));
     expect(heights.pane).toBeGreaterThan(heights.body - 4);
     await page.screenshot({ path: test.info().outputPath('child-tabs.png') });
-    await page.locator(`[data-conversation-binding-id="${otherParentId}"] .agent-workspace-conversation-select`).click();
+    await page.locator(`[data-conversation-binding-id="${otherParentId}"] .agent-workspace-conversation-select:visible`).click();
     await expect(page.getByRole('region', { name: `子会话 ${children[1].display_title}` })).toHaveCount(0);
-    await page.locator(`[data-conversation-binding-id="${parentId}"] .agent-workspace-conversation-select`).click();
+    await page.locator(`[data-conversation-binding-id="${parentId}"] .agent-workspace-conversation-select:visible`).click();
     await expect(page.getByRole('region', { name: `子会话 ${children[1].display_title}` })).toBeVisible();
     expect(state.unread.has(children[2].id)).toBe(true);
     const tabs = page.getByRole('navigation', { name: '工作区页签' });
@@ -219,8 +219,8 @@ for (const host of ['workspace', 'node'] as const) {
     await expect(preview.getByRole('button', { name: '在文件标签页打开' })).toHaveCount(0);
     await preview.getByRole('button', { name: '关闭文件预览' }).click();
     expect(state.requests.some(path => path.includes(`/agent-session-children/${parentId}/${children[0].id}/file?`))).toBe(true);
-    await page.locator(`[data-conversation-binding-id="${otherParentId}"] .agent-workspace-conversation-select`).click();
-    await page.locator(`[data-conversation-binding-id="${parentId}"] .agent-workspace-conversation-select`).click();
+    await page.locator(`[data-conversation-binding-id="${otherParentId}"] .agent-workspace-conversation-select:visible`).click();
+    await page.locator(`[data-conversation-binding-id="${parentId}"] .agent-workspace-conversation-select:visible`).click();
     await expect(input).toHaveValue('第一个子会话的草稿');
     await tabs.getByRole('button', { name: `关闭${children[0].display_title}页签` }).click();
     await chooseChild(page, children[0].id);
@@ -330,8 +330,7 @@ for (const host of ['workspace', 'node'] as const) {
     const pane = page.locator('.agent-child-conversation-panel');
     await expect(page.getByRole('textbox', { name: '发送子会话消息' })).toBeEditable();
     await pane.getByRole('button', { name: /打开模型与推理设置/ }).click();
-    await page.getByRole('button', { name: '模型 child-model', exact: true }).click();
-    await page.getByRole('button', { name: 'child-model-two', exact: true }).click();
+    await page.getByRole('option', { name: '模型 child-model-two', exact: true }).click();
     await expect.poll(() => state.childWrites.filter(write => write.action === 'model').length).toBe(1);
     expect(state.childWrites[0].payload.model_name).toBe('child-model-two');
     await pane.getByRole('button', { name: '子会话配置', exact: true }).click();
@@ -394,7 +393,7 @@ for (const host of ['workspace', 'node'] as const) {
       document.dispatchEvent(new Event('selectionchange'));
     });
     await pane.locator('.conversation-surface').dispatchEvent('pointerup', { pointerType: 'mouse', button: 0 });
-    await pane.getByRole('button', { name: '添加到会话', exact: true }).click();
+    await page.getByRole('button', { name: '添加到会话', exact: true }).click();
     await pane.getByRole('textbox', { name: '子会话注释', exact: true }).fill('核对这个结果');
     const transfer = await page.evaluateHandle(() => {
       const data = new DataTransfer();
@@ -437,12 +436,12 @@ test('late child quote preserves original parent draft and foreground completion
   await page.getByRole('textbox', { name: '发送 Agent 消息' }).fill('原父草稿');
   await pane.getByRole('button', { name: '引用到父会话' }).click();
   await expect.poll(() => release).toBeTruthy();
-  await page.locator(`[data-conversation-binding-id="${otherParentId}"] .agent-workspace-conversation-select`).click();
+  await page.locator(`[data-conversation-binding-id="${otherParentId}"] .agent-workspace-conversation-select:visible`).click();
   await page.getByRole('textbox', { name: '发送 Agent 消息' }).fill('另一个父草稿');
   release!();
   await expect(page.getByRole('button', { name: '原父会话的正式结果', exact: true })).toHaveCount(0);
   await expect(page.getByRole('textbox', { name: '发送 Agent 消息' })).toHaveValue('另一个父草稿');
-  await page.locator(`[data-conversation-binding-id="${parentId}"] .agent-workspace-conversation-select`).click();
+  await page.locator(`[data-conversation-binding-id="${parentId}"] .agent-workspace-conversation-select:visible`).click();
   await expect(page.getByRole('textbox', { name: '发送 Agent 消息' })).toHaveValue('原父草稿');
   await expect(page.getByRole('button', { name: '原父会话的正式结果', exact: true })).toBeVisible();
   expect(state.messages).toHaveLength(0);
@@ -450,8 +449,12 @@ test('late child quote preserves original parent draft and foreground completion
 
 test('child history prepend and sibling return preserve the independent reading position', async ({ page }) => {
   const state = await openParent(page, 'workspace');
-  const event = (prefix: string, index: number) => ({ id: `${prefix}-${index}`, event_type: 'MESSAGE', payload: { parent_id: index > 0 ? `${prefix}-${index - 1}` : prefix === 'recent' ? 'older-19' : undefined, source: 'agent', content: `${prefix} ${index}\n\n${'较长的正式消息内容用于验证阅读位置。'.repeat(30)}`, final_reply: true } });
-  const recent = Array.from({ length: 20 }, (_, index) => event('recent', index));
+  const event = (prefix: string, index: number) => ({ id: `${prefix}-${index}`, event_type: 'MESSAGE', payload: { parent_id: `${prefix}-user-${index}`, source: 'agent', content: `${prefix} ${index}\n\n${'较长的正式消息内容用于验证阅读位置。'.repeat(30)}`, final_reply: true } });
+  const messages = (prefix: string) => Array.from({ length: 20 }, (_, index) => [
+    { id: `${prefix}-user-${index}`, event_type: 'MESSAGE', payload: { source: 'user', parent_id: index > 0 ? `${prefix}-${index - 1}` : prefix === 'recent' ? 'older-19' : '__root__', content: `${prefix} task ${index}` } },
+    event(prefix, index),
+  ]).flat();
+  const recent = messages('recent');
   let release: (() => void) | undefined;
   let historyCalls = 0;
   let latestCalls = 0;
@@ -459,7 +462,7 @@ test('child history prepend and sibling return preserve the independent reading 
   await page.route(`**/agent-session-children/${parentId}/${children[0].id}/events*`, async route => {
     historyCalls += 1;
     await new Promise<void>(resolve => { release = resolve; });
-    await json(route, { events: Array.from({ length: 20 }, (_, index) => event('older', index)), next_cursor: 'recent-19', history_cursor: null });
+    await json(route, { events: messages('older'), next_cursor: 'recent-19', history_cursor: null });
   });
   await chooseChild(page, children[0].id);
   const pane = page.locator('.agent-child-conversation-panel');
@@ -470,13 +473,13 @@ test('child history prepend and sibling return preserve the independent reading 
   const relativeTop = () => pane.locator('[data-event-id="recent-2"]').evaluate(element => element.getBoundingClientRect().top - element.closest('.conversation-surface')!.getBoundingClientRect().top);
   const before = await relativeTop();
   release!();
-  await expect(pane.locator('[data-event-id="older-0"]')).toHaveCount(1);
+  await expect(pane.locator('[data-event-id="older-19"]')).toHaveCount(1);
   await expect.poll(relativeTop).toBeCloseTo(before, 0);
   const scrollTop = await surface.evaluate(element => element.scrollTop);
   await chooseChild(page, children[1].id);
   await expect(page.getByRole('region', { name: `子会话 ${children[1].display_title}` })).toContainText('正式独立历史');
   await page.getByRole('navigation', { name: '工作区页签' }).getByRole('button', { name: children[0].display_title, exact: true }).click();
-  await expect(pane.locator('[data-event-id="recent-19"]')).toHaveCount(1);
+  await expect(pane.locator('[data-event-id="recent-2"]')).toHaveCount(1);
   await expect.poll(() => surface.evaluate(element => element.scrollTop)).toBeCloseTo(scrollTop, 0);
   state.signal(children[0].id);
   await expect.poll(() => latestCalls).toBeGreaterThan(2);
@@ -501,6 +504,7 @@ for (const host of ['workspace', 'node'] as const) {
         if (deleteCalls === 1) await new Promise<void>(resolve => { release = resolve; });
         deleting = true;
         deletionState = 'PENDING';
+        Object.assign(state.parents[0], { lifecycle: 'DELETE_PENDING', write_available: false, deletion: deletion() });
         return json(route, { parent_binding_id: parentId, ...deletion() }, 202);
       }
       if (deleted) return json(route, { error: { code: 'AGENT_CONVERSATION_NOT_FOUND', message: 'not found' } }, 404);
@@ -509,14 +513,14 @@ for (const host of ['workspace', 'node'] as const) {
     });
     await chooseChild(page, children[0].id);
     await expect(page.getByRole('textbox', { name: '发送子会话消息' })).toBeEditable();
-    await page.locator(`[data-conversation-binding-id="${parentId}"]`).hover();
-    await page.getByRole('button', { name: '删除会话 父会话', exact: true }).click();
+    await page.locator(`[data-conversation-binding-id="${parentId}"]:visible`).click({ button: 'right' });
+    await page.getByRole('menuitem', { name: '删除', exact: true }).click();
     const dialog = page.getByRole('alertdialog');
     await expect(dialog).toContainText('同时清理 8 个关联子会话');
     await expect(dialog).toContainText(children[0].id);
     await dialog.getByRole('button', { name: '确认删除' }).click();
     await expect.poll(() => release).toBeTruthy();
-    await expect(page.locator(`[data-conversation-binding-id="${parentId}"]`)).toBeVisible();
+    await expect(page.locator(`[data-conversation-binding-id="${parentId}"]:visible`)).toBeVisible();
     await expect(page).toHaveURL(`${state.root}/${parentId}`);
     release!();
     const progress = page.getByRole('status', { name: '父子会话删除进度' });
@@ -524,7 +528,7 @@ for (const host of ['workspace', 'node'] as const) {
     await expect(progress.getByRole('list', { name: '关联子会话清单' }).getByRole('listitem')).toHaveCount(8);
     await expect(page.getByRole('textbox', { name: '发送子会话消息' })).toBeDisabled();
     await expect(page.getByRole('textbox', { name: '发送 Agent 消息' })).toHaveCount(0);
-    await expect(page.locator(`[data-conversation-binding-id="${parentId}"]`)).toContainText('正在删除父子会话');
+    await expect(page.locator(`[data-conversation-binding-id="${parentId}"]:visible`)).toContainText('正在删除父子会话');
     await page.getByRole('button', { name: /查看活动会话/ }).click();
     await expect(page.getByRole('region', { name: '活动会话', exact: true })).toContainText('正在删除父子会话');
     await page.getByRole('button', { name: '返回工作区列表' }).click();
@@ -545,10 +549,10 @@ for (const host of ['workspace', 'node'] as const) {
     completed = 2;
     await expect(progress).toContainText('已确认清理 2 / 8 个子会话');
     await page.screenshot({ path: test.info().outputPath('family-deletion.png') });
-    await page.locator(`[data-conversation-binding-id="${otherParentId}"] .agent-workspace-conversation-select`).click();
+    await page.locator(`[data-conversation-binding-id="${otherParentId}"] .agent-workspace-conversation-select:visible`).click();
     await expect(page).toHaveURL(`${state.root}/${otherParentId}`);
     deleted = true;
-    await expect(page.locator(`[data-conversation-binding-id="${parentId}"]`)).toHaveCount(0);
+    await expect(page.locator(`[data-conversation-binding-id="${parentId}"]:visible`)).toHaveCount(0);
     await expect(page).toHaveURL(`${state.root}/${otherParentId}`);
     expect(state.messages).toHaveLength(0);
   });

@@ -48,7 +48,7 @@ parent_profile = child_fixtures.parent_profile
 gateway_base_url = child_fixtures.gateway_base_url
 launcher_http = child_fixtures.launcher_http
 child_http = child_fixtures.child_http
-pytestmark = pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+pytestmark = pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 
 
 @pytest.fixture
@@ -128,7 +128,7 @@ def activate_second_generation(a, monkeypatch, *, state="READY"):
         fence_token=str(uuid4()),
     )
     if x.g.kind == "FLOW_NODE":
-        values["protocol_profile"] = "OH_FW_V4"
+        values["protocol_profile"] = x.g.profile
         monkeypatch.setattr(
             child_launcher.sandboxes,
             "active_node_runtime_connection",
@@ -137,7 +137,7 @@ def activate_second_generation(a, monkeypatch, *, state="READY"):
                 generation=2,
                 resource_name=resource.backend_resource_name,
                 managed_runtime_id=resource.id,
-                protocol_profile=SimpleNamespace(value="OH_FW_V4"),
+                protocol_profile=SimpleNamespace(value=x.g.profile),
             ),
         )
     generation = gen_cls(**values)
@@ -265,7 +265,7 @@ def test_usage_worker_resolves_child_profile_through_its_authorized_parent(recov
     resource, _ = activate_second_generation(a, monkeypatch)
     with tenant_bypass(), tenant_user(a.x.g.other):
         handle = usage_reconciliation.resolve_handle(a.x.g.db, a.x.loc.binding_id)
-    assert handle.protocol_profile == "OH_FW_V4"
+    assert handle.protocol_profile == a.x.g.profile
     assert handle.runtime_resource_name == resource.backend_resource_name
     assert handle.conversation_id == a.x.loc.handle.conversation_id
 
@@ -370,6 +370,7 @@ def pipeline(recovery, monkeypatch, tmp_path, request):
                     "probe",
                     conversation_id,
                     runtime_resource_name=resource_name,
+                    workspace_root=workspace_root,
                     protocol_profile=protocol_profile,
                 ),
                 expected=expected,
@@ -388,7 +389,7 @@ def pipeline(recovery, monkeypatch, tmp_path, request):
         fence_token=str(uuid4()),
     )
     if not workspace:
-        values["protocol_profile"] = "OH_FW_V4"
+        values["protocol_profile"] = x.g.profile
     db.add(gen_type(**values))
     db.commit()
     state = SimpleNamespace(ensured=[], drained=[], deleted=[], checking=True)
@@ -674,7 +675,7 @@ def test_attempt_access_queues_same_replacement_and_does_not_activate_before_pro
                 environment_version_id=environment_version_id,
                 environment_version_no=1,
                 runtime_server_identity=x.g.identity,
-                runtime_protocol_profile="OH_FW_V4",
+                runtime_protocol_profile=x.g.profile,
             )
         assert pending.value.code == "RUNTIME_SESSION_NOT_ACTIVE"
         db.rollback()

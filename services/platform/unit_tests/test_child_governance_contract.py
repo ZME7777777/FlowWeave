@@ -36,7 +36,6 @@ from flowweave.runtime.protocol_profiles import (
     runtime_contract_for_protocol_profile,
 )
 from flowweave.shared.domain.openhands import (
-    CURRENT_OPENHANDS_SERVER_IDENTITY,
     OpenHandsServerIdentity,
 )
 from flowweave.shared.errors import DomainError
@@ -99,7 +98,9 @@ def test_v4_adds_governance_without_reinterpreting_v3():
         require_governed_child_capability_manifest(old_manifest)
     old_contract = runtime_contract_for_protocol_profile("OH_FW_V3", ("terminal",), v3_identity)
     contract = runtime_contract_for_protocol_profile(
-        "OH_FW_V4", ("terminal",), CURRENT_OPENHANDS_SERVER_IDENTITY
+        "OH_FW_V4",
+        ("terminal",),
+        OpenHandsServerIdentity("1.58.2", V4_SOURCE_COMMIT, V4_SOURCE_COMMIT),
     )
     assert contract.schema_version == 7 and old_contract.schema_version == 6
     assert set(V4_CHILD_HTTP_OPERATIONS) <= set(contract.required_http_operations)
@@ -121,7 +122,7 @@ def test_v4_adds_governance_without_reinterpreting_v3():
     )
     for profile, identity in (
         ("OH_FW_V4", v3_identity),
-        ("OH_FW_V3", CURRENT_OPENHANDS_SERVER_IDENTITY),
+        ("OH_FW_V3", OpenHandsServerIdentity("1.58.2", V4_SOURCE_COMMIT, V4_SOURCE_COMMIT)),
     ):
         with pytest.raises(DomainError):
             runtime_contract_for_protocol_profile(profile, ("terminal",), identity)
@@ -180,7 +181,9 @@ def test_v4_environment_refuses_missing_old_or_changed_capability(mutation):
 def test_v4_snapshot_and_spec_freeze_governance_without_installing_parent_tools(tmp_path: Path):
     definition = {"nodes": [{"instance_key": "node", "asset": {"id": "asset"}}]}
     frozen = _compile_runtime_manifest(
-        definition, server_identity=CURRENT_OPENHANDS_SERVER_IDENTITY, protocol_profile="OH_FW_V4"
+        definition,
+        server_identity=OpenHandsServerIdentity("1.58.2", V4_SOURCE_COMMIT, V4_SOURCE_COMMIT),
+        protocol_profile="OH_FW_V4",
     )
     assert frozen["child_conversations"] == governed_child_capability_manifest()
     config = FrozenSessionConfig(None, None, None, None, ())
@@ -204,7 +207,9 @@ def test_v4_snapshot_and_spec_freeze_governance_without_installing_parent_tools(
             host_root=tmp_path / "identified",
             runtime_root=Path("/runtime/capabilities"),
             protocol_profile="OH_FW_V4",
-            runtime_server_identity=CURRENT_OPENHANDS_SERVER_IDENTITY,
+            runtime_server_identity=OpenHandsServerIdentity(
+                "1.58.2", V4_SOURCE_COMMIT, V4_SOURCE_COMMIT
+            ),
         )
     assert spec.runtime_contract.source_commit == V4_SOURCE_COMMIT
     assert spec.subagent_policy == FLOWWEAVE_SUBAGENT_POLICY

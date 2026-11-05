@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions.application.child_creation import POLICY_VERSION
 from flowweave.modules.agent_sessions.application.child_parent import (
+    CurrentGovernedParentCapability,
     GovernedParentCapability,
     read_parent_capability,
 )
@@ -44,7 +45,7 @@ class RecoveryChild:
 
 @dataclass(frozen=True, slots=True)
 class RecoveryFamily:
-    capability: GovernedParentCapability
+    capability: GovernedParentCapability | CurrentGovernedParentCapability
     children: tuple[RecoveryChild, ...]
 
 
@@ -62,8 +63,9 @@ def frozen_workspace_image(db: Session, runtime_session_id: str) -> str | None:
                 select(AgentConversationBinding).where(
                     AgentConversationBinding.host_kind == "AGENT_WORKSPACE",
                     AgentConversationBinding.runtime_session_id == runtime_session_id,
-                    AgentConversationBinding.child_parent_manifest_json["profile"].as_string()
-                    == "OH_FW_V4",
+                    AgentConversationBinding.child_parent_manifest_json["profile"]
+                    .as_string()
+                    .in_(("OH_FW_V4", "OH_FW_V5")),
                 )
             )
         )
@@ -83,8 +85,9 @@ def collect(db: Session, runtime_session_id: str) -> tuple[RecoveryFamily, ...]:
                 .where(
                     AgentConversationBinding.runtime_session_id == runtime_session_id,
                     AgentConversationBinding.lifecycle.in_(("ACTIVE", "PROVISIONING")),
-                    AgentConversationBinding.child_parent_manifest_json["profile"].as_string()
-                    == "OH_FW_V4",
+                    AgentConversationBinding.child_parent_manifest_json["profile"]
+                    .as_string()
+                    .in_(("OH_FW_V4", "OH_FW_V5")),
                 )
                 .order_by(AgentConversationBinding.id)
             )
@@ -92,7 +95,7 @@ def collect(db: Session, runtime_session_id: str) -> tuple[RecoveryFamily, ...]:
     for parent in parents:
         with tenant_user(parent.owner_user_id):
             frozen = read_parent_capability(parent)
-            if not isinstance(frozen, GovernedParentCapability):
+            if not isinstance(frozen, GovernedParentCapability | CurrentGovernedParentCapability):
                 raise mismatch()
             relations = list(
                 db.scalars(
@@ -164,7 +167,7 @@ def probe(
             parent_id,
             runtime_resource_name=resource_name,
             workspace_root=workspace_root,
-            protocol_profile="OH_FW_V4",
+            protocol_profile=frozen.profile,
         )
         runtime = runtime_for("openhands", handle)
         parent_config = runtime.parent_conversation_configuration(handle)
@@ -223,7 +226,7 @@ def probe(
                 child.conversation_id,
                 runtime_resource_name=resource_name,
                 workspace_root=workspace_root,
-                protocol_profile="OH_FW_V4",
+                protocol_profile=frozen.profile,
             )
             config = runtime.child_conversation_configuration(child_handle)
             prior_child = previous.get(child.conversation_id)

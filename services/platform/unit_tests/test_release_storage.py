@@ -237,3 +237,15 @@ def test_process_ancestor_cwd_does_not_protect_all_contexts(tmp_path):
     )
     # A container mounting an ancestor still references its descendant tree.
     assert release.select_cleanup(build, [tmp_path], now=1_000_000) == []
+
+
+def test_release_finish_can_preserve_three_successful_contexts_per_scope(tmp_path):
+    expired = []
+    for scope in ("platform", "web"):
+        expired.append(context(tmp_path, 1, scope=scope))
+        for number in (2, 3, 4):
+            context(tmp_path, number, scope=scope)
+    failed = context(tmp_path, 5, state="failed")
+    assert release.select_cleanup(tmp_path, [], now=1_000_000, retain_successful=3) == sorted(
+        [*expired, failed]
+    )

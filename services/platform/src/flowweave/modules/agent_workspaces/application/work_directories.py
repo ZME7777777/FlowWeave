@@ -503,9 +503,7 @@ def list_management_workspaces(
     }
     cases = {
         item.control_work_directory_id: item
-        for item in db.scalars(
-            select(Case).where(Case.control_work_directory_id.is_not(None))
-        )
+        for item in db.scalars(select(Case).where(Case.control_work_directory_id.is_not(None)))
     }
     result: list[dict[str, Any]] = []
     for item in items:
@@ -937,6 +935,18 @@ def delete_work_directory(
             .with_for_update()
         )
     )
+    from flowweave.modules.agent_sessions.application import child_deletion
+
+    if any(binding.child_parent_manifest_json is not None for binding in bindings):
+        for binding in bindings:
+            if binding.child_parent_manifest_json is not None and (
+                child_deletion.family(db, binding) or child_deletion.projection(db, binding.id)
+            ):
+                raise DomainError(
+                    "AGENT_WORK_DIRECTORY_CHILDREN_PENDING",
+                    "请先删除工作区中的父子会话，等待清理完成后重试",
+                    409,
+                )
     by_id = {binding.id: binding for binding in bindings}
     # Sidebar conversations may have no independent directory version. Follow
     # their explicit binding relation, never infer ownership from title or cwd.

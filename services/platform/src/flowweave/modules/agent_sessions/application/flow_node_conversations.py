@@ -577,10 +577,17 @@ def _binding_for_attempt(
 
 
 def authorize_node_message_submission(
-    db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str,
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
 ) -> None:
     binding = _binding_for_attempt(
-        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id,
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
     )
     if binding.owner_user_id != current_user_id():
         raise not_found("flow_run_conversation_binding", binding_id)
@@ -1222,7 +1229,10 @@ def get_node_session_view(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, require_start_permission=False
     )
     guard_main_route(
-        db, host_kind=_FLOW_NODE, host_id=flow_run_id, binding_id=binding_id,
+        db,
+        host_kind=_FLOW_NODE,
+        host_id=flow_run_id,
+        binding_id=binding_id,
         conversation_scope_id=attempt_id,
     )
     item = _binding_for_attempt(
@@ -1560,7 +1570,7 @@ def _create_native_conversation(
     )
     from flowweave.modules.agent_sessions.application.child_parent import attach_parent_capability
 
-    if environment.runtime_protocol_profile in {"OH_FW_V3", "OH_FW_V4"}:
+    if environment.runtime_protocol_profile in {"OH_FW_V3", "OH_FW_V4", "OH_FW_V5"}:
         agent_spec = attach_parent_capability(
             db,
             item,
@@ -1599,7 +1609,7 @@ def _create_native_conversation(
         runtime_base_url=f"http://{connection.resource_name}:8000",
         conversation_secrets={**request.conversation_secrets, **conversation_secrets},
     )
-    if environment.runtime_protocol_profile == "OH_FW_V4":
+    if environment.runtime_protocol_profile in {"OH_FW_V4", "OH_FW_V5"}:
         db.commit()
     handle = get_runtime().create_conversation(request)
     if handle.conversation_id != item.openhands_conversation_id:
@@ -1980,7 +1990,7 @@ def _create_or_reload_node_bootstrap(
     )
     from flowweave.modules.agent_sessions.application.child_parent import attach_parent_capability
 
-    if environment.runtime_protocol_profile in {"OH_FW_V3", "OH_FW_V4"}:
+    if environment.runtime_protocol_profile in {"OH_FW_V3", "OH_FW_V4", "OH_FW_V5"}:
         agent_spec = attach_parent_capability(
             db,
             binding,
@@ -2019,7 +2029,7 @@ def _create_or_reload_node_bootstrap(
         runtime_base_url=f"http://{connection.resource_name}:8000",
         conversation_secrets={**request.conversation_secrets, **conversation_secrets},
     )
-    if environment.runtime_protocol_profile == "OH_FW_V4":
+    if environment.runtime_protocol_profile in {"OH_FW_V4", "OH_FW_V5"}:
         db.commit()
     created = runtime.create_conversation(request)
     if created.conversation_id != binding.openhands_conversation_id:
@@ -4845,9 +4855,7 @@ def control_goal(
         lock=True,
     )
     runtime = get_runtime()
-    handle = _node_handle(
-        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
-    )
+    handle = _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
     if action == "START":
         runtime.start_goal(handle, objective or "", max_iterations)
     elif action == "STOP":

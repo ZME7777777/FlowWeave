@@ -21,9 +21,7 @@ from flowweave.runtime.child_contract import (
     require_child_capability_manifest,
 )
 from flowweave.runtime.child_governance_contract import (
-    V4_ARCHIVE_SHA256,
-    V4_PACKAGE_VERSION,
-    V4_SOURCE_COMMIT,
+    GOVERNED_CHILD_SOURCES,
     require_governed_child_capability_manifest,
 )
 from flowweave.runtime.protocol_profiles import (
@@ -184,6 +182,7 @@ def validate_runtime_manifest(
             FlowRunProtocolProfile.OH_FW_V2,
             FlowRunProtocolProfile.OH_FW_V3,
             FlowRunProtocolProfile.OH_FW_V4,
+            FlowRunProtocolProfile.OH_FW_V5,
         }:
             execution_policy = document.get("execution_policy")
             execution_policy = (
@@ -222,13 +221,19 @@ def validate_runtime_manifest(
                 409,
                 {"environment_version_id": environment_version_id},
             )
-    if runtime_protocol_profile == FlowRunProtocolProfile.OH_FW_V4:
-        require_governed_child_capability_manifest(document.get("child_conversations"))
+    if runtime_protocol_profile in {
+        FlowRunProtocolProfile.OH_FW_V4,
+        FlowRunProtocolProfile.OH_FW_V5,
+    }:
+        source, archive, package = GOVERNED_CHILD_SOURCES[runtime_protocol_profile]
+        require_governed_child_capability_manifest(
+            document.get("child_conversations"), runtime_protocol_profile
+        )
         if (
-            actual_commit != V4_SOURCE_COMMIT
-            or actual_ref != V4_SOURCE_COMMIT
-            or provenance.get("source_archive_digest") != V4_ARCHIVE_SHA256
-            or actual_packages != {name: V4_PACKAGE_VERSION for name in expected_package_names}
+            actual_commit != source
+            or actual_ref != source
+            or provenance.get("source_archive_digest") != archive
+            or actual_packages != {name: package for name in expected_package_names}
         ):
             raise DomainError(
                 "ENVIRONMENT_RUNTIME_INCOMPATIBLE",

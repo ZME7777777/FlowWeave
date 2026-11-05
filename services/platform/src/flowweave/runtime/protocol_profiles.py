@@ -34,6 +34,8 @@ from flowweave.runtime.child_governance_contract import (
     V4_CHILD_HTTP_OPERATIONS,
     V4_PACKAGE_VERSION,
     V4_SOURCE_COMMIT,
+    V5_PACKAGE_VERSION,
+    V5_SOURCE_COMMIT,
     governed_child_capability_manifest,
 )
 from flowweave.runtime.contract import runtime_contract_for_server_identity
@@ -48,6 +50,7 @@ class FlowRunProtocolProfile(StrEnum):
     OH_FW_V2 = "OH_FW_V2"
     OH_FW_V3 = "OH_FW_V3"
     OH_FW_V4 = "OH_FW_V4"
+    OH_FW_V5 = "OH_FW_V5"
 
 
 DEFAULT_FLOW_RUN_PROTOCOL_PROFILE: Final = FlowRunProtocolProfile.OH_FW_V1
@@ -150,12 +153,44 @@ class OpenHandsV4FlowRunRuntimeAdapter:
         )
 
 
+class OpenHandsV5FlowRunRuntimeAdapter:
+    """Native creation resolution and immutable prepare-time credential overrides."""
+
+    profile = FlowRunProtocolProfile.OH_FW_V5
+
+    def bind(self, runtime: RuntimePort) -> RuntimePort:
+        return runtime
+
+    def contract(
+        self, required_tools: tuple[str, ...], identity: OpenHandsServerIdentity
+    ) -> RuntimeContract:
+        if (
+            identity.source_commit != V5_SOURCE_COMMIT
+            or identity.source_ref != V5_SOURCE_COMMIT
+            or identity.package_version != V5_PACKAGE_VERSION
+        ):
+            raise DomainError(
+                "RUNTIME_CHILD_CAPABILITY_INCOMPATIBLE",
+                "V5 requires its audited native child governance extension",
+                409,
+            )
+        base = runtime_contract_for_server_identity(required_tools, identity)
+        return replace(
+            base,
+            schema_version=8,
+            required_http_operations=tuple(
+                sorted(set(base.required_http_operations) | set(V4_CHILD_HTTP_OPERATIONS))
+            ),
+        )
+
+
 FLOW_RUN_RUNTIME_ADAPTERS: Final = MappingProxyType(
     {
         FlowRunProtocolProfile.OH_FW_V1: OpenHandsV1FlowRunRuntimeAdapter(),
         FlowRunProtocolProfile.OH_FW_V2: OpenHandsV2FlowRunRuntimeAdapter(),
         FlowRunProtocolProfile.OH_FW_V3: OpenHandsV3FlowRunRuntimeAdapter(),
         FlowRunProtocolProfile.OH_FW_V4: OpenHandsV4FlowRunRuntimeAdapter(),
+        FlowRunProtocolProfile.OH_FW_V5: OpenHandsV5FlowRunRuntimeAdapter(),
     }
 )
 
@@ -203,6 +238,7 @@ def llm_timeout_policy_for_flow_run_protocol_profile(
         FlowRunProtocolProfile.OH_FW_V2,
         FlowRunProtocolProfile.OH_FW_V3,
         FlowRunProtocolProfile.OH_FW_V4,
+        FlowRunProtocolProfile.OH_FW_V5,
     }:
         return FLOWWEAVE_LLM_TIMEOUT_POLICY
     return None
@@ -217,6 +253,7 @@ def subagent_policy_for_flow_run_protocol_profile(
         FlowRunProtocolProfile.OH_FW_V2,
         FlowRunProtocolProfile.OH_FW_V3,
         FlowRunProtocolProfile.OH_FW_V4,
+        FlowRunProtocolProfile.OH_FW_V5,
     }:
         return FLOWWEAVE_SUBAGENT_POLICY
     return None
@@ -228,6 +265,8 @@ def runtime_contract_for_protocol_profile(
     identity: OpenHandsServerIdentity,
 ) -> RuntimeContract:
     normalized = require_flow_run_protocol_profile(profile)
+    if normalized is FlowRunProtocolProfile.OH_FW_V5:
+        return OpenHandsV5FlowRunRuntimeAdapter().contract(required_tools, identity)
     if normalized is FlowRunProtocolProfile.OH_FW_V4:
         return OpenHandsV4FlowRunRuntimeAdapter().contract(required_tools, identity)
     if normalized is FlowRunProtocolProfile.OH_FW_V3:
@@ -239,8 +278,8 @@ def child_manifest_for_protocol_profile(
     profile: FlowRunProtocolProfile | str,
 ) -> dict[str, Any] | None:
     normalized = require_flow_run_protocol_profile(profile)
-    if normalized is FlowRunProtocolProfile.OH_FW_V4:
-        return governed_child_capability_manifest()
+    if normalized in {FlowRunProtocolProfile.OH_FW_V4, FlowRunProtocolProfile.OH_FW_V5}:
+        return governed_child_capability_manifest(normalized.value)
     if normalized is FlowRunProtocolProfile.OH_FW_V3:
         return child_capability_manifest()
     return None
@@ -255,6 +294,7 @@ __all__ = (
     "OpenHandsV2FlowRunRuntimeAdapter",
     "OpenHandsV3FlowRunRuntimeAdapter",
     "OpenHandsV4FlowRunRuntimeAdapter",
+    "OpenHandsV5FlowRunRuntimeAdapter",
     "runtime_contract_for_protocol_profile",
     "child_manifest_for_protocol_profile",
     "llm_timeout_policy_for_flow_run_protocol_profile",

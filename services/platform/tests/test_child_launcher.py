@@ -36,7 +36,7 @@ from flowweave.runtime.child_contract import (
 from flowweave.runtime.child_creation import NativeChildInvocation, NativeChildLaunchRequest
 from flowweave.runtime.child_governance import NativeChildResolution
 from flowweave.runtime.child_governance_contract import (
-    V4_ARCHIVE_SHA256,
+    GOVERNED_CHILD_SOURCES,
     V4_SOURCE_COMMIT,
     governed_child_capability_manifest,
 )
@@ -75,7 +75,11 @@ def parent_graph(
     identity = (
         FROZEN_V3_IDENTITY
         if parent_profile == "OH_FW_V3"
-        else OpenHandsServerIdentity("1.58.2", V4_SOURCE_COMMIT, V4_SOURCE_COMMIT)
+        else OpenHandsServerIdentity(
+            "1.58.2",
+            GOVERNED_CHILD_SOURCES[parent_profile][0],
+            GOVERNED_CHILD_SOURCES[parent_profile][0],
+        )
     )
     config = settings.model_copy(
         update={
@@ -111,7 +115,7 @@ def parent_graph(
         "schema_version": 3,
         "child_conversations": child_capability_manifest()
         if parent_profile == "OH_FW_V3"
-        else governed_child_capability_manifest(),
+        else governed_child_capability_manifest(parent_profile),
         "nodes": {"node": {"node_asset_id": str(uuid4())}}
         if browser_mode and kind == "FLOW_NODE"
         else {},
@@ -192,7 +196,9 @@ def parent_graph(
                 environment_manifest["image_id"] = image
                 environment_manifest["build"]["runtime_image_digest"] = image
                 environment_manifest["build"]["platform"] = "linux/amd64"
-                environment_manifest["child_conversations"] = governed_child_capability_manifest()
+                environment_manifest["child_conversations"] = governed_child_capability_manifest(
+                    parent_profile
+                )
                 environment_manifest["execution_policy"] = {
                     "llm_timeouts": FLOWWEAVE_LLM_TIMEOUT_POLICY.manifest_document()
                 }
@@ -204,7 +210,7 @@ def parent_graph(
                     base_image_digest=seeded.base_image_digest,
                     image_reference="flowweave/native-acceptance",
                     image_digest=image,
-                    runtime_protocol_profile="OH_FW_V4",
+                    runtime_protocol_profile=parent_profile,
                     manifest_json=environment_manifest,
                 )
                 db.add(environment)
@@ -623,7 +629,7 @@ def launcher_http(parent_graph, monkeypatch, request):
 @pytest.mark.parametrize(
     "credential", ["absent", "cookie-only", "root-key", "wrong-key", "runtime-only", "valid"]
 )
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V3", "OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V3", "OH_FW_V4", "OH_FW_V5"], indirect=True)
 def test_http_gateway_requires_runtime_key_and_native_proof(launcher_http, credential):
     from urllib.parse import urlsplit
 
@@ -647,7 +653,9 @@ def test_http_gateway_requires_runtime_key_and_native_proof(launcher_http, crede
             "token": "native-proof" if credential == "valid" else "forged-proof",
         },
     )
-    expected = (200 if g.profile == "OH_FW_V4" else 503) if credential == "valid" else 403
+    expected = (
+        (200 if g.profile in {"OH_FW_V4", "OH_FW_V5"} else 503) if credential == "valid" else 403
+    )
     assert response.status_code == expected, response.text
     if credential == "valid" and g.profile == "OH_FW_V3":
         assert response.json()["error"]["code"] == "AGENT_CHILD_CREATION_NOT_ENABLED"
@@ -685,13 +693,13 @@ def test_only_exact_native_path_bypasses_cookie_login(launcher_http):
 
 
 @pytest.mark.parametrize("gateway_base_url", ["local"], indirect=True)
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V3", "OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V3", "OH_FW_V4", "OH_FW_V5"], indirect=True)
 def test_native_tool_calls_platform_gateway_over_real_tcp(launcher_http, monkeypatch):
     _exercise_native_child_transport(launcher_http, monkeypatch)
 
 
 @pytest.mark.parametrize("gateway_base_url", ["local"], indirect=True)
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 def test_real_model_native_child_user_and_parent_tools(launcher_http, monkeypatch):
     import json
     import os
@@ -754,6 +762,8 @@ def _exercise_native_child_transport(
     environment = (
         "FLOWWEAVE_NATIVE_CHILD_V3_PYTHON"
         if g.profile == "OH_FW_V3"
+        else "FLOWWEAVE_NATIVE_CHILD_V5_PYTHON"
+        if g.profile == "OH_FW_V5"
         else "FLOWWEAVE_NATIVE_CHILD_PYTHON"
     )
     python = os.environ.get(environment)
@@ -816,14 +826,16 @@ def _exercise_native_child_transport(
     source_lock.update(
         source_commit=g.identity.source_commit,
         fork_commit=g.identity.source_commit,
-        archive_sha256=V3_ARCHIVE_SHA256 if g.profile == "OH_FW_V3" else V4_ARCHIVE_SHA256,
+        archive_sha256=V3_ARCHIVE_SHA256
+        if g.profile == "OH_FW_V3"
+        else GOVERNED_CHILD_SOURCES[g.profile][1],
     )
     source_lock_path = state / "source.lock.json"
     source_lock_path.write_text(json.dumps(source_lock))
     env["FLOWWEAVE_NATIVE_CHILD_LOCK"] = str(source_lock_path)
     if model_config:
         env["FLOWWEAVE_NATIVE_REAL_MODEL"] = "1"
-    if g.profile == "OH_FW_V4":
+    if g.profile in {"OH_FW_V4", "OH_FW_V5"}:
         env["FLOWWEAVE_CHILD_INTERACTIONS"] = "1"
     script = Path(__file__).parents[1] / "unit_tests/fixtures/native_child_server.py"
     native = OpenHandsRuntime(g.config)
@@ -943,7 +955,10 @@ def _exercise_native_child_transport(
                 assert time.monotonic() < deadline
                 time.sleep(0.05)
             info = json.loads((state / "server-ready.json").read_text())
-            assert info["verified_python_files"] == (536 if g.profile == "OH_FW_V3" else 537)
+            assert (
+                info["verified_python_files"]
+                == {"OH_FW_V3": 536, "OH_FW_V4": 537, "OH_FW_V5": 538}[g.profile]
+            )
             with httpx.Client(base_url=info["host"], trust_env=False, timeout=10) as http:
                 deadline = time.monotonic() + (90 if runtime_image else 10)
                 while True:
@@ -966,7 +981,7 @@ def _exercise_native_child_transport(
             monkeypatch.setattr(
                 native, "_session_key_for_handle", lambda _: g.key.get_secret_value()
             )
-            if g.profile == "OH_FW_V4":
+            if g.profile in {"OH_FW_V4", "OH_FW_V5"}:
                 original_request = native._request
 
                 def mounted_response(method, path, **kwargs):
@@ -1058,17 +1073,17 @@ def _exercise_native_child_transport(
                     "FLOWWEAVE_HISTORY_ACCESS": "fixture-parent-only",
                     "ORDINARY": "fixture-ordinary",
                 }
-                if g.profile == "OH_FW_V4"
+                if g.profile in {"OH_FW_V4", "OH_FW_V5"}
                 else {},
             )
-            if g.profile == "OH_FW_V4":
+            if g.profile in {"OH_FW_V4", "OH_FW_V5"}:
                 # Reproduce the first-turn window: parent binding not ACTIVE yet,
                 # but frozen authority was committed before native execution.
                 g.binding.lifecycle = "PROVISIONING"
                 g.db.commit()
             handle = native.create_conversation(request)
             assert handle.protocol_profile == g.profile
-            if g.profile == "OH_FW_V4":
+            if g.profile in {"OH_FW_V4", "OH_FW_V5"}:
                 native.update_conversation_secrets(
                     handle,
                     {
@@ -1130,7 +1145,7 @@ def _exercise_native_child_transport(
                 assert observations[0]["observation"]["outcome_unknown"] == (
                     g.profile == "OH_FW_V3"
                 )
-                if g.profile == "OH_FW_V4":
+                if g.profile in {"OH_FW_V4", "OH_FW_V5"}:
                     all_actions = [
                         e
                         for e in events
@@ -1181,7 +1196,7 @@ def _exercise_native_child_transport(
                     call
                     == (
                         g.profile,
-                        "PROVISIONING" if g.profile == "OH_FW_V4" else "ACTIVE",
+                        "PROVISIONING" if g.profile in {"OH_FW_V4", "OH_FW_V5"} else "ACTIVE",
                         actions[0]["id"],
                     )
                     for call in authorized_calls
@@ -1202,9 +1217,9 @@ def _exercise_native_child_transport(
                         "token": signed["token"],
                     },
                 )
-                assert accepted.status_code == (200 if g.profile == "OH_FW_V4" else 503), (
-                    accepted.text
-                )
+                assert accepted.status_code == (
+                    200 if g.profile in {"OH_FW_V4", "OH_FW_V5"} else 503
+                ), accepted.text
                 if g.profile == "OH_FW_V3":
                     assert accepted.json()["error"]["code"] == "AGENT_CHILD_CREATION_NOT_ENABLED"
                 else:
@@ -1246,7 +1261,7 @@ def _exercise_native_child_transport(
                             t["name"] for t in configuration["agent"]["tools"]
                         }
                         assert configuration["parent_conversation_id"] == handle.conversation_id
-            if g.profile == "OH_FW_V4":
+            if g.profile in {"OH_FW_V4", "OH_FW_V5"}:
                 from flowweave.bootstrap import api as bootstrap_api
                 from flowweave.modules.users.application.security import Principal
 
@@ -1422,7 +1437,9 @@ def _exercise_native_child_transport(
                 assert browser.returncode == 0, (
                     f"Inspect isolated browser proof at {state / 'browser.log'}"
                 )
-            assert bool(g.db.scalar(select(AgentChildConversation.id))) == (g.profile == "OH_FW_V4")
+            assert bool(g.db.scalar(select(AgentChildConversation.id))) == (
+                g.profile in {"OH_FW_V4", "OH_FW_V5"}
+            )
             if runtime_image:
                 _exercise_real_child_family_deletion(g, native, state, monkeypatch)
         finally:
@@ -1618,7 +1635,7 @@ def test_fork_cannot_copy_parent_bound_authority(parent_graph):
 
 @pytest.mark.parametrize("parent_graph", ["AGENT_WORKSPACE"], indirect=True)
 @pytest.mark.parametrize("allow_children", [True, False])
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V3", "OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V3", "OH_FW_V4", "OH_FW_V5"], indirect=True)
 def test_workspace_native_creation_attaches_only_explicit_parent_capability(
     parent_graph, monkeypatch, tmp_path, allow_children
 ):
@@ -1662,11 +1679,11 @@ def test_workspace_native_creation_attaches_only_explicit_parent_capability(
     captured = []
 
     def create(request):
-        if g.profile == "OH_FW_V4" and allow_children:
+        if g.profile in {"OH_FW_V4", "OH_FW_V5"} and allow_children:
             assert not g.db.in_transaction()
             with tenant_user(g.owner), g.sessions() as reader:
                 saved = reader.get(AgentConversationBinding, binding.id)
-                assert saved.child_parent_manifest_json["profile"] == "OH_FW_V4"
+                assert saved.child_parent_manifest_json["profile"] == g.profile
         captured.append(request)
         return conversations._handle(g.db, g.db.get(AgentWorkspace, binding.workspace_id), binding)
 
@@ -1873,7 +1890,7 @@ def test_worker_freezes_parent_before_releasing_database_transaction(
     with runtime_context(SimpleNamespace(start=start)), pytest.raises(DomainError) as stopped:
         service.process_start_runtime(g.db, attempt_id, lease=SimpleNamespace() if leased else None)
     assert stopped.value.code == "FIXTURE_STOP"
-    assert lease_checks == ([True, True] if g.profile == "OH_FW_V4" else [True])
+    assert lease_checks == ([True, True] if g.profile in {"OH_FW_V4", "OH_FW_V5"} else [True])
     assert set(CHILD_TOOL_NAMES) <= {tool.name for tool in captured[0].agent_spec.tools}
 
 
@@ -1897,7 +1914,7 @@ def resolution(invocation):
     )
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 @pytest.mark.parametrize("lifecycle", ["ACTIVE", "PROVISIONING"])
 def test_v4_native_resolution_authorizes_both_first_turn_and_active_parent(
     parent_graph, monkeypatch, lifecycle
@@ -1924,20 +1941,20 @@ def test_v4_native_resolution_authorizes_both_first_turn_and_active_parent(
         child_launcher.project_launcher(g.db, prepared, verified.invocation, runtime_key=g.key)
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V3", "OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V3", "OH_FW_V4", "OH_FW_V5"], indirect=True)
 @pytest.mark.parametrize("lifecycle", ["PROVISIONING", "FAILED", "DELETE_PENDING"])
 def test_parent_lifecycle_candidates_are_version_scoped(parent_graph, lifecycle):
     g = parent_graph
     g.binding.lifecycle = lifecycle
     g.db.commit()
-    if g.profile == "OH_FW_V4" and lifecycle == "PROVISIONING":
-        assert prepare(g).capability.profile == "OH_FW_V4"
+    if g.profile in {"OH_FW_V4", "OH_FW_V5"} and lifecycle == "PROVISIONING":
+        assert prepare(g).capability.profile == g.profile
     else:
         with pytest.raises(DomainError):
             prepare(g)
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 @pytest.mark.parametrize("change", ["generation", "deleting", "disabled", "permission", "image"])
 def test_v4_provisioning_revocation_between_native_phases_is_denied(parent_graph, change):
     g = parent_graph
@@ -1965,7 +1982,7 @@ def test_v4_provisioning_revocation_between_native_phases_is_denied(parent_graph
         child_launcher.project_launcher(g.db, prepared, verified, runtime_key=g.key)
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 @pytest.mark.parametrize("parent_graph", ["FLOW_NODE"], indirect=True)
 @pytest.mark.parametrize("entry", ["create", "bootstrap"])
 def test_v4_manual_node_entries_commit_parent_before_native_create(
@@ -2048,7 +2065,7 @@ def test_v4_manual_node_entries_commit_parent_before_native_create(
         with tenant_user(g.owner), g.sessions() as reader:
             saved = reader.get(AgentConversationBinding, parent_id)
             assert saved.lifecycle == "PROVISIONING"
-            assert child_parent.read_parent_capability(saved).profile == "OH_FW_V4"
+            assert child_parent.read_parent_capability(saved).profile == g.profile
         captured.append(request)
         raise DomainError("FIXTURE_STOP", "Stop before native execution", 409)
 
@@ -2080,7 +2097,7 @@ def test_v4_manual_node_entries_commit_parent_before_native_create(
     assert set(CHILD_TOOL_NAMES) <= {tool.name for tool in captured[0].agent_spec.tools}
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V3", "OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V3", "OH_FW_V4", "OH_FW_V5"], indirect=True)
 def test_frozen_parent_cannot_change_protocol_or_capability_version(parent_graph):
     g = parent_graph
     target = "OH_FW_V4" if g.profile == "OH_FW_V3" else "OH_FW_V3"
@@ -2213,7 +2230,7 @@ def post_child(g, client):
     )
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 def test_native_child_title_is_projected_once_and_replay_preserves_user_title(launcher_http):
     from urllib.parse import urlsplit
 
@@ -2233,7 +2250,7 @@ def test_native_child_title_is_projected_once_and_replay_preserves_user_title(la
     assert child.display_title == "User title"
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 @pytest.mark.parametrize(
     "boundary", ["prepare-before", "prepare-after", "config", "release-before", "release-after"]
 )
@@ -2280,7 +2297,7 @@ def test_child_replay_recovers_original_reservation_without_double_release(
     assert len(list(g.db.scalars(select(AgentChildConversation)))) == 1
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 @pytest.mark.parametrize("mismatch", ["agent", "workspace", "persistence", "governance"])
 def test_child_mismatched_preparation_never_releases(launcher_http, monkeypatch, mismatch):
     g, client, _ = launcher_http
@@ -2311,7 +2328,7 @@ def test_child_mismatched_preparation_never_releases(launcher_http, monkeypatch,
     assert child.lifecycle == "PROVISIONING"
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 @pytest.mark.parametrize("boundary", ["prepare", "release"])
 def test_child_revocation_between_native_and_projection_preserves_reservation(
     launcher_http, monkeypatch, boundary
@@ -2343,7 +2360,7 @@ def test_child_revocation_between_native_and_projection_preserves_reservation(
     assert post_child(g, client).status_code == 403
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 def test_child_native_capacity_and_expired_proof_keep_reservation(launcher_http, monkeypatch):
     g, client, _ = launcher_http
     runtime = client.app.state.container.runtime
@@ -2367,7 +2384,7 @@ def test_child_native_capacity_and_expired_proof_keep_reservation(launcher_http,
     assert not runtime.released
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 def test_concurrent_native_identity_reserves_one_child(parent_graph):
     from concurrent.futures import ThreadPoolExecutor
 
@@ -2397,7 +2414,7 @@ def test_concurrent_native_identity_reserves_one_child(parent_graph):
     assert len(list(g.db.scalars(select(AgentConversationBinding)))) == 2
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 def test_governed_creation_audit_is_immutable_and_cannot_be_downgraded(launcher_http):
     from alembic import command
     from alembic.config import Config
@@ -2417,12 +2434,15 @@ def test_governed_creation_audit_is_immutable_and_cannot_be_downgraded(launcher_
     g.db.rollback()
     config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
     config.attributes["database_url"] = g.config.database_url
-    with pytest.raises(DBAPIError, match="Cannot discard governed child creation audit"):
+    with pytest.raises(
+        DBAPIError,
+        match="Cannot discard governed child creation audit|Cannot downgrade while .*OH_FW_V5",
+    ):
         command.downgrade(config, "0178_add_oh_fw_v4_protocol_profile")
     assert g.db.get(AgentChildConversation, relation_id).request_digest is not None
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 def test_child_copies_capability_provenance_without_false_credential_sync(launcher_http):
     from flowweave.modules.agent_sessions.infrastructure.models import (
         AgentConversationCapability,
@@ -2475,7 +2495,7 @@ def test_child_copies_capability_provenance_without_false_credential_sync(launch
     assert child.child_parent_manifest_json is None
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 def test_child_refuses_acp_before_reserving_any_locator(launcher_http, monkeypatch):
     g, client, _ = launcher_http
     runtime = client.app.state.container.runtime
@@ -2492,7 +2512,7 @@ def test_child_refuses_acp_before_reserving_any_locator(launcher_http, monkeypat
     assert not runtime.saved
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 def test_child_replay_cannot_change_intent_and_does_not_freeze_post_start_model(
     launcher_http, monkeypatch
 ):
@@ -2520,7 +2540,7 @@ def test_child_replay_cannot_change_intent_and_does_not_freeze_post_start_model(
     assert len(runtime.released) == 1
 
 
-@pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 @pytest.mark.parametrize("phase", ["resolve", "prepare", "release"])
 def test_child_response_deadline_never_projects_late_native_result(
     launcher_http, monkeypatch, phase

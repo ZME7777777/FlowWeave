@@ -791,7 +791,12 @@ def build_agent_spec(
     ask_user: bool = False,
 ) -> RuntimeAgentSpec:
     if (
-        protocol_profile in {FlowRunProtocolProfile.OH_FW_V3, FlowRunProtocolProfile.OH_FW_V4}
+        protocol_profile
+        in {
+            FlowRunProtocolProfile.OH_FW_V3,
+            FlowRunProtocolProfile.OH_FW_V4,
+            FlowRunProtocolProfile.OH_FW_V5,
+        }
         and runtime_server_identity is None
     ):
         raise DomainError(
@@ -799,7 +804,11 @@ def build_agent_spec(
             "Child-capable profiles require an explicitly frozen Runtime image identity",
             409,
         )
-    if protocol_profile in {FlowRunProtocolProfile.OH_FW_V3, FlowRunProtocolProfile.OH_FW_V4}:
+    if protocol_profile in {
+        FlowRunProtocolProfile.OH_FW_V3,
+        FlowRunProtocolProfile.OH_FW_V4,
+        FlowRunProtocolProfile.OH_FW_V5,
+    }:
         subagent_policy = FLOWWEAVE_SUBAGENT_POLICY
     materialized = tuple(
         item.materialization_config()

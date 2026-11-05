@@ -67,7 +67,7 @@ def _resolve_launcher(
         if principal is None or binding is None:
             raise denied()
         frozen = read_parent_capability(binding)
-        if binding.lifecycle == "PROVISIONING" and frozen.profile != "OH_FW_V4":
+        if binding.lifecycle == "PROVISIONING" and frozen.profile not in {"OH_FW_V4", "OH_FW_V5"}:
             raise denied()
         require_ordinary_binding(db, binding)
         if binding.create_idempotency_key.startswith("gate-sidecar:") or db.scalar(
@@ -171,7 +171,7 @@ def verify_launcher(
     A PROVISIONING parent is only a candidate here. Runtime credentials alone
     never authorize it: the native resolver must prove its actual Tool action.
     """
-    if prepared.capability.profile == "OH_FW_V4":
+    if prepared.capability.profile in {"OH_FW_V4", "OH_FW_V5"}:
         return get_runtime().resolve_child_launcher(prepared.handle, request)
     return get_runtime().verify_child_launcher(prepared.handle, request)
 
@@ -189,7 +189,7 @@ def project_launcher(
         binding_id=prepared.capability.binding_id,
         runtime_key=runtime_key,
     )
-    if fresh.capability.profile == "OH_FW_V4":
+    if fresh.capability.profile in {"OH_FW_V4", "OH_FW_V5"}:
         if not isinstance(invocation, NativeChildResolution):
             raise denied()
         claim = invocation.invocation

@@ -101,7 +101,7 @@ def resolve(
         raise unavailable()
     guard_main_route(db, host_kind=parent.host_kind, host_id=parent.host_id, binding_id=parent.id)
     frozen = read_parent_capability(parent)
-    if frozen.profile != "OH_FW_V4":
+    if frozen.profile not in {"OH_FW_V4", "OH_FW_V5"}:
         raise unavailable()
     if parent.host_kind == "AGENT_WORKSPACE":
         workspace = db.get(AgentWorkspace, parent.host_id)
@@ -151,7 +151,7 @@ def resolve(
         or session.active_generation < frozen.policy.generation
         or (native_parent and session.active_generation != frozen.policy.generation)
         or session.runtime_image_digest != frozen.runtime_image_digest
-        or handle.protocol_profile != "OH_FW_V4"
+        or handle.protocol_profile != frozen.profile
     ):
         raise unavailable()
     if session.active_generation > frozen.policy.generation:

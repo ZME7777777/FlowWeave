@@ -8044,7 +8044,7 @@ def process_start_runtime(
             runtime_resource_name=allocation.resource_name,
             runtime_base_url=allocation.base_url,
         )
-        if environment.runtime_protocol_profile in {"OH_FW_V3", "OH_FW_V4"}:
+        if environment.runtime_protocol_profile in {"OH_FW_V3", "OH_FW_V4", "OH_FW_V5"}:
             from flowweave.modules.agent_sessions.application.child_parent import (
                 attach_parent_capability,
             )
@@ -8074,7 +8074,7 @@ def process_start_runtime(
                     expected_manifest_digest=snapshot.runtime_manifest_hash,
                 ),
             )
-            governed_parent = environment.runtime_protocol_profile == "OH_FW_V4"
+            governed_parent = environment.runtime_protocol_profile in {"OH_FW_V4", "OH_FW_V5"}
             if lease is not None or governed_parent:
                 # This new immutable write must survive the read-transaction
                 # rollback below, before the native parent can call its gateway.

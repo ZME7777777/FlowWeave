@@ -20,6 +20,9 @@ const user = {
 };
 
 async function json(route: Route, body: unknown, status = 200) {
+  if (status === 404 && new URL(route.request().url()).pathname.endsWith('/session-configuration')) {
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ capability_version_ids: [], credential_ids: [] }) });
+  }
   await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 }
 
@@ -384,7 +387,7 @@ test('Accepted message reconciles its formal event without a second submission o
   // catches up; otherwise the UI falsely offers a second send.
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   await expect(page.getByRole('button', { name: '发送消息' })).toHaveCount(0);
-  expect(readinessReads).toBeGreaterThan(0);
+  await expect.poll(() => readinessReads).toBeGreaterThan(0);
   await expect.poll(() => formalMessageVisible).toBe(true);
   await expect(page.getByText('正在执行当前任务', { exact: true })).toBeVisible();
   // Formal identity is now present, so the submission bridge has ended. The
@@ -460,9 +463,9 @@ test('Generated conversation title updates both the sidebar and current header',
   await expect(sidebarConversation).toContainText('自动生成的标题', { timeout: 5_000 });
   await expect(headerTitle).toHaveText('自动生成的标题');
 
-  await page.locator('[data-conversation-binding-id="generated-title-alternate-conversation"]').dblclick();
+  await page.locator('[data-conversation-binding-id="generated-title-alternate-conversation"] .agent-workspace-conversation-select').click();
   await expect(headerTitle).toHaveText('另一条会话');
-  await page.locator('[data-conversation-binding-id="generated-title-conversation"]').dblclick();
+  await page.locator('[data-conversation-binding-id="generated-title-conversation"] .agent-workspace-conversation-select').click();
   await expect(sidebarConversation).toContainText('自动生成的标题');
   await expect(headerTitle).toHaveText('自动生成的标题');
 });
@@ -1304,10 +1307,11 @@ test('Deleting the selected conversation waits for 204 then opens its neighbour'
   await expect(page.getByRole('navigation', { name: '会话页签', exact: true })).toContainText('待删除会话');
   const deletingRow = page.locator('[data-conversation-binding-id="optimistic-delete-a"]');
   await deletingRow.hover();
-  await expect(deletingRow.getByRole('button', { name: '删除会话 待删除会话' })).toBeVisible();
+  await expect(deletingRow.getByRole('button', { name: '归档会话 待删除会话' })).toBeVisible();
   await expect(deletingRow.getByRole('button', { name: '待删除会话', exact: true })).toHaveAttribute('draggable', 'true');
   await expect(deletingRow.locator('.agent-workspace-conversation-select svg')).toBeHidden();
-  await deletingRow.getByRole('button', { name: '删除会话 待删除会话', exact: true }).click();
+  await deletingRow.click({ button: 'right' });
+  await page.getByRole('menuitem', { name: '删除', exact: true }).click();
   const dialog = page.getByRole('alertdialog');
   await dialog.getByRole('button', { name: '确认删除', exact: true }).click();
 
@@ -2972,7 +2976,7 @@ test('Agent transcript keeps scroll ownership through streamed output and histor
   const bottomBeforeReading = await surface.evaluate(element => element.scrollTop);
   await page.mouse.wheel(0, -360);
   await expect.poll(() => surface.evaluate(element => element.scrollTop)).toBeLessThan(bottomBeforeReading);
-  await expect(page.getByRole('button', { name: '跳转到正在生成的最新回复' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /跳转到.*最新回复/ })).toBeVisible();
   const anchorBeforePrepend = await visibleAnchor();
   const readingPosition = await surface.evaluate(element => element.scrollTop);
   agentStream!.send(JSON.stringify({
@@ -2995,7 +2999,7 @@ test('Agent transcript keeps scroll ownership through streamed output and histor
   await surface.hover();
   await page.mouse.wheel(0, -20_000);
   await expect(page.getByText('第二历史页。', { exact: false })).toBeVisible();
-  await expect(page.getByRole('button', { name: '跳转到正在生成的最新回复' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /跳转到.*最新回复/ })).toBeVisible();
 
   await page.getByRole('button', { name: '滚动会话 B', exact: true }).click();
   await expect(page).toHaveURL(/\/agent\/conversations\/scroll-conversation-b$/);
@@ -3121,7 +3125,7 @@ test('Agent composer keeps an uploading attachment visible across conversation s
   await page.goto('/');
   await login(page);
   await page.goto('/agent');
-  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新会话配置', exact: true })).toBeVisible();
   const attachment = page.locator('.agent-composer .agent-attachments').getByText('正在上传.png', { exact: true });
   await page.getByLabel('上传附件').setInputFiles({ name: '正在上传.png', mimeType: 'image/png', buffer: Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]) });
   await expect.poll(() => uploadPartRequested).toBe(true);
@@ -3136,7 +3140,7 @@ test('Agent composer keeps an uploading attachment visible across conversation s
   releaseUpload?.();
   await expect.poll(() => page.locator('.agent-pending-attachment').count()).toBe(0);
   await recoverDraft.click();
-  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新会话配置', exact: true })).toBeVisible();
   await expect(attachment).toBeVisible();
 });
 
@@ -3166,7 +3170,7 @@ test('Empty Agent workspace creates a recoverable draft while editing a new sess
   await login(page);
   await page.goto('/agent');
   const composer = page.getByLabel('发送 Agent 消息');
-  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
+  await expect(composer).toBeEditable();
   await composer.fill('空工作区中的未发送草稿');
   const storageValue = await page.evaluate(() => Object.entries(localStorage).find(([key]) => key.startsWith('flowweave:agent-conversation-draft:v2:agent-workspace:empty-draft-workspace:root'))?.[1] ?? '');
   expect(storageValue).toContain('空工作区中的未发送草稿');
@@ -3286,7 +3290,7 @@ test('New conversation draft remains isolated and can be resumed after switching
   await page.goto('/');
   await login(page);
   await page.goto('/agent');
-  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新会话配置', exact: true })).toBeVisible();
   // An unsubmitted draft owns no native Conversation. Even if the previous
   // selected binding is still unwinding, it must remain editable and idle.
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
@@ -3301,7 +3305,7 @@ test('New conversation draft remains isolated and can be resumed after switching
   await expect(recoverDraft).toHaveCount(0);
   await page.getByRole('button', { name: '收起工作区 根工作区' }).hover();
   await page.getByRole('button', { name: '在根工作区中新建会话' }).click();
-  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新会话配置', exact: true })).toBeVisible();
   const draftAttachment = page.locator('.agent-composer .agent-attachments').getByText('新会话附件.png', { exact: true });
   await page.getByLabel('上传附件').setInputFiles({ name: '新会话附件.png', mimeType: 'image/png', buffer: Buffer.from('new-draft') });
   await expect(draftAttachment).toBeVisible();
@@ -3309,7 +3313,7 @@ test('New conversation draft remains isolated and can be resumed after switching
   await page.reload();
   await expect(recoverDraft).toBeVisible();
   await recoverDraft.click();
-  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新会话配置', exact: true })).toBeVisible();
   await expect(composer).toHaveText('');
   await expect(draftAttachment).toBeVisible();
   const restoredImage = page.locator('.agent-composer .agent-attachment-open img');
@@ -3324,7 +3328,7 @@ test('New conversation draft remains isolated and can be resumed after switching
   await expect(composer).toHaveCount(0);
   await mainNavigation.getByRole('button', { name: 'AI 工作台', exact: true }).click();
   await expect(page).toHaveURL(/\/agent$/);
-  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新会话配置', exact: true })).toBeVisible();
   await expect(composer).toHaveText('只属于新会话的未发送草稿');
   await expect(draftAttachment).toBeVisible();
 
@@ -3342,7 +3346,7 @@ test('New conversation draft remains isolated and can be resumed after switching
     .every(([, value]) => !value.includes('只属于新会话的未发送草稿') && !value.includes('新会话附件.png')))).toBe(true);
 
   await recoverDraft.click();
-  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新会话配置', exact: true })).toBeVisible();
   await expect(composer).toHaveText('只属于新会话的未发送草稿');
   await expect(draftAttachment).toBeVisible();
 
@@ -3379,7 +3383,7 @@ test('New conversation draft remains isolated and can be resumed after switching
 
   await page.getByRole('button', { name: '收起工作区 根工作区' }).hover();
   await page.getByRole('button', { name: '在根工作区中新建会话' }).click();
-  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新会话配置', exact: true })).toBeVisible();
   await expect(composer).toHaveText('只属于新会话的未发送草稿');
   await expect(composer).toBeFocused();
   await expect(draftAttachment).toBeVisible();
@@ -3503,7 +3507,7 @@ test('First message keeps the new conversation visible while its routed read is 
 
   await page.goto('/');
   await login(page);
-  await page.getByRole('button', { name: 'Agent 会话' }).click();
+  await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
   const composer = page.getByLabel('发送 Agent 消息');
   await expect(composer).toBeVisible();
   await composer.fill('首条消息');
@@ -3599,7 +3603,7 @@ test('A new conversation stays first after an existing conversation was reordere
 
   await page.goto('/');
   await login(page);
-  await page.getByRole('button', { name: 'Agent 会话' }).click();
+  await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
   const source = page.getByRole('button', { name: '已有会话 B', exact: true });
   const target = page.locator('[data-conversation-binding-id="new-order-a"]');
   await expect(source).toHaveAttribute('draggable', 'true');
@@ -5175,7 +5179,7 @@ test('Opening an unsubmitted draft clears a running conversation presentation', 
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toBeVisible();
   await page.getByRole('button', { name: '收起工作区 根工作区' }).hover();
   await page.getByRole('button', { name: '在根工作区中新建会话' }).click();
-  await expect(page.getByRole('button', { name: '新会话', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新会话配置', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toHaveCount(0);
   await expect(page.getByText('正在同步 Agent 状态', { exact: true })).toHaveCount(0);
@@ -5239,7 +5243,8 @@ test('Deleting a stale conversation row treats the server-side missing binding a
   const conversationRow = page.locator(`[data-conversation-binding-id="${conversation.id}"]`);
   await expect(conversationRow).toBeVisible();
   await conversationRow.hover();
-  await page.getByRole('button', { name: `删除会话 ${conversation.display_title}` }).click();
+  await conversationRow.click({ button: 'right' });
+  await page.getByRole('menuitem', { name: '删除', exact: true }).click();
   await page.getByRole('button', { name: '确认删除' }).click();
 
   await expect.poll(() => deleteRequests).toBe(1);

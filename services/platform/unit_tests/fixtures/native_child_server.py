@@ -33,10 +33,13 @@ def main():
     assert hashlib.sha256(archive.read_bytes()).hexdigest() == lock["archive_sha256"]
     checked = 0
     with tarfile.open(archive) as source:
+        roots = {member.name.split("/")[0] for member in source.getmembers()}
+        assert len(roots) == 1
+        archive_root = roots.pop()
         for package in lock["packages"]:
             installed = distribution(package)
             assert installed.version == lock["package_version"]
-            prefix = f"software-agent-sdk-{lock['source_commit']}/{package}/"
+            prefix = f"{archive_root}/{package}/"
             for member in source.getmembers():
                 if member.name.startswith(prefix + "openhands/") and member.name.endswith(".py"):
                     stream = source.extractfile(member)

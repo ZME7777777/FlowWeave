@@ -35,7 +35,7 @@ parent_profile = child_fixtures.parent_profile
 gateway_base_url = child_fixtures.gateway_base_url
 launcher_http = child_fixtures.launcher_http
 child_http = child_fixtures.child_http
-pytestmark = pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+pytestmark = pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 
 
 @pytest.fixture
@@ -478,3 +478,34 @@ def test_other_user_cannot_request_or_view_family_deletion(deletion):
             select(BackgroundTask).where(BackgroundTask.task_type == child_deletion.TASK_TYPE)
         )
     )
+
+
+@pytest.mark.parametrize("parent_graph", ["AGENT_WORKSPACE"], indirect=True)
+def test_managed_batch_waits_for_family_cleanup_before_counting_deleted(deletion):
+    from flowweave.modules.agent_sessions.application import management_deletion as jobs
+
+    a = deletion
+    g = a.x.g
+    parent_id = a.x.loc.parent_id
+    # The child is never an independently selectable bulk-delete target.
+    with pytest.raises(DomainError):
+        jobs.start(g.db, g.binding.workspace_id, (a.x.loc.binding_id,), "reject-child")
+    g.db.rollback()
+    job = jobs.start(g.db, g.binding.workspace_id, (parent_id,), "family-batch")
+    g.db.commit()
+    _, lease = tasks.claim(
+        g.db, "batch-family", lease_seconds=120, task_types=frozenset({jobs.TASK_TYPE})
+    )
+    with runtime_context(a.x.runtime), pytest.raises(DomainError) as pending:
+        jobs.process(g.db, g.binding.workspace_id, lease)
+    assert pending.value.code == "AGENT_DELETION_FAMILY_PENDING"
+    snapshot = jobs.listing(g.db, g.binding.workspace_id)["items"][0]
+    assert snapshot["processed"] == 0 and snapshot["deleted_ids"] == []
+    assert g.db.get(BackgroundTask, job["id"]).payload_json["pending_ids"] == [parent_id]
+    g.db.commit()
+    task, family_lease = claim(a)
+    execute(a, task, family_lease)
+    with runtime_context(a.x.runtime):
+        jobs.process(g.db, g.binding.workspace_id, lease)
+    assert jobs.listing(g.db, g.binding.workspace_id)["items"][0]["deleted_ids"] == [parent_id]
+    assert a.other_file.exists() and (a.root / "project.txt").exists()

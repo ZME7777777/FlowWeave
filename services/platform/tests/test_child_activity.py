@@ -26,7 +26,7 @@ parent_profile = child_fixtures.parent_profile
 gateway_base_url = child_fixtures.gateway_base_url
 launcher_http = child_fixtures.launcher_http
 child_http = child_fixtures.child_http
-pytestmark = pytest.mark.parametrize("parent_profile", ["OH_FW_V4"], indirect=True)
+pytestmark = pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
 
 
 @pytest.fixture
@@ -466,8 +466,28 @@ def test_completion_read_watermark_migration_preserves_child_and_native_locator(
     a.x.g.db.commit()
     config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
     config.attributes["database_url"] = settings.database_url
-    command.downgrade(config, "0179_agent_child_creation_audit")
-    command.upgrade(config, "head")
+    if a.x.g.profile == "OH_FW_V5":
+        # A V5 Runtime intentionally prevents unwinding its profile migration.
+        # Exercise the original watermark DDL in place, preserving that profile.
+        import importlib.util
+
+        from alembic.migration import MigrationContext
+        from alembic.operations import Operations
+
+        path = (
+            Path(__file__).parents[1]
+            / "migrations/versions/0180_child_completion_read_watermark.py"
+        )
+        spec = importlib.util.spec_from_file_location("watermark_migration", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with a.x.g.sessions.kw["bind"].begin() as connection:
+            module.op = Operations(MigrationContext.configure(connection))
+            module.downgrade()
+            module.upgrade()
+    else:
+        command.downgrade(config, "0179_agent_child_creation_audit")
+        command.upgrade(config, "head")
     a.x.g.db.expire_all()
     assert child(a).openhands_conversation_id == original
     assert child(a).unread is True

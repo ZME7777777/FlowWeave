@@ -30,8 +30,9 @@ from flowweave.runtime.child_contract import (
 )
 from flowweave.runtime.child_creation import NativeChildPolicy
 from flowweave.runtime.child_governance_contract import (
-    V4_ARCHIVE_SHA256,
+    GOVERNED_CHILD_SOURCES,
     V4_SOURCE_COMMIT,
+    V5_SOURCE_COMMIT,
     require_governed_child_capability_manifest,
 )
 from flowweave.runtime.manifest import runtime_manifest_hash
@@ -87,7 +88,31 @@ class GovernedParentCapability(BaseModel):
     command_url: str
 
 
-FrozenParentCapability = ParentCapability | GovernedParentCapability
+class CurrentGovernedParentCapability(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[3] = 3
+    profile: Literal["OH_FW_V5"] = "OH_FW_V5"
+    owner_user_id: UUID
+    binding_id: UUID
+    host_kind: Literal["AGENT_WORKSPACE", "FLOW_NODE"]
+    host_id: UUID
+    conversation_scope_id: UUID
+    working_directory: str = Field(min_length=1)
+    runtime_image_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    source_commit: Literal["805bb3fe0a57cdc3e383e26019fa216a6892e608"] = V5_SOURCE_COMMIT
+    source_archive_sha256: str
+    capability: dict[str, Any]
+    runtime_manifest: dict[str, Any]
+    policy: NativeChildPolicy
+    launch_url: str
+    query_url: str
+    command_url: str
+
+
+FrozenParentCapability = (
+    ParentCapability | GovernedParentCapability | CurrentGovernedParentCapability
+)
 
 
 def denied() -> DomainError:
@@ -113,10 +138,15 @@ def gateway_urls(owner: str, binding_id: str) -> tuple[str, str, str]:
 def read_parent_capability(binding: AgentConversationBinding) -> FrozenParentCapability:
     try:
         raw = binding.child_parent_manifest_json
-        if isinstance(raw, dict) and raw.get("profile") == "OH_FW_V4":
-            frozen = GovernedParentCapability.model_validate(raw)
-            require_governed_child_capability_manifest(frozen.capability)
-            archive_digest = V4_ARCHIVE_SHA256
+        if isinstance(raw, dict) and raw.get("profile") in GOVERNED_CHILD_SOURCES:
+            model = (
+                CurrentGovernedParentCapability
+                if raw["profile"] == "OH_FW_V5"
+                else GovernedParentCapability
+            )
+            frozen = model.model_validate(raw)
+            require_governed_child_capability_manifest(frozen.capability, frozen.profile)
+            archive_digest = GOVERNED_CHILD_SOURCES[frozen.profile][1]
         else:
             frozen = ParentCapability.model_validate(raw)
             require_child_capability_manifest(frozen.capability)
@@ -155,7 +185,7 @@ def attach_parent_capability(
     runtime_manifest: dict[str, Any],
     expected_manifest_digest: str | None = None,
 ) -> RuntimeAgentSpec:
-    if profile not in {"OH_FW_V3", "OH_FW_V4"}:
+    if profile not in {"OH_FW_V3", "OH_FW_V4", "OH_FW_V5"}:
         if binding.child_parent_manifest_json is not None:
             raise denied()
         return spec
@@ -170,8 +200,10 @@ def attach_parent_capability(
     ):
         raise denied()
     capability = (
-        require_governed_child_capability_manifest(runtime_manifest.get("child_conversations"))
-        if profile == "OH_FW_V4"
+        require_governed_child_capability_manifest(
+            runtime_manifest.get("child_conversations"), profile
+        )
+        if profile in {"OH_FW_V4", "OH_FW_V5"}
         else require_child_capability_manifest(runtime_manifest.get("child_conversations"))
     )
     require_ordinary_binding(db, binding)
@@ -185,7 +217,11 @@ def attach_parent_capability(
         if binding.lifecycle != "PROVISIONING" or binding.owner_user_id != current_user_id():
             raise denied()
         launch_url, query_url, command_url = gateway_urls(binding.owner_user_id, binding.id)
-        parent_model = GovernedParentCapability if profile == "OH_FW_V4" else ParentCapability
+        parent_model = {
+            "OH_FW_V3": ParentCapability,
+            "OH_FW_V4": GovernedParentCapability,
+            "OH_FW_V5": CurrentGovernedParentCapability,
+        }[profile]
         value = parent_model(
             owner_user_id=UUID(binding.owner_user_id),
             binding_id=UUID(binding.id),
@@ -194,7 +230,7 @@ def attach_parent_capability(
             conversation_scope_id=UUID(binding.conversation_scope_id),
             working_directory=binding.working_directory or "",
             runtime_image_digest=runtime_image_digest,
-            source_archive_sha256=V4_ARCHIVE_SHA256 if profile == "OH_FW_V4" else V3_ARCHIVE_SHA256,
+            source_archive_sha256=capability["source_archive_sha256"],
             capability=capability,
             runtime_manifest=deepcopy(runtime_manifest),
             policy=NativeChildPolicy(

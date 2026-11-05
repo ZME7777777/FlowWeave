@@ -85,7 +85,11 @@ from flowweave.runtime.child_governance import (
     NativeGovernedChildPreparation,
     NativeParentConfiguration,
 )
-from flowweave.runtime.child_governance_contract import V4_CHILD_HTTP_OPERATIONS, V4_SOURCE_COMMIT
+from flowweave.runtime.child_governance_contract import (
+    V4_CHILD_HTTP_OPERATIONS,
+    V4_SOURCE_COMMIT,
+    V5_SOURCE_COMMIT,
+)
 from flowweave.runtime.child_interaction import (
     NativeChildInstructionSource,
     NativeCommandInvocation,
@@ -2218,14 +2222,18 @@ class OpenHandsRuntime:
         child_profile = None
         if child_tools:
             source = spec.runtime_contract.source_commit if spec.runtime_contract else None
-            child_profile = "OH_FW_V4" if source == V4_SOURCE_COMMIT else "OH_FW_V3"
+            child_profile = {V4_SOURCE_COMMIT: "OH_FW_V4", V5_SOURCE_COMMIT: "OH_FW_V5"}.get(
+                source, "OH_FW_V3"
+            )
             operations = (
-                V4_CHILD_HTTP_OPERATIONS if child_profile == "OH_FW_V4" else CHILD_HTTP_OPERATIONS
+                V4_CHILD_HTTP_OPERATIONS
+                if child_profile in {"OH_FW_V4", "OH_FW_V5"}
+                else CHILD_HTTP_OPERATIONS
             )
             if (
                 child_tools != set(CHILD_TOOL_NAMES)
                 or spec.runtime_contract is None
-                or source not in {V3_SOURCE_COMMIT, V4_SOURCE_COMMIT}
+                or source not in {V3_SOURCE_COMMIT, V4_SOURCE_COMMIT, V5_SOURCE_COMMIT}
                 or not set(operations) <= set(spec.runtime_contract.required_http_operations)
             ):
                 raise self._incompatible("governed_parent_contract_required")
@@ -2396,7 +2404,7 @@ class OpenHandsRuntime:
         self, handle: RuntimeHandle, method: str, suffix: str = "", **kwargs: Any
     ) -> dict[str, Any]:
         # An unset Workspace profile is not permission to use the latest protocol.
-        if handle.protocol_profile not in {"OH_FW_V3", "OH_FW_V4"}:
+        if handle.protocol_profile not in {"OH_FW_V3", "OH_FW_V4", "OH_FW_V5"}:
             raise DomainError(
                 "RUNTIME_CHILD_UNSUPPORTED", "当前冻结 Runtime 协议不支持受治理子会话", 409
             )
@@ -2427,7 +2435,7 @@ class OpenHandsRuntime:
 
     @staticmethod
     def _require_child_governance(handle: RuntimeHandle) -> None:
-        if handle.protocol_profile != "OH_FW_V4":
+        if handle.protocol_profile not in {"OH_FW_V4", "OH_FW_V5"}:
             raise DomainError(
                 "RUNTIME_CHILD_UNSUPPORTED", "当前冻结 Runtime 协议不支持子准备凭据治理", 409
             )
@@ -2602,7 +2610,7 @@ class OpenHandsRuntime:
     ) -> NativeChildPreparation:
         prepared = self._child_response(
             NativeGovernedChildPreparation
-            if handle.protocol_profile == "OH_FW_V4"
+            if handle.protocol_profile in {"OH_FW_V4", "OH_FW_V5"}
             else NativeChildPreparation,
             value,
             outcome_unknown=request is not None,
@@ -4510,8 +4518,8 @@ class OpenHandsRuntime:
 
         with self._auxiliary_read_bulkhead(handle):
             state = self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
-            # ask_user leaves the run in waiting_for_user_input; the question is open until a user message
-            # follows it on the active branch.
+            # ask_user leaves the run in waiting_for_user_input. The question stays
+            # open until a user message follows it on the active branch.
             if str(state.get("execution_status") or "").lower() in {"deleting"}:
                 return None
             leaf = str(state.get("leaf_event_id") or "") or None
@@ -5867,7 +5875,7 @@ class OpenHandsRuntime:
         """Recognize the 1.54 guarantee: the user event exists but `/run` did not start."""
 
         return (
-            handle.protocol_profile in {"OH_FW_V2", "OH_FW_V3", "OH_FW_V4"}
+            handle.protocol_profile in {"OH_FW_V2", "OH_FW_V3", "OH_FW_V4", "OH_FW_V5"}
             and error.code == "OPENHANDS_REQUEST_FAILED"
             and error.details.get("status_code") == 429
             and error.details.get("outcome_unknown") is False
@@ -6037,8 +6045,7 @@ class OpenHandsRuntime:
             "STALE": "当前分支或提交已变化，请刷新后重新选择",
             "BUSY": "该仓库正在切换分支，请稍后重试",
             "SWITCH_CONFLICT": (
-                "无法切换分支，请先处理未提交或未跟踪文件、"
-                "进行中的合并及其他工作树占用"
+                "无法切换分支，请先处理未提交或未跟踪文件、进行中的合并及其他工作树占用"
             ),
         }
         raise DomainError(

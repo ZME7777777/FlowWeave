@@ -875,3 +875,19 @@ FR-703 的 SDK merge commit 和后续各扩展独立提交；FlowWeave 来源锁
 不串用；用户和父工具并发发送；父结束子继续；多个子标签迟到响应／草稿／附件隔离；
 断流／前台恢复／历史分页；原生最终结果引用；关闭不删除；父删除失败不孤立；原 ID
 replacement；非直属／跨用户／跨宿主拒绝；无 Worktree 创建；旧 V1／V2 不变。
+
+## 11. FR-729 集成发布
+
+用户另行授权将 feat/refactor 的已提交内容和远端增量合入子会话分支并发布。
+新增 OH_FW_V5，固定源码 805bb3fe0a57cdc3e383e26019fa216a6892e608、四包 1.58.2、
+归档 SHA-256 eaf4322c182d2ea80202840b43834cb72697371e479eca91aaf03dc458adb208，
+Runtime contract schema 为 8。沿用十条正式子路由和六个工具，能力文档版本为
+`oh-fw-child-v3`。V3/V4 的固定身份和能力 digest 继续由各自适配器校验。
+
+Agent Workspace 通过受保护部署配置将新建普通会话显式选择为 OH_FW_V5，子入口与现有
+平台 MCP 入口使用相同的 Runtime 可达根。历史父能力继续读取绑定自身的冻结信息。
+既有 FlowRun 继续使用其 Environment Version 和 Runtime Session 的冻结 profile。
+
+批量删除保存等待中的父 binding ID，只有原生父子清理完成且父 locator 已移除后才计入
+已删除。工作区物理删除遇到父子会话时要求先从会话入口完成清理，避免提前移动持久目录。
+前端继续复用 feat 的归档按钮与右键删除入口，并保留子会话悬浮卡、标题标签和独立输入。
