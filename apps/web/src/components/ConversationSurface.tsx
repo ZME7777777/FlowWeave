@@ -1331,7 +1331,7 @@ function SkillLoadRow({ entry, reveal = false, running }: { entry: ActivityEntry
   </article>;
 }
 
-/** The agent's ask_user call: the concrete question(s), one quiet ellipsized line each; the answer UI lives above the composer. */
+/** The agent's ask_user call: the first question as one quiet line; several questions expand like any other tool detail. */
 function AskUserRow({ entry, reveal = false }: { entry: ActivityEntry; reveal?: boolean }) {
   const action = entry.action ?? entry.item;
   const details = action.event.payload.details as { question?: unknown; questions?: unknown } | undefined;
@@ -1340,10 +1340,15 @@ function AskUserRow({ entry, reveal = false }: { entry: ActivityEntry; reveal?: 
     ...(Array.isArray(details?.questions) ? details.questions.map(item => (item as { question?: unknown } | null)?.question) : []),
   ].filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
   const refused = entry.results.some(result => result.event.payload.details?.asked === false);
-  return <article className={`conversation-activity-row tool ask-user${refused ? ' error' : ''}${reveal ? ' conversation-text-reveal-block' : ''}`} aria-label="Agent 提问" data-ask-user-event-id={action.event.id}>
-    <MessageCircleQuestion size={13}/>
-    <div>{refused ? <b>提问未送达</b> : asked.length ? asked.map((text, index) => <b key={index} title={text}>{asked.length > 1 ? `${index + 1}. ` : ''}{text}</b>) : <b>向你提问</b>}</div>
+  const first = refused ? '提问未送达' : asked[0] ?? '向你提问';
+  const className = `conversation-activity-row tool ask-user${refused ? ' error' : ''}${reveal ? ' conversation-text-reveal-block' : ''}`;
+  if (refused || asked.length < 2) return <article className={className} aria-label="Agent 提问" data-ask-user-event-id={action.event.id}>
+    <MessageCircleQuestion size={13}/><div><b title={first}>{first}</b></div>
   </article>;
+  return <details className={`${className} conversation-tool-detail`} aria-label="Agent 提问" data-ask-user-event-id={action.event.id}>
+    <summary><MessageCircleQuestion size={13}/><div><b title={first}>{first}</b></div><small className="ask-user-more">共 {asked.length} 个问题</small><ChevronRight className="conversation-expand-arrow" size={12}/></summary>
+    <ol className="ask-user-list">{asked.map((text, index) => <li key={index}>{text}</li>)}</ol>
+  </details>;
 }
 
 function eventTime(item?: Item): number | undefined {

@@ -29,15 +29,20 @@ export function UserQuestionCard({ question, busy, onAnswer, onClose }: {
   onAnswer: (content: string, answeredQuestion: string) => void;
   onClose: () => void;
 }) {
-  const steps = useMemo<Step[]>(() => [
+  const rawSteps: Step[] = [
     ...(question.question?.trim() ? [{ question: question.question, options: question.options ?? [], recommendation: question.recommendation }] : []),
     ...(question.questions ?? []).filter(item => item.question?.trim()).map(item => ({ question: item.question, options: item.options ?? [], recommendation: item.recommendation })),
-  ], [question]);
+  ];
+  // Event-window refetches return a new object for the same question; keep the steps (and the
+  // user's in-progress choices) stable unless the content really changed.
+  const stepsKey = JSON.stringify(rawSteps);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const steps = useMemo<Step[]>(() => rawSteps, [stepsKey]);
   const [index, setIndex] = useState(0);
   const [answers, setAnswers] = useState<Answer[]>(() => steps.map(() => ({ text: '', skipped: false })));
   const inputRef = useRef<HTMLInputElement>(null);
   useEscapeClose(onClose, true);
-  useEffect(() => { setIndex(0); setAnswers(steps.map(() => ({ text: '', skipped: false }))); }, [question.action_id, steps]);
+  useEffect(() => { setIndex(0); setAnswers(steps.map(() => ({ text: '', skipped: false }))); }, [question.action_id, stepsKey]);
   useEffect(() => { inputRef.current?.focus(); }, [index, question.action_id]);
   const step = steps[index];
   const answer = answers[index];

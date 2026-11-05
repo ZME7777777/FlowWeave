@@ -58,7 +58,7 @@ test('an open ask_user question shows the sidebar badge, the question card and a
   const card = page.getByTestId('agent-user-question');
   await expect(card).toBeVisible();
   await expect(card.getByText('是否把版本 2.3 发布到生产环境？')).toBeVisible();
-  await expect(page.locator('[data-conversation-binding-id="ask-user-conversation"]').getByText('需要用户输入')).toBeVisible();
+  await expect(page.locator('[data-conversation-binding-id="ask-user-conversation"]').getByLabel('需要用户输入')).toBeVisible();
   await expect(page.locator('[data-ask-user-event-id="ask-user-action"]')).toContainText('是否把版本 2.3 发布到生产环境？');
 });
 
@@ -74,7 +74,7 @@ test('Escape closes the card and a typed reply is sent as an ordinary user messa
   await page.reload();
   await expect(page.getByPlaceholder('给 Agent 发消息…')).toBeVisible();
   await expect(page.getByTestId('agent-user-question')).toHaveCount(0);
-  await expect(page.locator('[data-conversation-binding-id="ask-user-conversation"]').getByText('需要用户输入')).toHaveCount(0);
+  await expect(page.locator('[data-conversation-binding-id="ask-user-conversation"]').getByLabel('需要用户输入')).toHaveCount(0);
   await page.getByPlaceholder('给 Agent 发消息…').fill('先灰度');
   await page.getByRole('button', { name: '发送消息' }).click();
   await expect.poll(() => [...sent]).toEqual(['先灰度']);
