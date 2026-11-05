@@ -1496,3 +1496,4 @@ body:has(.login-page){min-width:0}
 .toast-error{background:#fff0f0;border-color:#ebcaca;color:var(--red)}
 @keyframes toast-in{from{opacity:0;transform:translate(-50%,-6px)}to{opacity:1;transform:translate(-50%,0)}}
 .gate-on-fail-controls{display:flex;flex:0 0 auto;align-items:center;justify-content:flex-end;gap:8px;min-width:0}.gate-on-fail-controls .launch-option-menu{min-width:150px;max-width:260px}@media (max-width:640px){.gate-on-fail-controls{flex-wrap:wrap;justify-content:flex-start}}
+.provider-primary-badge{border-radius:999px;background:#e8f3ec;padding:1px 7px;color:#245f3d;font-style:normal}

@@ -220,6 +220,7 @@ def provider_dict(db: Session, item: ModelProvider) -> dict[str, Any]:
             model.enabled and model.is_default and model_protocol(model) != "ANTHROPIC"
             for model in models
         ),
+        "is_primary": item.is_primary,
         "row_version": item.row_version,
         "models": [
             {
@@ -244,8 +245,34 @@ def provider_dict(db: Session, item: ModelProvider) -> dict[str, Any]:
 
 def list_providers(db: Session) -> list[dict[str, Any]]:
     return [
-        provider_dict(db, x) for x in db.scalars(select(ModelProvider).order_by(ModelProvider.name))
+        provider_dict(db, x)
+        for x in db.scalars(
+            select(ModelProvider).order_by(ModelProvider.is_primary.desc(), ModelProvider.name)
+        )
     ]
+
+
+def set_primary_provider(db: Session, provider_id: str, primary: bool) -> dict[str, Any]:
+    """Mark one provider as the user's default, or clear the mark.
+
+    Only a connected provider that can actually start a conversation may be
+    primary, so the default never points at something unusable.
+    """
+
+    item = get_provider(db, provider_id)
+    if primary:
+        provider = provider_dict(db, item)
+        if not provider["available_for_nodes"]:
+            raise conflict("only a connected provider with a default model can be primary")
+        db.execute(
+            update(ModelProvider)
+            .where(ModelProvider.id != item.id, ModelProvider.is_primary.is_(True))
+            .values(is_primary=False)
+        )
+    item.is_primary = primary
+    finish(db)
+    db.refresh(item)
+    return provider_dict(db, item)
 
 
 def get_provider(db: Session, provider_id: str) -> ModelProvider:
@@ -378,7 +405,7 @@ def _deterministic_replacement_model(
     providers = db.scalars(
         select(ModelProvider)
         .where(ModelProvider.connection_state == "CONNECTED")
-        .order_by(ModelProvider.name, ModelProvider.id)
+        .order_by(ModelProvider.is_primary.desc(), ModelProvider.name, ModelProvider.id)
     ).all()
     for provider in providers:
         if provider.id in excluded_provider_ids:
@@ -969,3 +996,14 @@ def codex_runtime_credentials(db: Session, provider_id: str) -> CodexRuntimeCred
         access_token=_fernet().decrypt(current.encrypted_oauth_access_token).decode(),
         account_id=current.oauth_account_id,
     )
+
+
+def provider_model_label(db: Session, provider_id: str | None, model_name: str | None) -> str:
+    """Return the display text "<model> · <provider>" used by model-change dividers."""
+
+    provider = db.get(ModelProvider, provider_id) if provider_id else None
+    name = provider.name if provider is not None else ""
+    model = model_name or ""
+    if model and name:
+        return f"{model} · {name}"
+    return model or name or "未知模型"

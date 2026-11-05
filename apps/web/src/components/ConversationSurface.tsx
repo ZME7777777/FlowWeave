@@ -1,5 +1,5 @@
 import { ViewportPopover } from './ViewportPopover';
-import { BookOpen, Check, MessageCircleQuestion, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, PanelTop, Pencil, PlugZap, Quote, Search, ShieldCheck, Sparkles, SquareTerminal, Target, Workflow, Wrench } from 'lucide-react';
+import { BookOpen, Box, Check, MessageCircleQuestion, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, PanelTop, Pencil, PlugZap, Quote, Search, ShieldCheck, Sparkles, SquareTerminal, Target, Workflow, Wrench } from 'lucide-react';
 import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { AgentActivitySummary, AgentAttachment, AgentConversationAnnotation, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { SubagentAvatar } from './SubagentAvatar';
@@ -1382,6 +1382,19 @@ function processBlocksForTurn(segments: ProcessSegment[], active: boolean, compl
 }
 
 /** Format the wall-clock time attached to an actual OpenHands message event. */
+function ModelChangeDivider({ change, timestamp }: { change: { from: string; to: string }; timestamp: unknown }) {
+  const time = formatMessageTime(timestamp);
+  const parsed = parseOpenHandsEventTime(timestamp);
+  const sameDay = parsed !== undefined && new Date(parsed).toDateString() === new Date().toDateString();
+  return <div className="conversation-model-change" role="note">
+    {time && <time className="conversation-model-change-time">{sameDay ? `今天 ${time}` : time}</time>}
+    <div className="conversation-model-change-line">
+      <Box size={13} aria-hidden="true"/>
+      <span>模型已从 <b>{change.from}</b> 更改为 <b>{change.to}</b>。</span>
+    </div>
+  </div>;
+}
+
 function formatMessageTime(raw: unknown): string | undefined {
   const value = parseOpenHandsEventTime(raw);
   if (value === undefined) return undefined;
@@ -3139,7 +3152,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
                   ? message.event.payload._flowweave_delivery_status
                   : undefined;
             return <Fragment key={turn.renderKey}>
-              <div className={`conversation-user-message${isContinuation ? ' continuation' : ''}`}>{editingEventId === message.event.id
+              <div className={`conversation-user-message${isContinuation ? ' continuation' : ''}`}>{message.event.payload.model_change && <ModelChangeDivider change={message.event.payload.model_change} timestamp={message.event.payload.timestamp}/>}{editingEventId === message.event.id
                 ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(message.event.id, editingContent.trim()); }}><textarea ref={rewriteEditor} aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)} onKeyDown={event => {
                   if (event.nativeEvent.isComposing || event.keyCode === 229) return;
                   if (event.key === 'Escape') {

@@ -1,4 +1,4 @@
-import { CheckCircle2, CheckSquare, ChevronDown, ExternalLink, KeyRound, Link2, LoaderCircle, LogIn, LogOut, Pencil, Plus, Server, ShieldCheck, ShieldX, Trash2 } from 'lucide-react';
+import { CheckCircle2, CheckSquare, ChevronDown, ExternalLink, KeyRound, Link2, LoaderCircle, LogIn, LogOut, Pencil, Plus, Server, ShieldCheck, ShieldX, Star, Trash2 } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, KeyboardEvent, useCallback, useEffect, useId, useRef, useState } from 'react';
 import { api } from '../api/client';
@@ -327,6 +327,11 @@ export function ModelsPage() {
     },
     onSettled: () => void qc.invalidateQueries({ queryKey: ['model-providers'] }),
   });
+  const setPrimary = useMutation({
+    mutationFn: ({ id, primary }: { id: string; primary: boolean }) => api.setPrimaryProvider(id, primary),
+    onSuccess: (_value, { primary }) => { setNotice(primary ? '已设为主要供应商，新会话将默认使用它。' : '已取消主要供应商。'); void qc.invalidateQueries({ queryKey: ['model-providers'] }); },
+    onError: reason => setError(reason instanceof Error ? reason.message : '设置主要供应商失败'),
+  });
   const readUsage = useMutation({
     mutationFn: (provider: ModelProvider) => api.providerUsage(provider.id),
     onSuccess: (value, provider) => setUsage(old => ({ ...old, [provider.id]: { value, rowVersion: provider.row_version } })),
@@ -371,7 +376,7 @@ export function ModelsPage() {
     actions={<button className="primary" onClick={() => setEditing(null)}><Plus size={14}/>新增供应商</button>}
     selection={<><button className="ghost" disabled={!providers.length || deleting} onClick={toggleAll}><CheckSquare size={13}/>{allSelected ? '取消全选' : '全选'}</button><button className="danger" disabled={!selectedIds.size || deleting} onClick={() => void removeMany([...selectedIds], `选中的 ${selectedIds.size} 个供应商`)}><Trash2 size={13}/>{deleting ? '删除中…' : `批量删除 (${selectedIds.size})`}</button></>}
     listKey={`${query}-${page}`}
-    list={isLoading ? <div className="empty compact">加载中…</div> : loadError ? <div className="empty compact error"><span>{loadError.message}</span><button className="secondary" onClick={() => void refetch()}>重试</button></div> : pagedProviders.length ? pagedProviders.map(provider => <SettingsResourceRow key={provider.id} name={provider.name} description={provider.models.find(item => item.is_default && item.enabled)?.model_name ?? '未设置默认模型'} meta={<><em className={provider.connection_state === 'FAILED' ? 'failed' : ''}>{CONNECTION_STATE_LABELS[provider.connection_state] ?? provider.connection_state}</em><span>{provider.auth_type === 'CODEX_OAUTH' ? 'Codex OAuth' : 'API Key'}</span></>} active={activeProvider?.id === provider.id} onSelect={() => setActiveId(provider.id)} checked={selectedIds.has(provider.id)} onToggle={() => toggle(provider.id)}/>) : <div className="empty compact">{query ? '没有匹配的供应商' : '还没有供应商'}</div>}
+    list={isLoading ? <div className="empty compact">加载中…</div> : loadError ? <div className="empty compact error"><span>{loadError.message}</span><button className="secondary" onClick={() => void refetch()}>重试</button></div> : pagedProviders.length ? pagedProviders.map(provider => <SettingsResourceRow key={provider.id} name={provider.name} description={provider.models.find(item => item.is_default && item.enabled)?.model_name ?? '未设置默认模型'} meta={<>{provider.is_primary && <em className="provider-primary-badge">主要</em>}<em className={provider.connection_state === 'FAILED' ? 'failed' : ''}>{CONNECTION_STATE_LABELS[provider.connection_state] ?? provider.connection_state}</em><span>{provider.auth_type === 'CODEX_OAUTH' ? 'Codex OAuth' : 'API Key'}</span></>} active={activeProvider?.id === provider.id} onSelect={() => setActiveId(provider.id)} checked={selectedIds.has(provider.id)} onToggle={() => toggle(provider.id)}/>) : <div className="empty compact">{query ? '没有匹配的供应商' : '还没有供应商'}</div>}
     pagination={<Pagination page={page} pageSize={pageSize} total={filteredProviders.length} onPageChange={setPage}/>}
     overlays={<>    {editing !== undefined && <ProviderEditor provider={editing ?? undefined} onClose={() => setEditing(undefined)}/>}
     {codexLogin && <CodexLoginDialog provider={codexLogin.provider} authorization={codexLogin.authorization} onClose={() => setCodexLogin(undefined)} onConnected={status => { setCodexLogin(undefined); if (status.model_sync_error) setError(`Codex 登录成功，但模型同步失败：${status.model_sync_error}`); else setNotice(`Codex 登录成功，已自动同步 ${status.model_count ?? 0} 个模型。`); void qc.invalidateQueries({ queryKey: ['model-providers'] }); }}/>}
@@ -392,6 +397,7 @@ export function ModelsPage() {
               ? <button className="secondary" onClick={() => void startCodexLogin(provider)}><LogIn size={14}/>{provider.oauth_device_pending ? '重新开始登录' : '登录 Codex'}</button>
               : <button className="secondary" disabled={deleting || test.isPending} onClick={() => test.mutate(provider.id)}>{testing ? <LoaderCircle className="spin" size={14}/> : <CheckCircle2 size={14}/>} {testing ? '测试中…' : '测试连接'}</button>}
             {oauth && provider.oauth_connected && <button className="ghost" onClick={() => void disconnectCodex(provider)}><LogOut size={14}/>断开 Codex</button>}
+            <button className="secondary" aria-pressed={provider.is_primary} aria-label={provider.is_primary ? `取消主要供应商 ${provider.name}` : `设为主要供应商 ${provider.name}`} disabled={deleting || setPrimary.isPending || (!provider.is_primary && !provider.available_for_nodes)} title={!provider.is_primary && !provider.available_for_nodes ? '需先连接成功并设置默认模型' : undefined} onClick={() => setPrimary.mutate({ id: provider.id, primary: !provider.is_primary })}><Star size={14} fill={provider.is_primary ? 'currentColor' : 'none'}/>{provider.is_primary ? '取消主要' : '设为主要'}</button>
             <button className="secondary" aria-label={`编辑供应商 ${provider.name}`} onClick={() => setEditing(provider)}><Pencil size={14}/>编辑</button>
             <button className="danger" disabled={deleting} aria-label={`删除供应商 ${provider.name}`} onClick={() => void removeMany([provider.id], `供应商“${provider.name}”`)}><Trash2 size={14}/>删除</button>
           </div>

@@ -73,6 +73,7 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationCommand,
     AgentConversationCredentialSync,
     AgentConversationMessageAttachment,
+    AgentMessageModelChange,
     AgentSidebarConversation,
 )
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
@@ -89,7 +90,10 @@ from flowweave.modules.credentials.application.service import (
     list_credentials,
     resolve_credentials_for_agent,
 )
-from flowweave.modules.model_providers.public import has_connected_default_model
+from flowweave.modules.model_providers.public import (
+    has_connected_default_model,
+    provider_model_label,
+)
 from flowweave.modules.sandboxes.public import ManagedSandbox
 from flowweave.modules.tasks.public import enqueue
 from flowweave.modules.users.application.security import (
@@ -3118,6 +3122,19 @@ def _project_conversation_events(
     for attachment in stored:
         attachments_by_event.setdefault(attachment.event_id, []).append(attachment)
 
+    model_changes_by_event = {
+        change.event_id: change
+        for change in (
+            db.scalars(
+                select(AgentMessageModelChange).where(
+                    AgentMessageModelChange.binding_id == binding.id,
+                    AgentMessageModelChange.event_id.in_(event_ids),
+                )
+            ).all()
+            if event_ids
+            else []
+        )
+    }
     reply_annotations_by_event = _structured_reply_annotations(batch.events)
     terminal_assistant_ids = terminal_assistant_message_ids(batch)
 
@@ -3190,6 +3207,12 @@ def _project_conversation_events(
                     }
                     for path in legacy_paths
                 ]
+        model_change = model_changes_by_event.get(event.cursor)
+        if model_change is not None:
+            payload["model_change"] = {
+                "from": model_change.from_label,
+                "to": model_change.to_label,
+            }
         return {"id": event.cursor, "event_type": event.event_type, "payload": payload}
 
     execution_status = str(
@@ -3744,6 +3767,7 @@ def message(
     _observe_task_watchdogs_after_send(db, binding, handle)
     if result.cursor:
         _record_message_attachments(db, binding, result.cursor, content.strip(), attachments)
+        _record_model_change(db, binding, result.cursor)
     activity_at = now()
     # New messages do not change the default creation-time or manual ordering.
     binding.last_message_at = activity_at
@@ -4425,6 +4449,48 @@ def _record_message_attachments(
         )
     if attachments:
         db.flush()
+
+
+def _record_model_change(
+    db: Session, binding: AgentConversationBinding, event_id: str | None
+) -> None:
+    """Remember the model of this user event; project a divider when it changed.
+
+    The first send only seeds the baseline, so a fresh conversation shows no
+    divider. A divider is keyed by the formal user event identity.
+    """
+
+    provider_id, model_name = binding.model_provider_id, binding.model_name
+    previous_provider, previous_model = binding.last_sent_provider_id, binding.last_sent_model_name
+    changed = previous_model is not None and (
+        previous_provider != provider_id or previous_model != model_name
+    )
+    if changed and event_id:
+        exists = db.scalar(
+            select(AgentMessageModelChange.id).where(
+                AgentMessageModelChange.binding_id == binding.id,
+                AgentMessageModelChange.event_id == event_id,
+            )
+        )
+        if exists is None:
+            db.add(
+                AgentMessageModelChange(
+                    binding_id=binding.id,
+                    event_id=event_id,
+                    from_provider_id=previous_provider,
+                    from_model_name=previous_model,
+                    from_label=provider_model_label(db, previous_provider, previous_model),
+                    to_provider_id=provider_id,
+                    to_model_name=model_name,
+                    to_label=provider_model_label(db, provider_id, model_name),
+                )
+            )
+    binding.last_sent_provider_id = provider_id
+    binding.last_sent_model_name = model_name
+    db.flush()
+
+
+record_model_change = _record_model_change
 
 
 def delete_draft_attachments(db: Session, workspace_id: str, owner_id: str) -> int:
@@ -5495,6 +5561,7 @@ def rewrite_message(
     _observe_task_watchdogs_after_send(db, binding, handle)
     if result.cursor:
         _record_message_attachments(db, binding, result.cursor, content.strip(), attachments)
+        _record_model_change(db, binding, result.cursor)
     activity_at = now()
     # New messages do not change the default creation-time or manual ordering.
     binding.last_message_at = activity_at

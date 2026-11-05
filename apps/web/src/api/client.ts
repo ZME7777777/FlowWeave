@@ -777,6 +777,7 @@ export const api = {
   providers: () => request<ModelProvider[]>('/model-providers'),
   createProvider: (body: ModelProviderWrite) => request<ModelProvider>('/model-providers', json('POST', body)),
   updateProvider: (id: string, body: ModelProviderWrite) => request<ModelProvider>(`/model-providers/${id}`, json('PUT', body)),
+  setPrimaryProvider: (id: string, primary: boolean) => request<ModelProvider>(`/model-providers/${id}/primary`, json(primary ? 'POST' : 'DELETE')),
   deleteProvider: (id: string) => request<void>(`/model-providers/${id}`, json('DELETE')),
   deleteProviders: (ids: string[]) => request<ProviderBulkDeleteResult>('/model-providers', json('DELETE', { ids })),
   testProvider: (id: string) => request<{ connection_state: string; model_count: number }>(`/model-providers/${id}/test`, json('POST')),

@@ -229,6 +229,8 @@ export interface ModelProvider {
   has_api_key: boolean; api_key_hint?: string | null; oauth_connected: boolean;
   oauth_account_email?: string | null; oauth_device_pending: boolean;
   connection_state: string; reference_node_count: number; available_for_nodes: boolean;
+  /** At most one provider is primary; new conversations default to it. */
+  is_primary: boolean;
   available_for_prompt_gates: boolean;
   row_version: number; models: ProviderModel[];
   created_at: string; updated_at: string;
@@ -792,6 +794,10 @@ export interface OpenHandsConversationEvent {
       llm_response_id?: string;
     };
     display_content?: string;
+    /** The ask_user question this user reply answers (server-projected from the message envelope). */
+    answered_question?: string;
+    /** Server-projected: this user message was the first sent after the model changed. */
+    model_change?: { from: string; to: string };
     attachments?: AgentAttachment[];
     conversation_references?: AgentConversationReference[];
     workspace_references?: AgentWorkspaceReference[];

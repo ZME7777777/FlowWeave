@@ -37,4 +37,8 @@ flowweave model test <provider-id>
 
 仅对平台支持的供应商使用设备授权：先调用 `flowweave model oauth-start <provider-id>`，让用户在返回的验证地址完成授权，再用 `oauth-poll` 查看结果。用 `oauth-status` 查询，明确授权撤销后才 `oauth-revoke`。OAuth 设备码与令牌是敏感数据，不复制到日志或文件。
 
+## 主要供应商
+
+每个用户至多一个“主要供应商”：新会话与自动选择模型时优先使用它。只有已连接、且有默认模型的供应商可设为主要；设置新的主要供应商会自动取消原来的。接口为 `POST /model-providers/<provider-id>/primary`（设为主要）与 `DELETE /model-providers/<provider-id>/primary`（取消），列表与详情返回 `is_primary`。CLI 是否提供对应子命令以 `flowweave openapi --paths` 为准，不要猜测命令名。
+
 删除供应商前，先读取其引用状态并提示它可能影响节点/运行；只有用户指定精确 ID 并确认后执行 `flowweave model delete <provider-id>`。

@@ -9,7 +9,7 @@ function credential(index: number) {
   return { id: `credential-${index}`, name: `站点认证 ${index}`, target_host: `service-${index}.example.test`, target_path: '/admin', include_subdomains: false, auth_type: 'USERNAME_PASSWORD', has_username: true, has_secret: true, secret_hint: '5678', row_version: 1, environment_names: {}, created_at: now, updated_at: now };
 }
 function provider(index: number) {
-  return { id: `provider-${index}`, name: `模型服务 ${index}`, auth_type: 'API_KEY', base_url: 'https://models.example.test/v1', protocols: ['CHAT_COMPLETIONS'], has_api_key: true, api_key_hint: '••••key', oauth_connected: false, connection_state: 'CONNECTED', reference_node_count: 2, available_for_nodes: true, available_for_prompt_gates: true, row_version: 1, models: [{ id: `model-${index}`, model_name: `model-${index}`, enabled: true, is_default: true }], created_at: now, updated_at: now };
+  return { id: `provider-${index}`, name: `模型服务 ${index}`, auth_type: 'API_KEY', base_url: 'https://models.example.test/v1', protocols: ['CHAT_COMPLETIONS'], has_api_key: true, api_key_hint: '••••key', oauth_connected: false, connection_state: 'CONNECTED', reference_node_count: 2, available_for_nodes: true, available_for_prompt_gates: true, is_primary: false, row_version: 1, models: [{ id: `model-${index}`, model_name: `model-${index}`, enabled: true, is_default: true }], created_at: now, updated_at: now };
 }
 function environment(index: number) {
   return { id: `environment-${index}`, name: `终端环境 ${index}`, description: `开发与验收环境 ${index}`, row_version: 1, active_sessions: [], versions: Array.from({ length: 12 }, (_, revision) => ({ id: `version-${index}-${revision}`, environment_id: `environment-${index}`, version_no: 12 - revision, state: 'READY', image_reference: 'test/runtime:v1', image_digest: 'sha256:' + 'a'.repeat(64), description: `环境版本 ${12 - revision}`, runtime_capabilities: ['browser'], manifest: { commands: { python: '3.12' } }, reference_count: revision === 0 ? 1 : 0, run_reference_count: revision === 0 ? 1 : 0, created_at: now })), created_at: now, updated_at: now };
@@ -373,4 +373,47 @@ test('editing a query cancels an outdated balance preview and supports outside c
   await expect(editor.getByText('$999', { exact: true })).toHaveCount(0);
   await page.locator('.modal-backdrop').click({ position: { x: 2, y: 2 } });
   await expect(editor).toHaveCount(0);
+});
+
+test('a provider can be marked primary, moving the mark and showing a badge', async ({ page }) => {
+  const providers = [provider(1), provider(2)];
+  const calls: string[] = [];
+  await base(page, async (route, path) => {
+    const match = path.match(/\/model-providers\/([^/]+)\/primary$/);
+    if (match) {
+      const method = route.request().method();
+      calls.push(`${method} ${match[1]}`);
+      for (const item of providers) item.is_primary = method === 'POST' && item.id === match[1];
+      await json(route, providers.find(item => item.id === match[1]));
+      return true;
+    }
+    if (path.endsWith('/model-providers')) { await json(route, providers); return true; }
+    return false;
+  });
+  await openSettings(page, '供应商配置');
+  const list = page.getByRole('complementary', { name: '供应商配置列表' });
+  await expect(list.locator('.provider-primary-badge')).toHaveCount(0);
+
+  await page.getByRole('button', { name: '设为主要供应商 模型服务 1' }).click();
+  await expect(list.locator('.provider-primary-badge')).toHaveCount(1);
+  await expect(page.getByRole('button', { name: '取消主要供应商 模型服务 1' })).toHaveAttribute('aria-pressed', 'true');
+
+  await list.getByRole('button', { name: '查看 模型服务 2', exact: true }).click();
+  await page.getByRole('button', { name: '设为主要供应商 模型服务 2' }).click();
+  await expect(list.locator('.provider-primary-badge')).toHaveCount(1);
+  await expect(list.locator('.settings-resource-row').filter({ hasText: '模型服务 2' }).locator('.provider-primary-badge')).toBeVisible();
+
+  await page.getByRole('button', { name: '取消主要供应商 模型服务 2' }).click();
+  await expect(list.locator('.provider-primary-badge')).toHaveCount(0);
+  expect(calls).toEqual(['POST provider-1', 'POST provider-2', 'DELETE provider-2']);
+});
+
+test('an unconnected provider cannot be marked primary', async ({ page }) => {
+  const providers = [{ ...provider(1), connection_state: 'FAILED', available_for_nodes: false }];
+  await base(page, async (route, path) => {
+    if (path.endsWith('/model-providers')) { await json(route, providers); return true; }
+    return false;
+  });
+  await openSettings(page, '供应商配置');
+  await expect(page.getByRole('button', { name: '设为主要供应商 模型服务 1' })).toBeDisabled();
 });

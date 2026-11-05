@@ -2081,8 +2081,13 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.locator('h2.agent-session-title').click();
   await expect(page.locator('.agent-composer-model-popover')).toBeHidden();
   await page.getByLabel('打开模型与推理设置').click();
-  await page.getByRole('button', { name: '供应商 已测试模型' }).click();
-  await page.getByLabel('选择供应商').getByRole('button', { name: '另一模型配置' }).click();
+  // Cascade: hovering a provider reveals its models, a model is only staged until 确认.
+  await page.getByRole('option', { name: '供应商 另一模型配置' }).hover();
+  await expect(page.getByRole('option', { name: '模型 gpt-second' })).toBeVisible();
+  await page.getByRole('option', { name: '模型 gpt-second' }).click();
+  await expect(page.getByRole('button', { name: '确认' })).toBeEnabled();
+  expect(persistedModelSelection).toBeNull();
+  await page.getByRole('button', { name: '确认' }).click();
   await expect.poll(() => persistedModelSelection).toEqual({
     model_provider_id: 'provider-2', model_name: 'gpt-second', reasoning_effort: 'high',
   });

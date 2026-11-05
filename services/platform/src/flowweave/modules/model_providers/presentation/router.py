@@ -41,6 +41,20 @@ async def update_provider(provider_id: str, payload: ModelProviderWrite, db: Db)
     return await run_sync(db, lambda session: service.save_provider(session, payload, provider_id))
 
 
+@router.post("/model-providers/{provider_id}/primary")
+async def set_primary_provider(provider_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: service.set_primary_provider(session, provider_id, True)
+    )
+
+
+@router.delete("/model-providers/{provider_id}/primary")
+async def clear_primary_provider(provider_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: service.set_primary_provider(session, provider_id, False)
+    )
+
+
 @router.delete("/model-providers/{provider_id}", status_code=204, response_class=Response)
 async def delete_provider(provider_id: str, db: Db) -> Response:
     await run_sync(db, lambda session: service.delete_providers(session, [provider_id]))

@@ -44,6 +44,8 @@ class ModelProvider(Base):
     oauth_device_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     oauth_poll_interval: Mapped[int | None] = mapped_column(Integer)
     connection_state: Mapped[str] = mapped_column(String(30), default="UNTESTED")
+    # At most one provider per user is primary; conversations default to it.
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
     row_version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)

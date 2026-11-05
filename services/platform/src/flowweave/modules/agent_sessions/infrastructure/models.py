@@ -153,6 +153,10 @@ class AgentConversationBinding(Base):
     model_provider_id: Mapped[str | None] = mapped_column(String(36), index=True)
     model_name: Mapped[str | None] = mapped_column(String(240))
     reasoning_effort: Mapped[str | None] = mapped_column(String(30))
+    # The model of the most recent user event actually sent; NULL until the
+    # first send. Used only to project a "model changed" divider.
+    last_sent_provider_id: Mapped[str | None] = mapped_column(String(36))
+    last_sent_model_name: Mapped[str | None] = mapped_column(String(240))
     fallback_models_json: Mapped[list[dict[str, str | None]]] = mapped_column(JSON, default=list)
     streaming_callback_ready: Mapped[bool] = mapped_column(Boolean, default=True)
     # OpenHands identifiers are UUIDs today, but the formal Runtime contract
@@ -296,6 +300,26 @@ class AgentConversationMessageAttachment(Base):
     mime_type: Mapped[str] = mapped_column(String(200))
     byte_size: Mapped[int] = mapped_column(Integer)
     path: Mapped[str] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class AgentMessageModelChange(Base):
+    """Display projection: the model differed from the previous user event."""
+
+    __tablename__ = "agent_message_model_changes"
+    __table_args__ = (
+        UniqueConstraint("binding_id", "event_id", name="uq_agent_message_model_change"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    binding_id: Mapped[str] = mapped_column(String(36), index=True)
+    event_id: Mapped[str] = mapped_column(String(200))
+    from_provider_id: Mapped[str | None] = mapped_column(String(36))
+    from_model_name: Mapped[str | None] = mapped_column(String(240))
+    from_label: Mapped[str] = mapped_column(String(300))
+    to_provider_id: Mapped[str | None] = mapped_column(String(36))
+    to_model_name: Mapped[str | None] = mapped_column(String(240))
+    to_label: Mapped[str] = mapped_column(String(300))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
