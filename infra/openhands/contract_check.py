@@ -170,9 +170,9 @@ from openhands.tools.terminal.terminal.tmux_terminal import _new_owned_session
 
 EXPECTED_VERSION = "1.58.2"
 EXPECTED_UPSTREAM_BASE = "ce5716a3c0a955a85bb0cc4dcfaa94d5fefcda50"
-EXPECTED_SOURCE_COMMIT = "b2131e0ef31a459486f6bd716e150c7e710c8a78"
+EXPECTED_SOURCE_COMMIT = "89dd0d1b0c9bccdee8bbae4eb710500d12115455"
 EXPECTED_SOURCE_ARCHIVE_SHA256 = (
-    "a7defbd65c78ba5e1fa26b4dd5eca3f7ddc9a546a02fc5a4873f6cb3e3e12f9a"
+    "63b3aebec0a76e305961040a68452a7e05e99e578b6cbf83c96072b656c32b0f"
 )
 PACKAGES = (
     "openhands-agent-server",

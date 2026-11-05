@@ -16341,3 +16341,7 @@ runtime-provider／api／stream-api／worker／web，再执行 `runtime-replace`
 `build_git_sha`、四包版本与 source lock 一致，会话数量与状态分布不变，`/flowweave/`、`/agent`、`/agent/schedules` 为 200。
 
 未完成项：尚未用真实模型端到端触发一次 ask_user 阻塞问答（未创建测试会话）；`tests/architecture` 既有 11 项失败与发布前一致。
+
+### OPS-BL1584 ask_user 部分回答后仅重问未答问题与 baseline 89dd0d1b0 同步 — CODE-DONE（待 Runtime 发布）
+
+SDK `baseline` 提交 `89dd0d1b0c9bccdee8bbae4eb710500d12115455`：`ask_user` 描述要求模型在用户只回答部分问题时先回应已答内容，再仅对未答问题重新调用 `ask_user`。归档 SHA-256 `63b3aebec0a76e305961040a68452a7e05e99e578b6cbf83c96072b656c32b0f`。Web 端仅发送已答问题（`ec3e5a50`）。Runtime 远程发布与 replacement 尚未执行，不得声称已同步。
