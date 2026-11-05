@@ -5386,3 +5386,112 @@ test('long formal event chains keep parent order without exhausting the browser 
   const cycle = events.slice(0, 3).map((event, index) => ({ ...event, payload: { ...event.payload, parent_id: `deep-${(index + 1) % 3}` } }));
   expect(new Set(orderOpenHandsConversationEvents(cycle).map(event => event.id)).size).toBe(3);
 });
+
+for (const scenario of ['local', 'remote', 'conflict'] as const) {
+  test(`Git branch menu switches and refreshes repository state (${scenario})`, async ({ page }) => {
+    await openWorkspace(page);
+    let branch = 'main';
+    let switched = false;
+    const repository = () => ({ path: '/runtime/workspace/project', branch, head: 'a'.repeat(40), upstream: `origin/${branch}`, ahead: 0, behind: 0, remote_status: 'verified' });
+    const writes: Record<string, unknown>[] = [];
+    await page.route('**/workspace?**', route => json(route, {
+      root: '/runtime/workspace/project', working_directory: '/runtime/workspace/project',
+      scope: { kind: 'ROOT', display_name: '根工作区' }, files: [], repositories: [repository()], runtime: {}, ide: { gateway: { supported: false } },
+    }));
+    await page.route('**/workspace/directory**', route => json(route, {
+      parent_path: '/runtime/workspace/project', entries: [{ path: `/runtime/workspace/project/${switched ? 'after-switch.txt' : 'before-switch.txt'}`, kind: 'file', size: 5 }], next_cursor: null,
+    }));
+    await page.route('**/workspace/git/repositories?**', route => json(route, { repositories: [repository()] }));
+    await page.route('**/workspace/git/log?**', route => json(route, {
+      repository: repository(), commits: [{ id: 'a'.repeat(40), short_id: 'aaaaaaa', author: 'Test', date: now, subject: switched ? '目标分支提交' : '原分支提交', local_only: false }],
+    }));
+    await page.route('**/workspace/git/changes?**', route => json(route, { repository: repository(), staged: [], unstaged: [] }));
+    await page.route('**/workspace/git/branches?**', route => json(route, {
+      repository: repository(), branches: [
+        { ref: 'refs/heads/main', name: 'main', remote: false },
+        { ref: 'refs/heads/feature/local', name: 'feature/local', remote: false },
+        { ref: 'refs/remotes/origin/feature/remote', name: 'origin/feature/remote', remote: true },
+      ],
+    }));
+    await page.route('**/workspace/git/switch?**', route => {
+      writes.push(route.request().postDataJSON());
+      if (scenario === 'conflict') return json(route, { error: { code: 'AGENT_WORKSPACE_GIT_SWITCH_CONFLICT', message: '无法切换分支，请先处理未提交文件' } }, 409);
+      branch = scenario === 'remote' ? 'feature/remote' : 'feature/local';
+      switched = true;
+      return json(route, repository());
+    });
+    await page.goto('/agent/conversations/scheduled-conversation');
+    await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+    await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: 'Git 历史', exact: true }).click();
+    const sidebar = page.getByRole('complementary', { name: 'Git', exact: true });
+    const trigger = sidebar.getByRole('button', { name: '切换 Git 分支', exact: true });
+    await expect(trigger).toBeEnabled();
+    await expect(trigger).toContainText('main');
+    await expect(page.getByRole('tree', { name: '工作区目录树' })).toContainText('before-switch.txt');
+    await trigger.focus();
+    await page.keyboard.press('ArrowDown');
+    await expect(page.getByRole('listbox', { name: '切换 Git 分支' })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('listbox', { name: '切换 Git 分支' })).toHaveCount(0);
+    await trigger.click();
+    await page.getByRole('listbox', { name: '切换 Git 分支' }).screenshot({ path: test.info().outputPath('branch-menu.png') });
+    const optionName = scenario === 'remote' ? '远程 · origin/feature/remote' : 'feature/local';
+    await page.getByRole('option', { name: optionName, exact: true }).click();
+    await expect.poll(() => writes.length).toBe(1);
+    expect(writes[0]).toEqual({ ref: scenario === 'remote' ? 'refs/remotes/origin/feature/remote' : 'refs/heads/feature/local', expected_head: 'a'.repeat(40), expected_ref: 'refs/heads/main' });
+    if (scenario === 'conflict') {
+      await expect(sidebar.getByRole('alert')).toContainText('请先处理未提交文件');
+      await expect(trigger).toContainText('main');
+      await expect(sidebar.getByText('原分支提交', { exact: true })).toBeVisible();
+    } else {
+      await expect(trigger).toContainText(branch);
+      await expect(sidebar.getByText('目标分支提交', { exact: true })).toBeVisible();
+      await expect(sidebar.getByText('原分支提交', { exact: true })).toHaveCount(0);
+      await expect(page.getByRole('tree', { name: '工作区目录树' })).toContainText('after-switch.txt');
+      await expect(page.getByRole('tree', { name: '工作区目录树' })).not.toContainText('before-switch.txt');
+    }
+    await trigger.click();
+    await page.getByRole('navigation', { name: '工作区页签' }).getByRole('button', { name: '文件', exact: true }).click();
+    await expect(page.getByRole('listbox', { name: '切换 Git 分支' })).toHaveCount(0);
+    await sidebar.screenshot({ path: test.info().outputPath(`git-branch-${scenario}.png`) });
+  });
+}
+
+for (const remoteStatus of ['verified', 'unverified'] as const) {
+  test(`Git only marks unpushed commits after checking the live remote (${remoteStatus})`, async ({ page }) => {
+    await openWorkspace(page);
+    const repository = { path: '/runtime/workspace/project', branch: 'main', head: 'a'.repeat(40), upstream: 'origin/main', ahead: 2, behind: 0, remote_status: remoteStatus };
+    await page.route('**/workspace?**', route => json(route, {
+      root: repository.path, working_directory: repository.path,
+      scope: { kind: 'ROOT', display_name: '根工作区' }, files: [], repositories: [repository], runtime: {}, ide: { gateway: { supported: false } },
+    }));
+    await page.route('**/workspace/git/repositories?**', route => json(route, { repositories: [repository] }));
+    await page.route('**/workspace/git/branches?**', route => json(route, { repository, branches: [{ ref: 'refs/heads/main', name: 'main', remote: false }] }));
+    let refreshed = false;
+    await page.route('**/workspace/git/sync?**', route => {
+      refreshed = true;
+      repository.remote_status = 'verified';
+      repository.ahead = 0;
+      return json(route, repository);
+    });
+    await page.route('**/workspace/git/log?**', route => json(route, {
+      repository, commits: [{ id: 'a'.repeat(40), short_id: 'aaaaaaa', author: 'Test', date: now, subject: '已存在的提交', local_only: !refreshed }],
+    }));
+    await page.goto('/agent/conversations/scheduled-conversation');
+    await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+    await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: 'Git 历史', exact: true }).click();
+    const sidebar = page.getByRole('complementary', { name: 'Git', exact: true });
+    await expect(sidebar.getByText('已存在的提交', { exact: true })).toBeVisible();
+    if (remoteStatus === 'unverified') {
+      await expect(sidebar.getByRole('region', { name: '分支同步状态' })).toContainText('远端状态待确认');
+      await expect(sidebar.getByText('待推送', { exact: true })).toHaveCount(0);
+      await expect(sidebar.getByRole('button', { name: '仅看待推送' })).toHaveCount(0);
+      await sidebar.getByRole('button', { name: '同步远端 Git 状态', exact: true }).click();
+      await expect(sidebar.getByRole('region', { name: '分支同步状态' })).toContainText('已与远端同步');
+      await expect(sidebar.getByText('待推送', { exact: true })).toHaveCount(0);
+    } else {
+      await expect(sidebar.getByRole('region', { name: '分支同步状态' })).toContainText('2 个提交待推送');
+      await expect(sidebar.getByText('待推送', { exact: true })).toHaveCount(1);
+    }
+  });
+}

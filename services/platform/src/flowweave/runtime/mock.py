@@ -51,6 +51,18 @@ class MockRuntime:
         self._profile_git_roots: set[str] = set()
         self._loaded_plugins: dict[str, set[str]] = {}
 
+    def workspace_git_operation(
+        self,
+        handle: RuntimeHandle,
+        repository_path: str,
+        action: str,
+        *,
+        ref: str = "",
+        expected_head: str = "",
+        expected_ref: str = "",
+    ) -> None:
+        raise DomainError("AGENT_WORKSPACE_GIT_UNAVAILABLE", "模拟环境未连接 Git 远端", 503)
+
     def workspace_git_identity(
         self,
         handle: RuntimeHandle,

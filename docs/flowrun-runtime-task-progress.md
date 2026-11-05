@@ -92,6 +92,41 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 ## 6. 任务清单
 
+### FIX-GIT-BRANCH 分支切换与远端推送状态核验 — DONE
+
+2026-11-05。Git 侧栏的当前分支复用 LaunchOptionMenu 和 ViewportPopover，
+提供本地分支及远程跟踪分支选择。远程项创建同名本地跟踪分支，已有同名
+本地分支时提示选择本地项。菜单支持键盘、Escape 和外部点击，切换错误
+就地展示并可关闭。当前会话运行、压缩或不可写时禁用切换。
+
+Workspace 和 FlowNode 两种宿主均提供严格的分支目录与切换接口，沿用
+各自用户、binding、工作目录和 Attempt 授权。写操作要求整个仓库位于
+授权文件范围内，携带 expected_head 和 expected_ref，并通过 Git 目录锁
+串行化平台切换请求。保留 Git 原生文件冲突、工作树占用和索引锁保护，
+禁止覆盖忽略文件，关闭 checkout hook。重试已完成的切换可幂等收口。
+
+同步和切换通过 OpenHands 正式 /api/bash/execute_bash_command 下发固定
+脚本，继承 Runtime 的 Git 配置和认证上下文。当前 source lock 对应的
+805bb3fe0 原生路由已取证。同步当前上游 remote 的所有远程分支后，再
+核对本地状态；刷新期间 branch／HEAD／upstream 发生变化则状态待确认。
+Runtime、认证或网络不可用时仍可读取提交历史，推送标记保持待确认。
+原先直接将本地旧上游引用差异显示为“待推送”的问题在此切片修复。
+
+Git Query 按宿主和会话范围隔离。正式核验结果同步至侧栏、文件树和
+概览缓存，未经核验的领先数字不展示。切换后刷新分支、历史、本地改动
+及文件目录，清理文件选择和工作树 Diff 快照，递增目录读取 epoch，
+阻止旧请求重新插入已切换分支的文件。会话切换后的迟到回调不更新新宿主。
+
+验证通过20项定向后端检查，覆盖真实 Git、中文分支、跟踪关系、非覆盖
+切换、忽略／未跟踪文件冲突、同名分支、锁、CAS、Runtime 配置、旧引用
+误标、刷新竞态、原生路由封装及两种宿主接口转发。8项 Chromium 回归
+通过，含分支选择、错误、文件树刷新、远端重试与原全屏滚动行为，截图
+检查通过。Web typecheck、新组件／菜单／API／测试 ESLint、受影响新增
+Python Ruff 与 diff 检查通过。既有工作台 Plug 未使用及 bootstrap 依赖
+问题、三项旧 Python 模块的20处既有行长提示已与 HEAD 对照，无新增诊断。
+唯一 Alembic head 为0200_message_model_changes，任务无 CURRENT。
+代码待 Platform／Web 发布，线上实际远端认证状态仍以发布后核验为准。
+
 ### FIX-WORKSPACE-RETURN 文件全屏返回会话的阅读位置 — DONE
 
 2026-11-05。修复工具全屏隐藏会话后切回、或退出全屏进入分栏时，

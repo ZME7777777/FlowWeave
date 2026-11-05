@@ -404,6 +404,18 @@ export const api = {
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     await request<void>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/git/sync?${query}`, json('POST'));
   },
+  agentWorkspaceGitBranches: (id: string, repositoryPath: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
+    const query = new URLSearchParams({ repository_path: repositoryPath });
+    if (options.bindingId) query.set('binding_id', options.bindingId);
+    if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
+    return request<import('../types').WorkspaceGitBranches>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/git/branches?${query}`);
+  },
+  switchAgentWorkspaceGitBranch: (id: string, repositoryPath: string, body: import('../types').WorkspaceGitSwitchWrite, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
+    const query = new URLSearchParams({ repository_path: repositoryPath });
+    if (options.bindingId) query.set('binding_id', options.bindingId);
+    if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
+    return request<import('../types').WorkspaceGitRepository>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/git/switch?${query}`, json('POST', body));
+  },
   agentWorkspaceGitLog: (id: string, repositoryPath: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
     const query = new URLSearchParams({ repository_path: repositoryPath });
     if (options.bindingId) query.set('binding_id', options.bindingId);
@@ -1317,6 +1329,18 @@ export const nodeSessionApi = {
     if (bindingId) query.set('binding_id', bindingId);
     if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
     await request<void>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/git/sync?${query}`, json('POST'));
+  },
+  gitBranches: (flowRunId: string, attemptId: string, repositoryPath: string, bindingId?: string, workDirectoryId?: string) => {
+    const query = new URLSearchParams({ repository_path: repositoryPath });
+    if (bindingId) query.set('binding_id', bindingId);
+    if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
+    return request<import('../types').WorkspaceGitBranches>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/git/branches?${query}`);
+  },
+  switchGitBranch: (flowRunId: string, attemptId: string, repositoryPath: string, body: import('../types').WorkspaceGitSwitchWrite, bindingId?: string, workDirectoryId?: string) => {
+    const query = new URLSearchParams({ repository_path: repositoryPath });
+    if (bindingId) query.set('binding_id', bindingId);
+    if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
+    return request<import('../types').WorkspaceGitRepository>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/git/switch?${query}`, json('POST', body));
   },
   gitLog: (flowRunId: string, attemptId: string, repositoryPath: string, bindingId?: string, workDirectoryId?: string) => {
     const query = new URLSearchParams({ repository_path: repositoryPath });

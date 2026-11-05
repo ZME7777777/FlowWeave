@@ -58,7 +58,11 @@ from flowweave.shared.http import (
     run_terminal_control,
     run_terminal_stream,
 )
-from flowweave.shared.schemas import ConversationGoalWrite, ConversationPatchWrite
+from flowweave.shared.schemas import (
+    ConversationGoalWrite,
+    ConversationPatchWrite,
+    WorkspaceGitSwitchWrite,
+)
 from flowweave.shared.settings import bind_settings, reset_settings
 
 router = APIRouter()
@@ -654,6 +658,54 @@ async def node_session_workspace_file(
         content=content,
         media_type=content_type,
         headers=headers,
+    )
+
+
+@router.get(f"{_BASE}/workspace/git/branches")
+async def workspace_git_branches(
+    flow_run_id: str,
+    attempt_id: str,
+    container: ContainerDep,
+    repository_path: str = Query(...),
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_blocking_auxiliary(
+        container,
+        lambda session: agent_sessions.flow_node_workspace.list_git_branches(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            repository_path=repository_path,
+            binding_id=binding_id,
+            work_directory_id=work_directory_id,
+        ),
+    )
+
+
+@router.post(f"{_BASE}/workspace/git/switch")
+async def switch_workspace_git_branch(
+    flow_run_id: str,
+    attempt_id: str,
+    body: WorkspaceGitSwitchWrite,
+    container: ContainerDep,
+    repository_path: str = Query(...),
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_blocking_mutation(
+        container,
+        lambda session: agent_sessions.flow_node_workspace.switch_git_branch(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            repository_path=repository_path,
+            ref=body.ref,
+            expected_head=body.expected_head,
+            expected_ref=body.expected_ref,
+            binding_id=binding_id,
+            work_directory_id=work_directory_id,
+        ),
     )
 
 

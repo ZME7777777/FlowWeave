@@ -812,3 +812,13 @@ body.agent-rail-resizing iframe{pointer-events:none}
    (full screen / hide) is only announced by tinting the divider and decided on release. */
 body[data-agent-workspace-snap=fullscreen] .agent-workspace-drawer,body[data-agent-workspace-snap=hidden] .agent-workspace-drawer{border-left-color:#4d9870;box-shadow:inset 2px 0 #4d9870}
 body[data-agent-workspace-snap=hidden] .agent-workspace-drawer{opacity:.72}
+
+.agent-git-header-actions{min-width:0;max-width:65%;align-items:flex-start}
+.agent-git-branch-menu{min-width:0;position:relative}
+.agent-git-branch-menu .launch-option-menu>button{display:flex;align-items:center;gap:4px;max-width:100%;height:26px;border:0;background:transparent;padding:2px 4px;color:#3e5e49;font-size:11px}
+.agent-git-branch-menu .launch-option-menu>button>span{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.agent-git-branch-menu .launch-option-menu>button>svg{flex-shrink:0}
+.agent-git-branch-menu>p{display:flex;align-items:flex-start;gap:3px;max-width:190px;margin:4px 0 0;padding:5px;border:1px solid #e6c4bc;border-radius:6px;background:#fff8f6;color:#a14a4a;font-size:10px}.agent-git-branch-menu>p>span{color:inherit!important}.agent-git-branch-menu>p>button{flex:0 0 auto;display:grid;border:0;background:transparent;padding:0;color:inherit}
+.agent-git-branch-menu>span,.agent-git-branch-retry{font-size:10px;color:#617167}
+
+.agent-git-branch-popover{width:min(320px,calc(100vw - 16px))!important}.agent-git-branch-popover button{min-width:0;width:100%;text-align:left}.agent-git-branch-popover button>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

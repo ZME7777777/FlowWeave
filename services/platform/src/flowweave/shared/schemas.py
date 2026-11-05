@@ -27,6 +27,13 @@ class ApiModel(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
 
+
+class WorkspaceGitSwitchWrite(ApiModel):
+    ref: str = Field(min_length=1, max_length=1024, pattern=r"^refs/(heads|remotes)/")
+    expected_head: str = Field(pattern=r"^[0-9a-fA-F]{40,64}$")
+    expected_ref: str = Field(default="", max_length=1024, pattern=r"^(refs/heads/.+)?$")
+
+
 _EVENT_TRIGGER_SOURCES = {"OPENHANDS", "RUNTIME", "ORCHESTRATION"}
 _EVENT_TRIGGER_FAILURE_CLASSES = {
     "TRANSIENT_NETWORK",

@@ -946,6 +946,17 @@ class RuntimePort(Protocol):
 
     def workspace_snapshot(self, handle: RuntimeHandle, path: str) -> RuntimeWorkspaceSnapshot: ...
 
+    def workspace_git_operation(
+        self,
+        handle: RuntimeHandle,
+        repository_path: str,
+        action: str,
+        *,
+        ref: str = "",
+        expected_head: str = "",
+        expected_ref: str = "",
+    ) -> None: ...
+
     def workspace_git_identity(
         self,
         handle: RuntimeHandle,

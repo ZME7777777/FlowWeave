@@ -218,6 +218,7 @@ def test_git_history_marks_commits_ahead_of_the_upstream_branch(tmp_path):
         "/runtime/workspace/project",
         ("/runtime/workspace/project",),
         "/runtime/workspace/project",
+        remote_status="verified",
     )
 
     assert history["repository"]["upstream"] == "origin/main"

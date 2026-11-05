@@ -78,7 +78,11 @@ from flowweave.shared.infrastructure.docker_controller import (
     DockerControllerClient,
     DockerControllerError,
 )
-from flowweave.shared.schemas import ConversationGoalWrite, MCPWorkspaceProbeWrite
+from flowweave.shared.schemas import (
+    ConversationGoalWrite,
+    MCPWorkspaceProbeWrite,
+    WorkspaceGitSwitchWrite,
+)
 from flowweave.shared.settings import bind_settings, reset_settings
 
 router = APIRouter()
@@ -842,6 +846,50 @@ async def download_agent_workspace_file(
         content=item.content,
         media_type=item.content_type,
         headers=headers,
+    )
+
+
+@router.get("/agent-workspaces/{workspace_id}/workspace/git/branches")
+async def workspace_git_branches(
+    workspace_id: str,
+    container: ContainerDep,
+    repository_path: str = Query(...),
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_blocking_auxiliary(
+        container,
+        lambda session: workspace.list_git_branches(
+            session,
+            workspace_id=workspace_id,
+            repository_path=repository_path,
+            binding_id=binding_id,
+            work_directory_id=work_directory_id,
+        ),
+    )
+
+
+@router.post("/agent-workspaces/{workspace_id}/workspace/git/switch")
+async def switch_workspace_git_branch(
+    workspace_id: str,
+    body: WorkspaceGitSwitchWrite,
+    container: ContainerDep,
+    repository_path: str = Query(...),
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_blocking_mutation(
+        container,
+        lambda session: workspace.switch_git_branch(
+            session,
+            workspace_id=workspace_id,
+            repository_path=repository_path,
+            ref=body.ref,
+            expected_head=body.expected_head,
+            expected_ref=body.expected_ref,
+            binding_id=binding_id,
+            work_directory_id=work_directory_id,
+        ),
     )
 
 

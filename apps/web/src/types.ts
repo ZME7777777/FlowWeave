@@ -1237,6 +1237,7 @@ export interface WorkspaceGitRepository {
   branch?: string;
   head?: string;
   upstream?: string;
+  remote_status?: 'verified' | 'unverified';
   ahead?: number;
   behind?: number;
   dirty?: boolean;
@@ -1256,6 +1257,8 @@ export interface WorkspaceGitCommit {
   committed_at?: string;
   message?: string;
 }
+export interface WorkspaceGitBranches { repository: WorkspaceGitRepository; branches: Array<{ ref: string; name: string; remote: boolean }> }
+export interface WorkspaceGitSwitchWrite { ref: string; expected_head: string; expected_ref: string }
 export interface WorkspaceGitLog { repository: WorkspaceGitRepository; commits: WorkspaceGitCommit[] }
 export interface WorkspaceGitCommitDetails { repository: WorkspaceGitRepository; commit: WorkspaceGitCommit; files: Array<{ path: string; status: string }> }
 export type WorkspaceGitChangeKind = 'STAGED' | 'UNSTAGED';

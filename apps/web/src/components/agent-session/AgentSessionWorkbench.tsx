@@ -16,6 +16,7 @@ import { ConversationErrorNotice } from './ConversationErrorNotice';
 import { InConversationSearch, type InConversationSearchHit } from './InConversationSearch';
 import { AgentComposerInput, type ComposerSuggestion } from './AgentComposerInput';
 import { AgentWorkspaceSettings } from './AgentWorkspaceSettings';
+import { WorkspaceGitBranchMenu } from './WorkspaceGitBranchMenu';
 import { RuntimeBrowserFrame } from './RuntimeBrowserFrame';
 import { AgentConversationSchedulesPanel } from './AgentConversationSchedulesPanel';
 import { ConversationManagementPage } from '../../pages/ConversationManagementPage';
@@ -3054,10 +3055,10 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
         {node.kind === 'directory' && (() => {
           const repo = repositoryBranches?.get(node.path.replace(/\/+$/, ''));
           if (!repo) return null;
-          const hasSync = repo.ahead !== undefined && repo.behind !== undefined;
+          const hasSync = repo.remote_status === 'verified' && repo.ahead !== undefined && repo.behind !== undefined;
           return <>
             <em className={`agent-file-tree-branch${repo.dirty ? ' dirty' : ''}`} title={`当前分支：${repo.branch}${repo.dirty ? '（有未提交改动）' : ''}`}><GitBranch size={10}/><span>{repo.branch}</span></em>
-            {hasSync && (repo.ahead || repo.behind) ? <em className="agent-file-tree-sync" title={`${repo.ahead ? `本地领先 ${repo.ahead} 个提交（待推送）` : ''}${repo.ahead && repo.behind ? '；' : ''}${repo.behind ? `远程领先 ${repo.behind} 个提交（待拉取）` : ''}`}>{repo.behind ? <b className="behind">↙{repo.behind}</b> : null}{repo.ahead ? <b className="ahead">↗{repo.ahead}</b> : null}</em> : null}
+            {hasSync && (repo.ahead || repo.behind) ? <em className="agent-file-tree-sync" title={`${repo.ahead ? `截至最近远端核验，本地领先 ${repo.ahead} 个提交（待推送）` : ''}${repo.ahead && repo.behind ? '；' : ''}${repo.behind ? `截至最近远端核验，远端领先 ${repo.behind} 个提交（待拉取）` : ''}`}>{repo.behind ? <b className="behind">↙{repo.behind}</b> : null}{repo.ahead ? <b className="ahead">↗{repo.ahead}</b> : null}</em> : null}
           </>;
         })()}
       </button>
@@ -3232,13 +3233,19 @@ function gitChangeCounts(changes?: WorkspaceGitChanges) {
   };
 }
 
-function WorkspaceGitSidebar({ details, repository, mode, onModeChange, selectedCommit, onSelectCommit, syncRepository, loadLog, loadCommit, loadDiff, loadChanges, onOpenFileDiff, onOpenWorkingDiff, closedDiffEpoch }: {
+function WorkspaceGitSidebar({ queryScope, loadBranches, switchBranch, onBranchSwitched, onRepositoryRead, branchSwitchDisabled, details, repository, mode, onModeChange, selectedCommit, onSelectCommit, syncRepository, loadLog, loadCommit, loadDiff, loadChanges, onOpenFileDiff, onOpenWorkingDiff, closedDiffEpoch }: {
   details: AgentSessionWorkspaceDetails;
   repository: AgentSessionWorkspaceDetails['repositories'][number];
   mode: 'history' | 'changes';
   onModeChange: (mode: 'history' | 'changes') => void;
   selectedCommit?: string;
   onSelectCommit: (commit?: string) => void;
+  queryScope: readonly unknown[];
+  loadBranches: () => Promise<import('../../types').WorkspaceGitBranches>;
+  switchBranch: (body: import('../../types').WorkspaceGitSwitchWrite) => Promise<import('../../types').WorkspaceGitRepository>;
+  onBranchSwitched: () => Promise<void>;
+  onRepositoryRead: (repository: import('../../types').WorkspaceGitRepository) => void;
+  branchSwitchDisabled: boolean;
   syncRepository: (repositoryPath: string) => Promise<void>;
   loadLog: (repositoryPath: string) => Promise<import('../../types').WorkspaceGitLog>;
   loadCommit: (repositoryPath: string, commit: string) => Promise<WorkspaceGitCommitDetails>;
@@ -3254,6 +3261,7 @@ function WorkspaceGitSidebar({ details, repository, mode, onModeChange, selected
   const [syncError, setSyncError] = useState('');
   const [syncing, setSyncing] = useState(false);
   const [localOnly, setLocalOnly] = useState(false);
+  const gitQueryClient = useQueryClient();
   useEffect(() => {
     openedDiffRef.current = undefined;
     setSelectedCommitFile(undefined);
@@ -3268,24 +3276,30 @@ function WorkspaceGitSidebar({ details, repository, mode, onModeChange, selected
     setSelectedCommitFile(undefined);
   }, [closedDiffEpoch]);
   const logQuery = useQuery({
-    queryKey: ['workspace-git-log', repository.path],
+    queryKey: [...queryScope, 'log'],
     queryFn: () => loadLog(repository.path),
     enabled: mode === 'history',
     staleTime: 15_000,
   });
+  const lastPublishedHistory = useRef<import('../../types').WorkspaceGitLog | undefined>(undefined);
+  useEffect(() => {
+    if (!logQuery.data || lastPublishedHistory.current === logQuery.data) return;
+    lastPublishedHistory.current = logQuery.data;
+    onRepositoryRead(logQuery.data.repository);
+  }, [logQuery.data, onRepositoryRead]);
   const changesQuery = useQuery({
-    queryKey: ['workspace-git-changes', repository.path],
+    queryKey: [...queryScope, 'changes'],
     queryFn: () => loadChanges(repository.path),
     enabled: mode === 'changes',
     staleTime: 5_000,
   });
   const commitQuery = useQuery({
-    queryKey: ['workspace-git-commit', repository.path, selectedCommit],
+    queryKey: [...queryScope, 'commit', selectedCommit],
     queryFn: () => loadCommit(repository.path, selectedCommit!),
     enabled: Boolean(mode === 'history' && selectedCommit),
   });
   const diffQuery = useQuery({
-    queryKey: ['workspace-git-diff', repository.path, selectedCommit, selectedCommitFile],
+    queryKey: [...queryScope, 'diff', selectedCommit, selectedCommitFile],
     queryFn: () => loadDiff(repository.path, selectedCommit!, selectedCommitFile!),
     enabled: Boolean(mode === 'history' && selectedCommit && selectedCommitFile),
   });
@@ -3310,35 +3324,45 @@ function WorkspaceGitSidebar({ details, repository, mode, onModeChange, selected
     openedDiffRef.current = undefined;
   };
   const historyRepository = logQuery.data?.repository;
-  const ahead = historyRepository?.ahead;
-  const behind = historyRepository?.behind;
+  const remoteVerified = historyRepository?.remote_status === 'verified' && !logQuery.isFetching;
+  const ahead = remoteVerified ? historyRepository?.ahead : undefined;
+  const behind = remoteVerified ? historyRepository?.behind : undefined;
   const upstream = historyRepository?.upstream;
   const commits = logQuery.data?.commits ?? [];
-  const visibleCommits = localOnly ? commits.filter(commit => commit.local_only) : commits;
+  const visibleCommits = localOnly && remoteVerified ? commits.filter(commit => commit.local_only) : commits;
   const refreshCurrentView = async () => {
     setSyncError('');
     setSyncing(true);
     try {
       await syncRepository(repository.path);
+      await gitQueryClient.invalidateQueries({ queryKey: [...queryScope, 'branches'] });
       if (mode === 'history') await logQuery.refetch();
       else await changesQuery.refetch();
     } catch (error) {
       setSyncError(error instanceof Error ? error.message : '无法同步远端 Git 状态，请重试。');
+      await logQuery.refetch();
     } finally {
       setSyncing(false);
     }
   };
   const refreshing = syncing || (mode === 'history' ? logQuery.isFetching : changesQuery.isFetching);
   return <aside className="agent-workspace-git-sidebar" aria-label="Git">
-    <header><div><span><GitBranch size={15}/>Git</span><b title={workspaceRelativePath(repository.path, details.root)}>{workspaceRelativePath(repository.path, details.root)}</b></div><div className="agent-git-header-actions">{repository.branch && <em title="当前分支（只读，暂不支持切换）">{repository.branch}</em>}<button type="button" aria-label="同步远端 Git 状态" title="同步远端 Git 状态" disabled={refreshing} onClick={() => void refreshCurrentView()}><RefreshCw className={refreshing ? 'spin' : undefined} size={13}/></button></div></header>
+    <header><div><span><GitBranch size={15}/>Git</span><b title={workspaceRelativePath(repository.path, details.root)}>{workspaceRelativePath(repository.path, details.root)}</b></div><div className="agent-git-header-actions"><WorkspaceGitBranchMenu repository={repository} queryScope={queryScope} disabled={branchSwitchDisabled || refreshing}
+      loadBranches={loadBranches} switchBranch={switchBranch} onSwitched={async () => {
+        onSelectCommit(undefined);
+        setSelectedCommitFile(undefined);
+        setLocalOnly(false);
+        openedDiffRef.current = undefined;
+        await Promise.all([logQuery.refetch(), changesQuery.refetch(), onBranchSwitched()]);
+      }}/><button type="button" aria-label="同步远端 Git 状态" title="同步远端 Git 状态" disabled={refreshing} onClick={() => void refreshCurrentView()}><RefreshCw className={refreshing ? 'spin' : undefined} size={13}/></button></div></header>
     <nav className="agent-git-view-tabs" aria-label="Git 视图"><button type="button" className={mode === 'history' ? 'active' : ''} aria-pressed={mode === 'history'} onClick={() => selectMode('history')}>提交记录</button><button type="button" className={mode === 'changes' ? 'active' : ''} aria-pressed={mode === 'changes'} onClick={() => selectMode('changes')}>本地改动</button></nav>
     {syncError && <p className="agent-git-error" role="alert">远端 Git 同步失败：{syncError}</p>}
     {mode === 'history' ? logQuery.isLoading ? <p className="agent-git-loading">正在读取提交历史…</p> : logQuery.isError ? <p className="agent-git-error">Git 历史读取失败。<button type="button" onClick={() => void logQuery.refetch()}>重试</button></p> : <div className="agent-git-history">
       <section className={`agent-git-sync-status${ahead ? ' has-local' : ''}`} aria-label="分支同步状态">
-        <div><span>{ahead ? <ArrowUp size={13}/> : <Check size={13}/>}<b>{ahead ? `${ahead} 个提交待推送` : upstream ? '已与远端同步' : '未设置上游分支'}</b></span>{upstream && <small title={upstream}>跟踪 {upstream}{behind ? ` · 落后 ${behind}` : ''}</small>}{!upstream && <small>设置 upstream 后可识别未推送提交</small>}</div>
+        <div><span>{ahead ? <ArrowUp size={13}/> : <Check size={13}/>}<b>{ahead ? `${ahead} 个提交待推送` : !remoteVerified ? '远端状态待确认' : behind ? `落后远端 ${behind} 个提交` : upstream ? '已与远端同步' : '未设置上游分支'}</b></span>{upstream && <small title={upstream}>跟踪 {upstream}{behind ? ` · 落后 ${behind}` : ''}</small>}{!remoteVerified && <small>刷新远端成功后确认推送状态</small>}{remoteVerified && !upstream && <small>设置 upstream 后可识别未推送提交</small>}</div>
         {Boolean(ahead) && <button type="button" className={localOnly ? 'active' : ''} aria-pressed={localOnly} onClick={() => { setLocalOnly(current => !current); onSelectCommit(undefined); setSelectedCommitFile(undefined); }}>{localOnly ? '查看全部' : '仅看待推送'}</button>}
       </section>
-      <div className="agent-git-log">{visibleCommits.map(commit => <button key={commit.id} type="button" className={selectedCommit === commit.id ? 'active' : ''} onClick={() => { onSelectCommit(commit.id); setSelectedCommitFile(undefined); }}><span className="agent-git-commit-title"><b>{commit.subject || '（无提交说明）'}</b>{commit.local_only && <i>待推送</i>}</span><span><code>{commit.short_id}</code><em>{commit.author}</em><time>{commit.date}</time></span></button>)}{!visibleCommits.length && <p>{localOnly ? '没有待推送的本地提交。' : '该仓库没有可展示的提交。'}</p>}</div>
+      <div className="agent-git-log">{visibleCommits.map(commit => <button key={commit.id} type="button" className={selectedCommit === commit.id ? 'active' : ''} onClick={() => { onSelectCommit(commit.id); setSelectedCommitFile(undefined); }}><span className="agent-git-commit-title"><b>{commit.subject || '（无提交说明）'}</b>{remoteVerified && commit.local_only && <i>待推送</i>}</span><span><code>{commit.short_id}</code><em>{commit.author}</em><time>{commit.date}</time></span></button>)}{!visibleCommits.length && <p>{localOnly ? '没有待推送的本地提交。' : '该仓库没有可展示的提交。'}</p>}</div>
       {selectedCommit && <WorkspaceGitCommitSidebarDetail
         details={commitQuery.data}
         loading={commitQuery.isLoading}
@@ -4172,9 +4196,9 @@ function ConversationGoalMode({ goalStatus, enabled, canEnable, pending, rounds,
 
 
 function WorkspaceDrawer({
-  open, onOpen, onClose, onFullScreenConversationActiveChange, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, conversationCumulativeTokens, conversationSearch, attachments, sources, attachmentRequest, candidatePreviewRequest, markdownFileRequest, browserRequest, onBrowserRequestHandled, htmlPreviewRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, runtimeTasks, agentDefinitions, sessionStopped, sidebarQuestion, onSidebarDraftChange, onSidebarBindingCreated, onOpenSidebarQuestion, onCloseSidebarQuestion, onOpenConversationReference, onPreviewAttachment,
+  open, onOpen, onClose, onFullScreenConversationActiveChange, onAnnotateFileSelection, highlightedFileSelection, workspaceId, scopeKey, migrateFromScopeKey, bindingId, workDirectoryId, conversation, conversationCumulativeTokens, conversationSearch, attachments, sources, attachmentRequest, candidatePreviewRequest, markdownFileRequest, browserRequest, onBrowserRequestHandled, htmlPreviewRequest, reviewChanges = [], reviewRequestId, sessionChanges = [], onReviewChanges, runtimeAvailable, gitSwitchAvailable, runtimeTasks, agentDefinitions, sessionStopped, sidebarQuestion, onSidebarDraftChange, onSidebarBindingCreated, onOpenSidebarQuestion, onCloseSidebarQuestion, onOpenConversationReference, onPreviewAttachment,
 }: {
-  open: boolean; onOpen: () => void; onClose: () => void; onFullScreenConversationActiveChange: (active: boolean) => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; conversationSearch?: ReactNode; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment?: AgentAttachment; showHiddenFiles?: boolean }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; browserRequest?: { key: string; scopeKey: string; url: string }; onBrowserRequestHandled: (key: string) => void; htmlPreviewRequest?: { key: string; filename: string; document?: string; sourceUrl?: string }; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean; sidebarQuestion?: { requestKey: string; sourceBindingId: string; sidebarBindingId?: string; reference?: AgentConversationReference; draft?: SidebarConversationDraft }; onSidebarDraftChange: (sourceBindingId: string, draft: SidebarConversationDraft) => void; onSidebarBindingCreated: (sourceBindingId: string, sidebarBindingId: string) => void; onOpenSidebarQuestion?: () => void; onCloseSidebarQuestion: () => void; onOpenConversationReference: (reference: AgentConversationReference) => void; onPreviewAttachment: (attachment: AgentAttachment, previewBindingId?: string) => void;
+  open: boolean; onOpen: () => void; onClose: () => void; onFullScreenConversationActiveChange: (active: boolean) => void; onAnnotateFileSelection?: (path: string, selection: FileSelection, quote: string) => void; highlightedFileSelection?: { path: string; selection: FileSelection }; workspaceId: string; scopeKey: string; migrateFromScopeKey?: string; bindingId?: string; workDirectoryId?: string; conversation?: AgentConversation; conversationCumulativeTokens?: number | null; conversationSearch?: ReactNode; attachments: AgentAttachment[]; sources: ConversationSource[]; attachmentRequest?: { key: string; attachment?: AgentAttachment; showHiddenFiles?: boolean }; candidatePreviewRequest?: CandidateFilePreviewRequest; markdownFileRequest?: MarkdownFileRequest; browserRequest?: { key: string; scopeKey: string; url: string }; onBrowserRequestHandled: (key: string) => void; htmlPreviewRequest?: { key: string; filename: string; document?: string; sourceUrl?: string }; reviewChanges?: WorkspaceFileChange[]; reviewRequestId?: string; sessionChanges?: WorkspaceFileChange[]; onReviewChanges?: (changes: WorkspaceFileChange[]) => void; runtimeAvailable: boolean; gitSwitchAvailable: boolean; runtimeTasks: RuntimeTaskProjection[]; agentDefinitions: CapabilityAsset[]; sessionStopped: boolean; sidebarQuestion?: { requestKey: string; sourceBindingId: string; sidebarBindingId?: string; reference?: AgentConversationReference; draft?: SidebarConversationDraft }; onSidebarDraftChange: (sourceBindingId: string, draft: SidebarConversationDraft) => void; onSidebarBindingCreated: (sourceBindingId: string, sidebarBindingId: string) => void; onOpenSidebarQuestion?: () => void; onCloseSidebarQuestion: () => void; onOpenConversationReference: (reference: AgentConversationReference) => void; onPreviewAttachment: (attachment: AgentAttachment, previewBindingId?: string) => void;
 }) {
   const { api, browserUrl, fileUrl } = useAgentSessionGateway();
   const host = useAgentSessionHost();
@@ -5083,6 +5107,18 @@ function WorkspaceDrawer({
   const gitRepository = useMemo(() => selectedGitRepository(gitRepositoriesQuery.data?.repositories ?? [], gitContextPath), [gitContextPath, gitRepositoriesQuery.data?.repositories]);
   const gitSidebarVisible = fullScreen && filesTabIsActive && gitSidebarRequested && Boolean(gitRepository);
   const gitOptions = { bindingId, workDirectoryId };
+  const recordGitRepositoryStatus = useCallback((repository: import('../../types').WorkspaceGitRepository) => {
+    for (const resource of ['workspace-git-repositories', 'workspace-git-summary-repositories', 'workspace-git-branch-repositories']) {
+      queryClient.setQueriesData<import('../../types').AgentSessionWorkspaceGitRepositories>(
+        { queryKey: sessionQueryKey(host, resource, workspaceId, bindingId, workDirectoryId) },
+        current => current && ({ repositories: current.repositories.map(item => (
+          item.path === repository.path && item.head === repository.head && item.branch === repository.branch
+            ? { ...item, ...repository } : item
+        )) }),
+      );
+    }
+  }, [bindingId, host, queryClient, workDirectoryId, workspaceId]);
+
   const workspaceGitSummaryRepositoriesQuery = useQuery({
     queryKey: sessionQueryKey(host, 'workspace-git-summary-repositories', workspaceId, bindingId, workDirectoryId),
     queryFn: () => api.gitRepositories(workspaceId, gitOptions),
@@ -5139,6 +5175,8 @@ function WorkspaceDrawer({
         workspaceGitSummaryRepositoriesQuery.refetch(),
         workspaceGitChangesQuery.refetch(),
       ]);
+      const history = await api.gitLog(workspaceId, workspaceGitRepository.path, gitOptions);
+      recordGitRepositoryStatus(history.repository);
     } catch (error) {
       setGitSummaryRefreshError(error instanceof Error ? error.message : 'Git 状态刷新失败，请重试。');
     } finally {
@@ -5173,7 +5211,7 @@ function WorkspaceDrawer({
         </div>
         <button type="button" className="agent-workspace-git-summary-status" aria-label="查看 Git 改动" onClick={openGitSummary}>
           {workspaceGitChangesQuery.isLoading ? <em>正在加载本地改动…</em> : <span className="agent-workspace-git-change-counts"><span data-empty={workspaceGitChangeCounts.staged === 0}>{`已暂存 +${workspaceGitChangeCounts.staged}`}</span><span data-empty={workspaceGitChangeCounts.unstaged === 0}>{`未暂存 +${workspaceGitChangeCounts.unstaged}`}</span></span>}
-          <span className="agent-workspace-git-sync-status">{workspaceGitRepository.upstream ? <><span>{`本地 +${workspaceGitRepository.ahead ?? 0}`}</span><span>{`远端 +${workspaceGitRepository.behind ?? 0}`}</span></> : '未设置远程跟踪分支'}</span>
+          <span className="agent-workspace-git-sync-status">{workspaceGitRepository.remote_status === 'verified' ? <><span>{`本地 +${workspaceGitRepository.ahead ?? 0}`}</span><span>{`远端 +${workspaceGitRepository.behind ?? 0}`}</span></> : workspaceGitRepository.upstream ? '远端状态待确认' : '未设置远程跟踪分支'}</span>
         </button>
         {gitSummaryRefreshError && <p className="agent-workspace-git-summary-error" role="alert">{gitSummaryRefreshError}</p>}
       </div>
@@ -5244,7 +5282,26 @@ function WorkspaceDrawer({
           {scopeState.tabs.some(tab => tab.kind === 'subagents') && <div className={`agent-subagent-tab-panel ${scopeState.activeTabId === 'subagents' ? 'active' : ''}`}><RuntimeTaskTab tasks={runtimeTasks} definitions={agentDefinitions} selectedTaskId={scopeState.selectedRuntimeTaskId} onSelect={taskId => updateScope(current => ({ ...current, selectedRuntimeTaskId: taskId }))} sessionStopped={sessionStopped}/></div>}
           {sidebarQuestion && scopeState.tabs.some(tab => tab.kind === 'sidebar-chat') && <div className={`agent-sidebar-chat-tab-panel ${scopeState.activeTabId === 'sidebar-chat' ? 'active' : ''}`}><SidebarConversationPane key={sidebarQuestion.sourceBindingId} workspaceId={workspaceId} sourceBindingId={sidebarQuestion.sourceBindingId} sidebarBindingId={sidebarQuestion.sidebarBindingId} initialReference={sidebarQuestion.reference} draft={sidebarQuestion.draft} onDraftChange={draft => onSidebarDraftChange(sidebarQuestion.sourceBindingId, draft)} onOpenConversationReference={reference => { setFullScreen(false); setFullScreenView('conversation'); onOpenConversationReference({ ...reference, source_binding_id: reference.source_binding_id ?? sidebarQuestion.sourceBindingId }); }} onBindingCreated={sidebarBindingId => onSidebarBindingCreated(sidebarQuestion.sourceBindingId, sidebarBindingId)} onPreviewAttachment={onPreviewAttachment}/></div>}
           {scopeState.tabs.filter((tab): tab is Extract<WorkspaceToolTab, { kind: 'terminal' }> => tab.kind === 'terminal').map(tab => <div key={tab.id} className={`agent-terminal-tab-panel ${scopeState.activeTabId === tab.id ? 'active' : ''}`}>{runtimeAvailable ? <WorkspaceTerminal workspaceId={workspaceId} terminalInstanceId={tab.terminalInstanceId} bindingId={bindingId} workDirectoryId={workDirectoryId} workingDirectory={details.working_directory}/> : <div className="agent-drawer-empty"><LoaderCircle className="agent-drawer-spinner" size={20}/><b>终端正在恢复</b><span>文件仍可使用；运行环境恢复后终端会自动可用。</span></div>}</div>)}
-          {gitSidebarVisible && gitRepository && <WorkspaceGitSidebar details={details} repository={gitRepository} mode={scopeState.gitMode ?? 'history'} onModeChange={mode => updateScope(current => ({ ...current, gitMode: mode }))} selectedCommit={scopeState.selectedGitRepositoryPath === gitRepository.path ? scopeState.selectedGitCommit : undefined} onSelectCommit={commit => updateScope(current => ({
+          {gitSidebarVisible && gitRepository && <WorkspaceGitSidebar key={`${scopeKey}:${gitRepository.path}`} queryScope={sessionQueryKey(host, 'workspace-git-sidebar', workspaceId, bindingId, workDirectoryId, gitRepository.path)}
+            onRepositoryRead={recordGitRepositoryStatus}
+            loadBranches={() => api.gitBranches(workspaceId, gitRepository.path, gitOptions)}
+            switchBranch={body => api.switchGitBranch(workspaceId, gitRepository.path, body, gitOptions)}
+            branchSwitchDisabled={!runtimeAvailable || !gitSwitchAvailable}
+            onBranchSwitched={async () => {
+              updateScope(current => ({ ...current, selectedFile: undefined, selectedGitCommit: undefined, tabs: current.tabs.filter(tab => tab.kind !== 'git-working') }));
+              directoryListingEpoch.current += 1;
+              loadingDirectories.current.clear();
+              setLoadingDirectoryPaths(new Set());
+              setSelectedEntryPaths(new Set());
+              setActiveDirectory(undefined);
+              setDirectoryPages(new Map());
+              await Promise.all([
+                detailsQuery.refetch(), gitRepositoriesQuery.refetch(), workspaceGitSummaryRepositoriesQuery.refetch(),
+                workspaceGitBranchesQuery.refetch(), workspaceGitChangesQuery.refetch(),
+                queryClient.invalidateQueries({ queryKey: directoryQueryKey }),
+              ]);
+              await queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'file-preview', workspaceId, bindingId), exact: false });
+            }} details={details} repository={gitRepository} mode={scopeState.gitMode ?? 'history'} onModeChange={mode => updateScope(current => ({ ...current, gitMode: mode }))} selectedCommit={scopeState.selectedGitRepositoryPath === gitRepository.path ? scopeState.selectedGitCommit : undefined} onSelectCommit={commit => updateScope(current => ({
             ...current,
             selectedGitRepositoryPath: commit ? gitRepository.path : undefined,
             selectedGitCommit: commit,
@@ -11447,6 +11504,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       sessionChanges={sessionFileChanges}
       onReviewChanges={openChangesReview}
       runtimeAvailable={Boolean((runtime?.terminal_available ?? runtime?.write_available) && (!features.terminalRequiresConversation || selected))}
+      gitSwitchAvailable={Boolean(runtimeWritable && (!selected || canWrite) && !conversationVisuallyActive && !selectedCondensing)}
       runtimeTasks={runtimeTasks}
       agentDefinitions={agentDefinitionAssets}
       sessionStopped={sessionStopped}

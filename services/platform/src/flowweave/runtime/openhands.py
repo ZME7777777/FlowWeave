@@ -70,6 +70,7 @@ from flowweave.runtime.contract import OPTIONAL_HTTP_OPERATIONS
 from flowweave.runtime.git_identity import GIT_IDENTITY_SCRIPT
 from flowweave.runtime.model_catalog import declared_context_window
 from flowweave.runtime.read_budget import formal_read_budget, hydration_time_left
+from flowweave.runtime.workspace_git import WORKSPACE_GIT_SCRIPT
 from flowweave.shared.errors import DomainError
 from flowweave.shared.infrastructure.docker_controller import (
     DockerControllerClient,
@@ -5640,6 +5641,65 @@ class OpenHandsRuntime:
                 "EXECUTOR_UNAVAILABLE", "OpenHands 工作区文件上传不可用", 503
             ) from exc
         return target
+
+    def workspace_git_operation(
+        self,
+        handle: RuntimeHandle,
+        repository_path: str,
+        action: str,
+        *,
+        ref: str = "",
+        expected_head: str = "",
+        expected_ref: str = "",
+    ) -> None:
+        values = {
+            "root": handle.workspace_root,
+            "repository": repository_path,
+            "action": action,
+            "ref": ref,
+            "expected_head": expected_head,
+            "expected_ref": expected_ref,
+        }
+        result = self._request(
+            "POST",
+            "/api/bash/execute_bash_command",
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+            json={
+                "command": "python3 -c "
+                + shlex.quote(WORKSPACE_GIT_SCRIPT)
+                + " "
+                + shlex.quote(json.dumps(values)),
+                "timeout": 15,
+            },
+            timeout=18,
+        )
+        try:
+            data = json.loads(str(result.get("stdout") or ""))
+            if result.get("exit_code") != 0 or not isinstance(data, dict):
+                raise ValueError("Invalid Git result")
+        except (TypeError, ValueError) as exc:
+            raise DomainError("AGENT_WORKSPACE_GIT_UNAVAILABLE", "Git 操作暂时不可用", 503) from exc
+        if data.get("ok") is True:
+            return
+        code = str(data.get("error", "UNAVAILABLE"))
+        messages = {
+            "REMOTE_UNAVAILABLE": "远端状态待确认，请检查工作区 Git 认证和网络后重试",
+            "BRANCH_INVALID": "请选择有效的本地或远程跟踪分支",
+            "BRANCH_MISSING": "分支已不存在，请刷新分支列表",
+            "LOCAL_EXISTS": "已存在同名本地分支，请选择该本地分支",
+            "STALE": "当前分支或提交已变化，请刷新后重新选择",
+            "BUSY": "该仓库正在切换分支，请稍后重试",
+            "SWITCH_CONFLICT": (
+                "无法切换分支，请先处理未提交或未跟踪文件、"
+                "进行中的合并及其他工作树占用"
+            ),
+        }
+        raise DomainError(
+            "AGENT_WORKSPACE_GIT_" + code,
+            messages.get(code, "Git 操作未完成，请刷新仓库状态后重试"),
+            502 if code == "REMOTE_UNAVAILABLE" else 409,
+        )
 
     def workspace_git_identity(
         self,

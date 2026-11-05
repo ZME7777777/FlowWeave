@@ -125,6 +125,8 @@ export interface AgentSessionApi {
   readonly workspaceDirectory: (hostId: AgentSessionHostId, options?: AgentSessionDirectoryOptions) => Promise<AgentSessionWorkspaceDirectory>;
   readonly gitRepositories: (hostId: AgentSessionHostId, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<AgentSessionWorkspaceGitRepositories>;
   readonly syncGitRepository: (hostId: AgentSessionHostId, repositoryPath: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<void>;
+  readonly gitBranches: (hostId: AgentSessionHostId, repositoryPath: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<import('../types').WorkspaceGitBranches>;
+  readonly switchGitBranch: (hostId: AgentSessionHostId, repositoryPath: string, body: import('../types').WorkspaceGitSwitchWrite, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<import('../types').WorkspaceGitRepository>;
   readonly gitLog: (hostId: AgentSessionHostId, repositoryPath: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<WorkspaceGitLog>;
   readonly gitChanges: (hostId: AgentSessionHostId, repositoryPath: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<WorkspaceGitChanges>;
   readonly gitWorkingDiff: (hostId: AgentSessionHostId, repositoryPath: string, kind: WorkspaceGitChangeKind, path: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<WorkspaceGitFileDiff>;
@@ -230,6 +232,8 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     workspaceDirectory: api.agentWorkspaceDirectory,
     gitRepositories: api.agentWorkspaceGitRepositories,
     syncGitRepository: api.syncAgentWorkspaceGitRepository,
+    gitBranches: api.agentWorkspaceGitBranches,
+    switchGitBranch: api.switchAgentWorkspaceGitBranch,
     gitLog: api.agentWorkspaceGitLog,
     gitChanges: api.agentWorkspaceGitChanges,
     gitWorkingDiff: api.agentWorkspaceGitWorkingDiff,
@@ -333,6 +337,10 @@ export function flowNodeSessionGateway(
           flowRunId, attemptId, repositoryPath, options?.bindingId, options?.workDirectoryId,
         );
       },
+      gitBranches: (_hostId, repositoryPath, options) =>
+        nodeSessionApi.gitBranches(flowRunId, attemptId, repositoryPath, options?.bindingId, options?.workDirectoryId),
+      switchGitBranch: (_hostId, repositoryPath, body, options) =>
+        nodeSessionApi.switchGitBranch(flowRunId, attemptId, repositoryPath, body, options?.bindingId, options?.workDirectoryId),
       gitLog: (_hostId, repositoryPath, options) =>
         nodeSessionApi.gitLog(flowRunId, attemptId, repositoryPath, options?.bindingId, options?.workDirectoryId),
       gitChanges: (_hostId, repositoryPath, options) =>
