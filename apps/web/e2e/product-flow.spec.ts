@@ -1258,6 +1258,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect.poll(() => compactConversationItem.evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(40);
   await expect(page.getByText('工作区已就绪。')).toBeVisible();
   await expect(page.getByText('需要部署 Gateway', { exact: true })).toBeVisible();
+  // Git information must load before the user opens the workspace tools.
+  await expect(page.locator('.agent-workspace-summary').getByLabel('打开工作区工具')).toBeVisible();
   const gitSummary = page.locator('.agent-workspace-git-summary');
   await expect(gitSummary).toContainText('Git 信息');
   await expect(gitSummary).toContainText('main');

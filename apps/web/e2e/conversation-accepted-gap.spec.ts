@@ -52,7 +52,7 @@ for (const node of [false, true]) {
           sent.payload.timestamp = new Date().toISOString();
           await sendGate;
           accepted = true;
-          return json({ accepted: true, cursor: sent.id }, 202);
+          return json({ accepted: true, cursor: 'transport-position', event_id: sent.id }, 202);
         }
         if (path.endsWith('/events')) { eventReads += 1; return json(batch(path.includes(`/${conversation.id}/`))); }
         if (path.endsWith('/input-readiness')) return json({ ready: !accepted || finished, execution_status: accepted && !finished ? 'running' : 'idle' });

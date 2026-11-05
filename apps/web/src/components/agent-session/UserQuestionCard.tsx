@@ -51,7 +51,9 @@ export function UserQuestionCard({ question, busy, onAnswer, onClose }: {
   const patch = (value: Partial<Answer>) => setAnswers(current => current.map((item, i) => i === index ? { ...item, skipped: false, ...value } : item));
   const answered = Boolean(answer.text.trim() || answer.choice);
   const advance = (next: Answer[]) => {
-    if (last) onAnswer(composeQuestionReply(steps, next), steps.map((item, i) => steps.length > 1 ? `${i + 1}. ${item.question}` : item.question).join('\n'));
+    // Any skipped question keeps the Agent waiting: nothing is sent, the card just closes (回答问题 reopens it).
+    if (last && next.some(item => item.skipped)) onClose();
+    else if (last) onAnswer(composeQuestionReply(steps, next), steps.map((item, i) => steps.length > 1 ? `${i + 1}. ${item.question}` : item.question).join('\n'));
     else setIndex(current => current + 1);
   };
   const commit = (value: Partial<Answer>) => {

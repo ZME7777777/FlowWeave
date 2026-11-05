@@ -1113,7 +1113,7 @@ test('Agent session renders a completed long Markdown reply without manual expan
   }));
   const completeEvents = (id: string) => ({
     events: [
-      { id: `${id}-user`, event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: `问题 ${id}\n第二行 ${id}`, timestamp: now } },
+      { id: `${id}-user`, event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: `curl --location 'https://example.test/${id}' \\\n--data-urlencoded 'format=json'\n\n1. 检查当前目录\n\n2. 确认检查范围\n\n   - 依赖与版本\n\n   - 配置文件`, timestamp: now } },
       { id: `${id}-tool`, event_type: 'TOOL_RESULT', payload: { parent_id: `${id}-user`, content: 'x'.repeat(20_000), details: { stdout: 'x'.repeat(20_000) }, timestamp: now } },
       { id: `${id}-assistant`, event_type: 'MESSAGE', payload: { source: 'agent', parent_id: `${id}-tool`, content: `完整回复 ${id}\n\n| 选择 | 项目 | 用途 | Git 地址 |\n| --- | --- | --- | --- |\n| #1 | \`hq-support\` | 同步 Kafka topic | \`https://gitlab.example.test/hq-support\` |\n\n${'完整 Markdown 内容 '.repeat(500)}\n\n${nestedMarkdownSource}`, timestamp: now } },
     ],
@@ -1163,8 +1163,14 @@ test('Agent session renders a completed long Markdown reply without manual expan
   await login(page);
   await page.goto('/agent/conversations/cache-conversation-a');
   await expect(page.getByText('完整回复 cache-conversation-a', { exact: false })).toBeVisible();
-  await expect(page.locator('.conversation-message.user .conversation-message-content')).toHaveCSS('white-space', 'pre-wrap');
-  await expect(page.locator('.conversation-message.user .conversation-message-content')).toHaveText('问题 cache-conversation-a\n第二行 cache-conversation-a');
+  const userContent = page.locator('[data-user-event-id="cache-conversation-a-user"] .conversation-message-content');
+  await expect(userContent).toHaveCSS('white-space', 'pre-wrap');
+  await expect(userContent.locator('a')).toHaveAttribute('href', 'https://example.test/cache-conversation-a');
+  await expect(userContent).toContainText("\\\n--data-urlencoded 'format=json'");
+  const userList = userContent.locator('ol');
+  await expect(userList).toHaveCSS('margin-top', '8px');
+  await expect(userList.locator('li > p').first()).toHaveCSS('margin-bottom', '0px');
+  await expect(userList.locator('ul')).toHaveCSS('margin-top', '4px');
   await expect(page.getByText('完整 Markdown 内容', { exact: false })).toBeVisible();
   const table = page.locator('.conversation-markdown-table-scroll table');
   await expect(table).toBeVisible();
@@ -1461,6 +1467,9 @@ test('Sidebar chat tabs stay isolated to their source conversation', async ({ pa
   await expect(page.locator('.agent-workspace-tabs > div.active')).toContainText('侧边聊天');
   await page.getByRole('button', { name: '关闭侧边聊天页签', exact: true }).click();
   await expect(pane).toHaveCount(0);
+  await page.locator('.agent-workspace-new-tab-trigger').click();
+  await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: '侧边聊天', exact: true }).click();
+  await expect(page.getByRole('region', { name: '侧边聊天' }).getByRole('textbox', { name: '发送侧边聊天消息' })).toHaveValue('');
 });
 
 
@@ -2016,8 +2025,10 @@ test('Sidebar chat can cancel its first message while it is being created and ke
   await composer.fill('请先别发出去');
   await sidebarPane.getByRole('button', { name: '发送侧边聊天消息' }).click();
 
-  // The user's message and the submitting state show immediately, with a cancel control.
+  // The optimistic message is visible immediately, while the composer transfers
+  // the draft out of the editable state until a cancellation restores it.
   await expect(sidebarPane.locator('.conversation-surface').getByText('请先别发出去')).toBeVisible();
+  await expect(composer).toHaveValue('');
   await expect(sidebarPane.getByText('正在提交消息')).toBeVisible();
   await sidebarPane.getByRole('button', { name: '取消发送' }).click();
 

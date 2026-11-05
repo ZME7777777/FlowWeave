@@ -65,7 +65,7 @@ for (const { transport, delivery } of ['stream-before-ack', 'rest-before-ack', '
         postCount += 1;
         submitted = true;
         await acceptance;
-        return json({ accepted: true, cursor: 'formal-user' }, 202);
+        return json({ accepted: true, cursor: 'transport-position', event_id: 'formal-user' }, 202);
       }
       if (path.endsWith('/events')) { eventReads += 1; return json(batch()); }
       // Retain the preceding idle snapshot to exercise the submission bridge.

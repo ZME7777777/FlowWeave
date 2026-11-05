@@ -1771,6 +1771,7 @@ def _activate_node_bootstrap(
         "conversation": _node_session_dict(db, binding),
         "accepted": True,
         "cursor": initial_event_id,
+        "event_id": initial_event_id,
     }
 
 
@@ -2008,6 +2009,7 @@ def bootstrap_node_conversation(
                 "conversation": _node_session_dict(db, binding),
                 "accepted": True,
                 "cursor": binding.initial_user_event_id,
+                "event_id": binding.initial_user_event_id,
             }
         if command.state == "AMBIGUOUS":
             try:
@@ -3222,6 +3224,7 @@ def finalize_running_node_message(
     return {
         "accepted": True,
         "cursor": result.cursor,
+        "event_id": result.cursor,
         "compacted": compacted,
         "queued_during_turn": queued_during_turn,
     }
@@ -3312,6 +3315,7 @@ def send_node_message(
     return {
         "accepted": True,
         "cursor": result.cursor,
+        "event_id": result.cursor,
         "compacted": compacted,
         "queued_during_turn": queued_during_turn,
     }
@@ -4027,7 +4031,11 @@ def rerun_node_message(
     binding.last_connected_at = activity_at
     binding.updated_at = activity_at
     finish(db)
-    return {"accepted": True, "cursor": result.cursor}
+    return {
+        "accepted": True,
+        "cursor": result.cursor,
+        "event_id": result.cursor,
+    }
 
 
 def fork_node_conversation(

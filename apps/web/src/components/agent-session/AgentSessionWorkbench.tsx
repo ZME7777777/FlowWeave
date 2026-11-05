@@ -25,7 +25,7 @@ import { api as agentWorkspaceApi, agentWorkspaceFileViewerUrl, ApiError, random
 import { agentWorkspaceSessionGateway, type AgentSessionGateway } from '../../api/agent-session-gateway';
 import { deploymentBasePath, withoutDeploymentBase } from '../../deploymentPath';
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
-import { SidebarConversationPane, type SidebarConversationDraft } from './SidebarConversationPane';
+import { clearSidebarDraft, SidebarConversationPane, type SidebarConversationDraft } from './SidebarConversationPane';
 import { clearConversationSnapshots, getAgentSessionCacheIdentity, readConversationContextSnapshot, writeConversationContextSnapshot } from './conversation-cache';
 import { ConversationSurface, OpenQuestionContext, ConversationTaskPlan, goalRoundDurations, type ConversationHistoryPrepend, type ConversationReference, type ConversationScrollSnapshot, type ConversationSearchLocation, type ModelRetryStatus } from '../ConversationSurface';
 import { isOpenHandsAgentReply, isOpenHandsConversationInterrupt, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, projectFlowWeaveMessageContext, projectHistoricalAgentReplies } from '../conversationEvents';
@@ -5083,11 +5083,17 @@ function WorkspaceDrawer({
   const gitRepository = useMemo(() => selectedGitRepository(gitRepositoriesQuery.data?.repositories ?? [], gitContextPath), [gitContextPath, gitRepositoriesQuery.data?.repositories]);
   const gitSidebarVisible = fullScreen && filesTabIsActive && gitSidebarRequested && Boolean(gitRepository);
   const gitOptions = { bindingId, workDirectoryId };
-  const workspaceGitRepositoriesQuery = useQuery({
+  const workspaceGitSummaryRepositoriesQuery = useQuery({
     queryKey: sessionQueryKey(host, 'workspace-git-summary-repositories', workspaceId, bindingId, workDirectoryId),
     queryFn: () => api.gitRepositories(workspaceId, gitOptions),
-    // Branch badges are relevant only while the file tree is visible. Recheck
-    // that small read periodically and on focus, rather than polling hidden tools.
+    enabled: Boolean(details?.working_directory),
+    staleTime: 15_000,
+    refetchOnWindowFocus: 'always',
+    retry: (count, error) => !(error instanceof ApiError && (error.status < 500 || error.status === 503)) && count < 2,
+  });
+  const workspaceGitBranchesQuery = useQuery({
+    queryKey: sessionQueryKey(host, 'workspace-git-branch-repositories', workspaceId, bindingId, workDirectoryId),
+    queryFn: () => api.gitRepositories(workspaceId, gitOptions),
     enabled: Boolean(open && filesTabIsActive && details?.working_directory),
     staleTime: 15_000,
     refetchInterval: 30_000,
@@ -5095,10 +5101,10 @@ function WorkspaceDrawer({
     refetchOnWindowFocus: 'always',
     retry: (count, error) => !(error instanceof ApiError && (error.status < 500 || error.status === 503)) && count < 2,
   });
-  const workspaceRepositoryBranches = useMemo(() => new Map((workspaceGitRepositoriesQuery.data?.repositories ?? []).filter(item => item.branch).map(item => [item.path.replace(/\/+$/, ''), item] as const)), [workspaceGitRepositoriesQuery.data?.repositories]);
+  const workspaceRepositoryBranches = useMemo(() => new Map((workspaceGitBranchesQuery.data?.repositories ?? []).filter(item => item.branch).map(item => [item.path.replace(/\/+$/, ''), item] as const)), [workspaceGitBranchesQuery.data?.repositories]);
   const workspaceGitRepository = useMemo(
-    () => workspaceRootGitRepository(workspaceGitRepositoriesQuery.data?.repositories ?? [], details?.working_directory),
-    [details?.working_directory, workspaceGitRepositoriesQuery.data?.repositories],
+    () => workspaceRootGitRepository(workspaceGitSummaryRepositoriesQuery.data?.repositories ?? [], details?.working_directory),
+    [details?.working_directory, workspaceGitSummaryRepositoriesQuery.data?.repositories],
   );
   const workspaceGitChangesQuery = useQuery({
     queryKey: sessionQueryKey(host, 'workspace-git-summary-changes', workspaceId, bindingId, workDirectoryId, workspaceGitRepository?.path),
@@ -5116,7 +5122,7 @@ function WorkspaceDrawer({
     setGitBranchRefreshing(true);
     try {
       await Promise.all([
-        workspaceGitRepositoriesQuery.refetch(),
+        workspaceGitBranchesQuery.refetch(),
         ...(gitSidebarVisible ? [gitRepositoriesQuery.refetch()] : []),
       ]);
     } finally {
@@ -5130,7 +5136,7 @@ function WorkspaceDrawer({
     try {
       await api.syncGitRepository(workspaceId, workspaceGitRepository.path, gitOptions);
       await Promise.all([
-        workspaceGitRepositoriesQuery.refetch(),
+        workspaceGitSummaryRepositoriesQuery.refetch(),
         workspaceGitChangesQuery.refetch(),
       ]);
     } catch (error) {
@@ -6208,6 +6214,31 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     void loadMoreConversations(scopeKey);
   }, [collapsedConversationGroups, conversationPagesByScope, loadMoreConversations, pendingSidebarRevealBindingId, scheduleRoute, sidebarRevealConversation, sidebarReveal.expandCollapsed]);
   const workspaceToolScopeKey = selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root';
+  useEffect(() => {
+    if (!workspace || !selected?.id || sidebarQuestions[selected.id]?.sidebarBindingId) return;
+    const sourceBindingId = selected.id;
+    let cancelled = false;
+    void agentWorkspaceApi.agentSidebarConversationForSource(workspace.id, sourceBindingId).then(link => {
+      if (cancelled || link.expired || link.source_binding_id !== sourceBindingId) return;
+      setSidebarQuestions(current => {
+        const existing = current[sourceBindingId];
+        if (existing?.sidebarBindingId) return current;
+        return {
+          ...current,
+          [sourceBindingId]: {
+            ...existing,
+            requestKey: existing?.requestKey ?? randomId(),
+            sourceBindingId,
+            sidebarBindingId: link.binding_id,
+          },
+        };
+      });
+    }).catch(reason => {
+      if (cancelled || (reason instanceof ApiError && reason.code === 'AGENT_SIDEBAR_NOT_FOUND')) return;
+      setOperationError(reason instanceof Error ? reason : new Error('侧边聊天恢复失败'));
+    });
+    return () => { cancelled = true; };
+  }, [selected?.id, sidebarQuestions, workspace]);
   const drawerOpen = drawerOpenByScope[workspaceToolScopeKey] ?? false;
   const setDrawerOpen = useCallback((open: boolean) => {
     setDrawerOpenByScope(current => current[workspaceToolScopeKey] === open
@@ -8186,6 +8217,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       'workspace-reference-index',
       'workspace-directory',
       'workspace-git-repositories',
+      'workspace-git-summary-repositories',
+      'workspace-git-branch-repositories',
       'workspace-git-log',
       'workspace-git-changes',
       'conversation-file-preview',
@@ -8908,19 +8941,24 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setReferences([]);
     setWorkspaceReferences([]);
     setComposerAnnotations([]);
-    setActiveTurnEventId(value.cursor ?? undefined);
+    const eventId = value.event_id ?? undefined;
+    setActiveTurnEventId(eventId);
     updateLocalMessageProjections(current => {
       const projection = current.get(message.id);
       if (!projection) return;
+      if (!eventId) {
+        current.delete(message.id);
+        return;
+      }
       current.set(message.id, {
         ...projection,
         scope: conversation.id,
-        canonicalEventId: value.cursor ?? undefined,
+        canonicalEventId: eventId,
         confirmationExpiresAt: Date.now() + SUBMISSION_EVENT_CONFIRMATION_TIMEOUT_MS,
-        state: value.cursor ? 'accepted' : 'ambiguous',
+        state: 'accepted',
       });
     });
-    if (value.cursor) releaseDeferredFormalUserEvents(conversation.id);
+    if (eventId) releaseDeferredFormalUserEvents(conversation.id);
     setPendingBootstrap(undefined);
     setConversationDraft(undefined);
     const draftKey = message.scope === conversationDraft?.id
@@ -9343,31 +9381,31 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       outgoingSubmissions.current.delete(message.id);
       sendingMessageIds.current.delete(message.id);
       if (restoredSubmissionIds.current.has(message.id)) return;
-      const cursor = value.cursor;
+      const eventId = value.event_id ?? undefined;
       if (!context?.nativeGuidance && activeComposerScope.current === message.bindingId) {
         setForegroundTurn(current => current?.submissionId === message.id
-          ? { ...current, cursor: cursor ?? undefined }
+          ? { ...current, cursor: eventId }
           : current);
       }
-      if (cursor && !context?.nativeGuidance) setConversationUnread(message.bindingId, false);
-      if (cursor && !context?.nativeGuidance && activeComposerScope.current === message.bindingId) {
+      if (eventId && !context?.nativeGuidance) setConversationUnread(message.bindingId, false);
+      if (eventId && !context?.nativeGuidance && activeComposerScope.current === message.bindingId) {
         setPendingSubmissionConfirmation({
           submissionId: message.id,
           bindingId: message.bindingId,
-          cursor,
+          cursor: eventId,
           expiresAt: Date.now() + SUBMISSION_EVENT_CONFIRMATION_TIMEOUT_MS,
         });
       }
-      if (cursor && context?.optimisticEventId) {
+      if (eventId && context?.optimisticEventId) {
         updateLocalMessageProjections(current => {
           const projection = current.get(message.id);
           if (!projection || projection.scope !== message.bindingId) return;
-          current.set(message.id, { ...projection, canonicalEventId: cursor, state: 'accepted', confirmationExpiresAt: Date.now() + SUBMISSION_EVENT_CONFIRMATION_TIMEOUT_MS });
+          current.set(message.id, { ...projection, canonicalEventId: eventId, state: 'accepted', confirmationExpiresAt: Date.now() + SUBMISSION_EVENT_CONFIRMATION_TIMEOUT_MS });
         });
         releaseDeferredFormalUserEvents(message.bindingId);
       }
-      if (cursor && !context?.nativeGuidance && activeComposerScope.current === message.bindingId) {
-        setActiveTurnEventId(cursor);
+      if (eventId && !context?.nativeGuidance && activeComposerScope.current === message.bindingId) {
+        setActiveTurnEventId(eventId);
         // A message acknowledgement alone is not a terminal state. Refresh the
         // exact native projection once, while the formal-event bridge above
         // keeps a stale preceding idle snapshot from winning the render.
@@ -9393,11 +9431,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       if (restoredSubmissionIds.current.has(message.id)) return;
       setForegroundTurn(current => current?.submissionId === message.id ? undefined : current);
       if (error instanceof ApiError && error.code === 'AGENT_MESSAGE_DELIVERY_AMBIGUOUS') {
-        updateLocalMessageProjections(current => {
-          const projection = current.get(message.id);
-          if (projection) current.set(message.id, { ...projection, state: 'ambiguous' });
-        });
-        releaseDeferredFormalUserEvents(message.bindingId, true);
+        // The native append may have succeeded, but this browser cannot prove
+        // which formal event it created. Never render that uncertain local
+        // projection beside the authoritative event branch.
+        removeLocalMessageProjection(message.id, message.bindingId);
         reportOperationError(message.bindingId, error);
         return;
       }
@@ -9961,15 +9998,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return { scope, optimisticEventId, branch, replacementParentId, removedProjections };
     },
     onSuccess: (value, request, context) => {
-      const cursor = value.cursor;
-      if (cursor && context) {
-        if (activeComposerScope.current === context.scope) setActiveTurnEventId(cursor);
+      const eventId = value.event_id ?? undefined;
+      if (eventId && context) {
+        if (activeComposerScope.current === context.scope) setActiveTurnEventId(eventId);
         updateLocalMessageProjections(current => {
           const projection = current.get(context.optimisticEventId);
           if (!projection) return;
-          current.set(context.optimisticEventId, { ...projection, canonicalEventId: cursor, state: 'accepted', confirmationExpiresAt: Date.now() + SUBMISSION_EVENT_CONFIRMATION_TIMEOUT_MS });
+          current.set(context.optimisticEventId, { ...projection, canonicalEventId: eventId, state: 'accepted', confirmationExpiresAt: Date.now() + SUBMISSION_EVENT_CONFIRMATION_TIMEOUT_MS });
         });
-        setDeferredRewriteUserEventIds(current => new Set([...current, cursor]));
+        setDeferredRewriteUserEventIds(current => new Set([...current, eventId]));
         releaseDeferredFormalUserEvents(context.scope);
       }
       refresh(context?.scope);
@@ -11423,6 +11460,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       onPreviewAttachment={previewAttachment}
       onOpenConversationReference={openConversationReference}
       onCloseSidebarQuestion={() => {
+        const question = sidebarQuestions[workspaceToolScopeKey];
+        if (!question) return;
+        clearSidebarDraft(workspace.id, question.sourceBindingId);
+        if (!question.sidebarBindingId && question.draft?.draftConversationId) {
+          void agentWorkspaceApi.deleteAgentWorkspaceDraftAttachments(
+            workspace.id, question.draft.draftConversationId,
+          ).catch(() => undefined);
+        }
         setSidebarQuestions(current => {
           if (!current[workspaceToolScopeKey]) return current;
           const next = { ...current };

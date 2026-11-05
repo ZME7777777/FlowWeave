@@ -141,6 +141,16 @@ def create_sidebar_conversation(
     return {**result, "expires_at": expires_at.isoformat()}
 
 
+def _sidebar_payload(link: AgentSidebarConversation) -> dict[str, Any]:
+    expired = link.expired_at is not None or link.expires_at <= now()
+    return {
+        "binding_id": link.sidebar_binding_id,
+        "source_binding_id": link.source_binding_id,
+        "expires_at": link.expires_at.isoformat(),
+        "expired": expired,
+    }
+
+
 def sidebar_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
     link = db.scalar(
         select(AgentSidebarConversation).where(
@@ -150,18 +160,26 @@ def sidebar_conversation(db: Session, workspace_id: str, binding_id: str) -> dic
     )
     if link is None:
         raise DomainError("AGENT_SIDEBAR_NOT_FOUND", "侧边聊天不存在", 404)
-    if link.expired_at is not None or link.expires_at <= now():
-        return {
-            "binding_id": binding_id,
-            "expires_at": link.expires_at.isoformat(),
-            "expired": True,
-        }
-    return {
-        "binding_id": binding_id,
-        "source_binding_id": link.source_binding_id,
-        "expires_at": link.expires_at.isoformat(),
-        "expired": False,
-    }
+    return _sidebar_payload(link)
+
+
+def sidebar_conversation_for_source(
+    db: Session, workspace_id: str, source_binding_id: str
+) -> dict[str, Any]:
+    source = _source_binding(db, workspace_id, source_binding_id)
+    link = db.scalar(
+        select(AgentSidebarConversation)
+        .where(
+            AgentSidebarConversation.workspace_id == workspace_id,
+            AgentSidebarConversation.source_binding_id == source.id,
+            AgentSidebarConversation.expired_at.is_(None),
+            AgentSidebarConversation.expires_at > now(),
+        )
+        .order_by(AgentSidebarConversation.expires_at.desc())
+    )
+    if link is None:
+        raise DomainError("AGENT_SIDEBAR_NOT_FOUND", "侧边聊天不存在", 404)
+    return _sidebar_payload(link)
 
 
 def assert_sidebar_writable(
@@ -228,4 +246,5 @@ __all__ = (
     "create_sidebar_conversation",
     "expire_sidebar_conversation",
     "sidebar_conversation",
+    "sidebar_conversation_for_source",
 )

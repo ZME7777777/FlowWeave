@@ -2936,6 +2936,7 @@ def test_agent_workspace_bootstrap_creates_only_on_first_message_and_freezes_dir
         assert runtime.request is not None
         assert runtime.request.workspace_ref == "/runtime/workspace/project/backend"
         assert first["cursor"] == "first-user-event"
+        assert first["event_id"] == "first-user-event"
         assert (
             first["conversation"]["work_directory_version_id"] == directory["current_version"]["id"]
         )
@@ -3091,6 +3092,12 @@ def test_sidebar_conversation_inherits_source_configuration_and_appends_context(
             }
         ]
         assert child.working_directory == source["working_directory"]
+        recovered = sidebar_conversations.sidebar_conversation_for_source(
+            db, workspace.id, source["id"]
+        )
+        assert recovered["binding_id"] == child.id
+        assert recovered["source_binding_id"] == source["id"]
+        assert recovered["expired"] is False
         assert len(runtime.requests) == 2
         assert runtime.messages[-1] == "侧边追问"
         assert prepared_history[0][2] == ()
@@ -6081,6 +6088,7 @@ def test_agent_workspace_repairs_legacy_finish_fork_once_before_sending(
         repaired_conversation_id = binding.openhands_conversation_id
         assert repaired_conversation_id != runtime.damaged_conversation_id
         assert first["cursor"] == "user-1"
+        assert first["event_id"] == "user-1"
         assert runtime.fork_calls == [
             (
                 "10000000-0000-4000-8000-000000000099",
@@ -6094,6 +6102,7 @@ def test_agent_workspace_repairs_legacy_finish_fork_once_before_sending(
 
         second = conversations.message(db, workspace.id, binding_id, "第二次继续")
         assert second["cursor"] == "user-2"
+        assert second["event_id"] == "user-2"
         assert len(runtime.fork_calls) == 1
         assert runtime.switched_conversation_ids == [
             repaired_conversation_id,
@@ -6796,6 +6805,7 @@ def test_agent_workspace_rewrites_only_the_active_branch_last_user_message(
             db, workspace.id, created["id"], "user-event", "after"
         )
         assert result["accepted"] is True
+        assert result["event_id"] == "user-event"
         assert runtime.calls == [("navigate", "root-event"), ("send", "after")]
 
 
