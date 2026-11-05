@@ -1218,6 +1218,7 @@ export interface WorkspaceGitRepository {
   upstream?: string;
   ahead?: number;
   behind?: number;
+  dirty?: boolean;
 }
 export interface AgentSessionWorkspaceGitRepositories { repositories: WorkspaceGitRepository[] }
 export interface WorkspaceGitCommit {

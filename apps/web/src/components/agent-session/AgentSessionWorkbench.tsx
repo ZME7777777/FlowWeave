@@ -41,7 +41,7 @@ import { WebsiteIcon } from '../WebsiteIcon';
 import { sandboxedWorkspaceHtmlDocument as sandboxedHtmlPreviewDocument } from '../workspace-file-preview';
 import { subagentAvatarSlots, type SubagentAvatarSlot } from '../../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './fileChanges';
-import type { AgentAttachment, AgentConversation, AgentConversationActivity, AgentConversationScheduleOccurrence, AgentConversationAnnotation, AgentConversationContext, AgentConversationCredentialSyncEntry, AgentConversationHydration, AgentConversationInputReadiness, AgentConversationPage, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WebsiteCredential, WorkspaceGitChangeKind, WorkspaceGitChangedFile, WorkspaceGitChanges, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
+import type { WorkspaceGitRepository, AgentAttachment, AgentConversation, AgentConversationActivity, AgentConversationScheduleOccurrence, AgentConversationAnnotation, AgentConversationContext, AgentConversationCredentialSyncEntry, AgentConversationHydration, AgentConversationInputReadiness, AgentConversationPage, AgentConversationReference, AgentConversationSearch, AgentPendingConfirmationAction, AgentSessionCapability, AgentSessionMcpReadiness, AgentSessionWorkDirectory, AgentSessionWorkDirectoryList, AgentSessionWorkspaceDetails, AgentWorkspaceReference, CapabilityAsset, ModelProvider, OpenHandsConversationEvent, OpenHandsConversationEventBatch, RuntimeTaskControlSnapshot, RuntimeTaskUsageSnapshot, WebsiteCredential, WorkspaceGitChangeKind, WorkspaceGitChangedFile, WorkspaceGitChanges, WorkspaceGitCommitDetails, WorkspaceGitFileDiff } from '../../types';
 import { capabilityTypeIcons, capabilityTypeLabels, capabilityTypeFilters, type AgentCapabilityType } from './capabilityPresentation';
 import '../../pages/agent-workbench.css';
 import '../../pages/agent-workbench-layout.css';
@@ -2877,7 +2877,7 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
 }
 
-function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expanded, pagination, loadingDirectories, onExpandedChange, onLoadMore, onSelect, onSelectionChange, onActivateDirectory, onContextMenu, fileDownloadUrl, repositoryBranches }: { repositoryBranches?: Map<string, string>; entries: WorkspaceEntry[]; root: string; selectedFile?: string; selectedPaths: Set<string>; expanded: Set<string>; pagination: Map<string, string | undefined>; loadingDirectories: Set<string>; onExpandedChange: (updater: (current: Set<string>) => Set<string>) => void; onLoadMore: (parentPath?: string) => void; onSelect: (path?: string) => void; onSelectionChange: (paths: Set<string>) => void; onActivateDirectory: (path?: string) => void; onContextMenu: (path: string, kind: 'file' | 'directory', event: ReactMouseEvent<HTMLButtonElement>) => void; fileDownloadUrl: (path: string) => string }) {
+function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expanded, pagination, loadingDirectories, onExpandedChange, onLoadMore, onSelect, onSelectionChange, onActivateDirectory, onContextMenu, fileDownloadUrl, repositoryBranches }: { repositoryBranches?: Map<string, WorkspaceGitRepository>; entries: WorkspaceEntry[]; root: string; selectedFile?: string; selectedPaths: Set<string>; expanded: Set<string>; pagination: Map<string, string | undefined>; loadingDirectories: Set<string>; onExpandedChange: (updater: (current: Set<string>) => Set<string>) => void; onLoadMore: (parentPath?: string) => void; onSelect: (path?: string) => void; onSelectionChange: (paths: Set<string>) => void; onActivateDirectory: (path?: string) => void; onContextMenu: (path: string, kind: 'file' | 'directory', event: ReactMouseEvent<HTMLButtonElement>) => void; fileDownloadUrl: (path: string) => string }) {
   const nodes = useMemo(() => workspaceTree(entries, root), [entries, root]);
   const selectionAnchor = useRef<string | undefined>(undefined);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
@@ -2970,7 +2970,15 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
       }} onClick={event => selectEntry(node, event)} onContextMenu={event => { event.preventDefault(); if (node.kind === 'directory') onActivateDirectory(node.path); onContextMenu(node.path, node.kind, event); }}>
         {node.kind === 'directory' ? open ? <FolderOpen size={14}/> : <Folder size={14}/> : <FileCode2 size={14}/>}
         <span>{node.name}</span>
-        {node.kind === 'directory' && repositoryBranches?.get(node.path.replace(/\/+$/, '')) && <em className="agent-file-tree-branch" title={`当前分支：${repositoryBranches.get(node.path.replace(/\/+$/, ''))}`}><GitBranch size={10}/><span>{repositoryBranches.get(node.path.replace(/\/+$/, ''))}</span></em>}
+        {node.kind === 'directory' && (() => {
+          const repo = repositoryBranches?.get(node.path.replace(/\/+$/, ''));
+          if (!repo) return null;
+          const hasSync = repo.ahead !== undefined && repo.behind !== undefined;
+          return <>
+            <em className={`agent-file-tree-branch${repo.dirty ? ' dirty' : ''}`} title={`当前分支：${repo.branch}${repo.dirty ? '（有未提交改动）' : ''}`}><GitBranch size={10}/><span>{repo.branch}</span></em>
+            {hasSync && (repo.ahead || repo.behind) ? <em className="agent-file-tree-sync" title={`${repo.ahead ? `本地领先 ${repo.ahead} 个提交（待推送）` : ''}${repo.ahead && repo.behind ? '；' : ''}${repo.behind ? `远程领先 ${repo.behind} 个提交（待拉取）` : ''}`}>{repo.behind ? <b className="behind">↙{repo.behind}</b> : null}{repo.ahead ? <b className="ahead">↗{repo.ahead}</b> : null}</em> : null}
+          </>;
+        })()}
       </button>
       {node.kind === 'file' && <span className="agent-file-tree-file-meta"><em className="agent-file-tree-size">{formatFileSize(node.size)}</em><a className="agent-file-tree-download" href={fileDownloadUrl(node.path)} aria-label={`下载 ${node.name}`} title={`下载 ${node.name}`}><Download size={12}/></a></span>}
       </div>
@@ -5030,7 +5038,7 @@ function WorkspaceDrawer({
     refetchOnWindowFocus: 'always',
     retry: (count, error) => !(error instanceof ApiError && (error.status < 500 || error.status === 503)) && count < 2,
   });
-  const workspaceRepositoryBranches = useMemo(() => new Map((workspaceGitRepositoriesQuery.data?.repositories ?? []).filter(item => item.branch).map(item => [item.path.replace(/\/+$/, ''), item.branch as string])), [workspaceGitRepositoriesQuery.data?.repositories]);
+  const workspaceRepositoryBranches = useMemo(() => new Map((workspaceGitRepositoriesQuery.data?.repositories ?? []).filter(item => item.branch).map(item => [item.path.replace(/\/+$/, ''), item] as const)), [workspaceGitRepositoriesQuery.data?.repositories]);
   const workspaceGitRepository = useMemo(
     () => workspaceRootGitRepository(workspaceGitRepositoriesQuery.data?.repositories ?? [], details?.working_directory),
     [details?.working_directory, workspaceGitRepositoriesQuery.data?.repositories],

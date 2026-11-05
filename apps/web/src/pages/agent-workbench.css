@@ -793,3 +793,9 @@
    transitions are only for click/keyboard collapse and expand. */
 .agent-workspace-files.file-tree-resizing,.agent-workspace-files.file-tree-resizing>.agent-file-tree-pane{transition:none!important}
 .agent-workspace-files.file-tree-resizing iframe{pointer-events:none}
+.agent-file-tree-item.directory:has(>.agent-file-tree-sync)>.agent-file-tree-branch{flex:0 1 auto}
+.agent-file-tree-item>.agent-file-tree-branch.dirty{background:#fdf1d0;color:#8a5a00}
+.agent-file-tree-item>.agent-file-tree-sync{display:inline-flex;flex:0 0 auto;align-items:center;gap:5px;margin-left:5px;font-size:10px;font-style:normal;font-weight:600;line-height:16px;white-space:nowrap}
+.agent-file-tree-sync>b{font-weight:600}
+.agent-file-tree-sync>.behind{color:#2a6fdb}
+.agent-file-tree-sync>.ahead{color:#2f8a4b}

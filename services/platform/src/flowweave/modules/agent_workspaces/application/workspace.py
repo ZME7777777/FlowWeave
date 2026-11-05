@@ -466,6 +466,12 @@ def _repository_details(repository: Path, runtime_path: str) -> dict[str, Any]:
                     details["upstream"] = upstream
                     details["ahead"] = int(counts[0])
                     details["behind"] = int(counts[1])
+        status = _git_run(repository, "status", "--porcelain", "-z", "--untracked-files=normal")
+        if status is not None:
+            details["dirty"] = any(
+                entry[3:] and not _is_private_upload_path(entry[3:])
+                for entry in status.decode("utf-8", errors="replace").split("\0")
+            )
         outcome = "ok"
         return details
     finally:
