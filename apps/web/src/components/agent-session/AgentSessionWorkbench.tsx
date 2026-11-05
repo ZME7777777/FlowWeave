@@ -8548,12 +8548,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [streamEnabled]);
 
   useEffect(() => {
+    // Retained hosts observe the shared URL even while their tab is hidden.
+    // Only the visible host may recover a missing conversation route.
+    if (!pageActive) return;
     if (!autoOpenDraft && !scheduleRoute && !conversationDraft && !routeBindingId && conversations.length) {
       automaticSidebarRoute.current = conversations[0].id;
       onNavigate(conversationPath(conversations[0].id), true);
     }
     if (routeBindingId && conversations.length && !selected && pendingCreatedId !== routeBindingId && !initialConversationQueries.some(query => query.isFetching) && selectedConversationQuery.isError) onNavigate(scheduleRoute ? '/agent/schedules' : host.rootPath, true);
-  }, [autoOpenDraft, conversationDraft, conversationPath, conversations, host.rootPath, initialConversationQueries, onNavigate, pendingCreatedId, routeBindingId, scheduleRoute, selected, selectedConversationQuery.isError]);
+  }, [autoOpenDraft, conversationDraft, conversationPath, conversations, host.rootPath, initialConversationQueries, onNavigate, pageActive, pendingCreatedId, routeBindingId, scheduleRoute, selected, selectedConversationQuery.isError]);
   useEffect(() => { if (selected?.id === pendingCreatedId) setPendingCreatedId(undefined); }, [pendingCreatedId, selected?.id]);
   useLayoutEffect(() => {
     if (!composerScope || previousComposerScope.current === composerScope) return;

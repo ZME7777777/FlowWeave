@@ -245,6 +245,48 @@ test('fresh navigation opens case space and creates a scenario after the branch 
   await expect(page.getByRole('navigation', { name: 'Agent 工作区导航' })).toBeVisible();
 });
 
+for (const delayedCatalog of [false, true]) {
+  test(`hidden case conversation cannot redirect the AI workbench (${delayedCatalog ? 'late catalog' : 'loaded catalog'})`, async ({ page }) => {
+    await openWorkspace(page);
+    await page.clock.install();
+    const item = {
+      id: 'navigation-case', name: '导航场景', objective: '验证页面切换', state: 'ACTIVE', row_version: 1,
+      control_conversation_binding_id: 'case-binding', control_work_directory_id: 'case-directory',
+      stages: [], tasks: [], materials: [], control_plans: [], decision_proposals: [], control_rounds: [],
+      created_at: now, updated_at: now,
+    };
+    await page.route('**/api/v1/cases**', route => json(route, new URL(route.request().url()).pathname.endsWith('/cases') ? [item] : item));
+    const conversation = {
+      id: 'case-binding', display_title: '场景协调会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+      work_directory_id: 'case-directory', write_available: true, created_at: now, updated_at: now,
+    };
+    let releaseCatalog: (() => void) | undefined;
+    const catalogGate = new Promise<void>(resolve => { releaseCatalog = resolve; });
+    let catalogStarted = false;
+    let catalogFinished = false;
+    await page.route('**/api/v1/agent-workspaces/schedule-workspace/conversations?**', async route => {
+      if (new URL(route.request().url()).searchParams.get('work_directory_id') !== 'case-directory') return route.fallback();
+      catalogStarted = true;
+      if (delayedCatalog) await catalogGate;
+      await json(route, { items: [conversation], next_cursor: null });
+      catalogFinished = true;
+    });
+    await page.route('**/api/v1/agent-workspaces/schedule-workspace/conversations/case-binding', route => json(route, conversation));
+    await page.goto('/cases/navigation-case/conversations/case-binding');
+    await expect.poll(() => catalogStarted).toBe(true);
+    await expect(page.locator('.scenario-conversation').getByLabel('发送 Agent 消息')).toBeVisible();
+    if (!delayedCatalog) await expect(page.locator('.scenario-conversation').getByRole('button', { name: '场景协调会话', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
+    releaseCatalog?.();
+    await expect.poll(() => catalogFinished).toBe(true);
+    await page.clock.fastForward(16_000);
+    await expect(page).toHaveURL(/\/agent(?:\?.*)?$/);
+    await expect(page.getByRole('button', { name: 'AI 工作台', exact: true })).toHaveClass(/active/);
+    await expect(page.getByRole('navigation', { name: 'Agent 工作区导航' })).toBeVisible();
+    await expect(page.locator('[data-page-tab="nodes"]')).toHaveCount(0);
+  });
+}
+
 test('case detail saves materials workspace ordered run cards and model capabilities', async ({ page }) => {
   await openWorkspace(page);
   type MockCase = CaseBasics & { id: string; row_version: number; stages: Pick<CaseStage, 'id' | 'flow_run_id' | 'name' | 'execution_mode' | 'state' | 'position'>[]; session_config?: CaseSessionConfig };
