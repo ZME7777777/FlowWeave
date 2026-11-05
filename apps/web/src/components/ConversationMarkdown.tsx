@@ -161,13 +161,15 @@ type MarkdownNode = {
 function preserveLiteralTrailingBackslashContinuationsPlugin(source: string) {
   return () => (tree: MarkdownNode) => {
     const visit = (node: MarkdownNode) => {
-      const start = node.position?.start?.offset;
-      const end = node.position?.end?.offset;
-      if (node.type === 'break' && typeof start === 'number' && typeof end === 'number' && /^\\\r?\n$/.test(source.slice(start, end))) {
-        node.type = 'text';
-        node.value = '\\\n';
-      }
-      node.children?.forEach(visit);
+      if (!node.children) return;
+      node.children = node.children.flatMap(child => {
+        visit(child);
+        const start = child.position?.start?.offset;
+        const end = child.position?.end?.offset;
+        return child.type === 'break' && typeof start === 'number' && typeof end === 'number' && /^\\\r?\n$/.test(source.slice(start, end))
+          ? [{ ...child, type: 'text', value: '\\' }, child]
+          : [child];
+      });
     };
     visit(tree);
   };
@@ -216,7 +218,7 @@ export function ConversationMarkdown({ children, reveal = false, onOpenWorkspace
     : [remarkGfm, remarkMath], [markdown, preserveLiteralTrailingBackslashContinuations]);
   if (!CONVERSATION_MARKDOWN_SYNTAX.test(markdown)) return <p><ConversationTextReveal reveal={reveal}>{markdown}</ConversationTextReveal></p>;
   return <MarkdownRenderOptionsContext value={renderOptions}>
-    <div className={reveal ? 'conversation-text-reveal-block conversation-text-reveal-shimmer' : undefined}>
+    <div className={`conversation-markdown${reveal ? ' conversation-text-reveal-block conversation-text-reveal-shimmer' : ''}`}>
       <ReactMarkdown urlTransform={(url, key) => (key === 'src' ? workspaceImageUrl?.(url) : undefined) ?? defaultUrlTransform(url)} remarkPlugins={remarkPlugins} rehypePlugins={[rehypeKatex, rehypeFormulaMetadata]} components={{ a: MarkdownLink, img: MarkdownImage, pre: MarkdownPre, span: MarkdownSpan, table: MarkdownTable }}>{markdown}</ReactMarkdown>
     </div>
   </MarkdownRenderOptionsContext>;

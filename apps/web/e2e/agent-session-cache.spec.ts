@@ -1113,7 +1113,7 @@ test('Agent session renders a completed long Markdown reply without manual expan
   }));
   const completeEvents = (id: string) => ({
     events: [
-      { id: `${id}-user`, event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: `curl --location 'https://example.test/${id}' \\\n--data-urlencoded 'format=json'\n\n1. 检查当前目录\n\n2. 确认检查范围\n\n   - 依赖与版本\n\n   - 配置文件`, timestamp: now } },
+      { id: `${id}-user`, event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: `curl --location 'https://example.test/${id}' \\\n--data-urlencoded 'format=json'\n\n# 检查说明\n\n> 请确认范围\n>\n> 然后继续\n\n$$\nx + y\n$$\n\n1. 检查当前目录\n\n2. 确认检查范围\n\n   - 依赖与版本\n\n   - 配置文件`, timestamp: now } },
       { id: `${id}-tool`, event_type: 'TOOL_RESULT', payload: { parent_id: `${id}-user`, content: 'x'.repeat(20_000), details: { stdout: 'x'.repeat(20_000) }, timestamp: now } },
       { id: `${id}-assistant`, event_type: 'MESSAGE', payload: { source: 'agent', parent_id: `${id}-tool`, content: `完整回复 ${id}\n\n| 选择 | 项目 | 用途 | Git 地址 |\n| --- | --- | --- | --- |\n| #1 | \`hq-support\` | 同步 Kafka topic | \`https://gitlab.example.test/hq-support\` |\n\n${'完整 Markdown 内容 '.repeat(500)}\n\n${nestedMarkdownSource}`, timestamp: now } },
     ],
@@ -1165,8 +1165,12 @@ test('Agent session renders a completed long Markdown reply without manual expan
   await expect(page.getByText('完整回复 cache-conversation-a', { exact: false })).toBeVisible();
   const userContent = page.locator('[data-user-event-id="cache-conversation-a-user"] .conversation-message-content');
   await expect(userContent).toHaveCSS('white-space', 'pre-wrap');
+  await expect(userContent.locator('.conversation-markdown')).toHaveCSS('white-space', 'normal');
   await expect(userContent.locator('a')).toHaveAttribute('href', 'https://example.test/cache-conversation-a');
   await expect(userContent).toContainText("\\\n--data-urlencoded 'format=json'");
+  await expect(userContent.getByRole('heading', { name: '检查说明' })).toHaveCSS('margin-top', '12px');
+  await expect(userContent.locator('blockquote')).toHaveCSS('margin-top', '8px');
+  await expect(userContent.locator('.katex-display')).toHaveCSS('margin-top', '8px');
   const userList = userContent.locator('ol');
   await expect(userList).toHaveCSS('margin-top', '8px');
   await expect(userList.locator('li > p').first()).toHaveCSS('margin-bottom', '0px');
