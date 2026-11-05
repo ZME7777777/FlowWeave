@@ -522,7 +522,7 @@ def read_flow(db: Session, token: str, args: FlowReadArguments) -> dict[str, Any
 def action_result(plan: CaseControlPlan) -> dict[str, Any]:
     # Full orchestration projections may contain internal Runtime identities.
     # Tools receive the durable action identity and can re-read current facts.
-    return {
+    result = {
         "plan_id": plan.id,
         "action": plan.action,
         "state": plan.state,
@@ -531,6 +531,12 @@ def action_result(plan: CaseControlPlan) -> dict[str, Any]:
         "retry_of_plan_id": plan.retry_of_plan_id,
         "validation": plan.result_json.get("validation", {}),
     }
+    if plan.action in {"START_STEPWISE_NODE", "START_EXECUTION", "RERUN_STEPWISE_NODE"}:
+        result["next"] = (
+            "动作已提交，节点由其自己的 Agent 执行。本轮可以结束：节点结束、失败、需要输入或"
+            "确认、门禁出结果时，平台会把事实作为新消息追加给你。没有新事实时无需读取状态或等待。"
+        )
+    return result
 
 
 def manage_flow(db: Session, token: str, args: FlowActionArguments) -> dict[str, Any]:

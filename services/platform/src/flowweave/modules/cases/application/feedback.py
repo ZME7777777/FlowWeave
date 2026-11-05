@@ -422,7 +422,12 @@ def _deliver_locked(db: Session, delivery_id: str, lease: Lease) -> None:
             )
     if batch[0].state == "PENDING":
         readiness = runtime.input_readiness(handle)
-        if not readiness.ready or readiness.execution_status.lower() not in {"idle", "finished"}:
+        status = readiness.execution_status.lower()
+        # Same rule as a user message (conversations.message): an active turn
+        # accepts a formal event after its current step; only confirmation,
+        # stopping and lifecycle states stay closed.
+        running = status in {"running", "executing"}
+        if not (status in {"idle", "finished"} and readiness.ready) and not running:
             raise TaskDeferred("CASE_COORDINATOR_NOT_IDLE")
         _, item = _scope(db, batch[0])
         if not all(_source_is_current(db, candidate) for candidate in batch):
@@ -433,7 +438,13 @@ def _deliver_locked(db: Session, delivery_id: str, lease: Lease) -> None:
         _set(batch, "SUBMITTING")
         db.commit()  # Intent must survive process death before POST acknowledgement.
         try:
-            result = runtime.append_message(handle, message)
+            # Running: one native send with run=True, as a user message does, so
+            # OpenHands itself re-arms a run if the turn ends concurrently.
+            result = (
+                runtime.send_message(handle, message)
+                if running
+                else runtime.append_message(handle, message)
+            )
             if not result.cursor:
                 raise DomainError("NATIVE_APPEND_OUTCOME_UNKNOWN", "Missing native event id", 502)
         except DomainError as exc:
@@ -452,6 +463,11 @@ def _deliver_locked(db: Session, delivery_id: str, lease: Lease) -> None:
             candidate.message_event_id = result.cursor
         _set(batch, "ACKNOWLEDGED")
         db.commit()  # Retries after this point only call native /run.
+        if running:
+            _set(batch, "DELIVERED")
+            if all(candidate.id != delivery_id for candidate in batch):
+                raise TaskDeferred("CASE_FEEDBACK_BACKLOG")
+            return
     # Re-authorize after append. Pause, supersession or generation replacement
     # cannot make a persisted receipt grant fresh authority to run.
     try:

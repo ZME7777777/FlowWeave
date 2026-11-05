@@ -51,6 +51,13 @@ def feedback_case(event_case, monkeypatch):  # noqa: F811
         g.posts.append((handle, content))
         return RuntimeResult(status="IDLE", cursor="native-user-" + str(len(g.posts)))
 
+    g.sends = []
+
+    def send(handle, content):
+        assert not g.db.in_transaction()
+        g.sends.append((handle, content))
+        return RuntimeResult(status="RUNNING", cursor="native-user-run-" + str(len(g.sends)))
+
     def run(handle, event_id):
         assert not g.db.in_transaction()
         g.runs.append((handle, event_id))
@@ -59,6 +66,7 @@ def feedback_case(event_case, monkeypatch):  # noqa: F811
     runtime = SimpleNamespace(
         input_readiness=lambda _: RuntimeInputReadiness(True, g.status),
         append_message=append,
+        send_message=send,
         run_pending_message=run,
         conversation_mcp_configured=lambda *_: True,
     )
@@ -140,19 +148,20 @@ def test_execution_source_atomic_batch_and_receipt_replay(feedback_case):
     assert len(service.get_case(g.db, g.item.id)["feedback_deliveries"]) == 2
 
 
-def test_running_waits_without_failure_budget_or_new_batch(feedback_case):
+def test_running_coordinator_receives_facts_like_a_user_message(feedback_case):
     g = feedback_case
-    enqueue_event(g)
+    source = enqueue_event(g)
     g.status = "running"
-    for _ in range(4):
-        task, _ = execute(g, expected_wait="NOT_IDLE")
-        assert task.attempts == 0
-    assert not g.posts and deliveries(g)[0].state == "PENDING"
+    execute(g)
+    # An active turn takes one formal send (run=True); no separate append or /run.
+    assert len(g.sends) == 1 and not g.posts and not g.runs
+    assert str(source.cursor) in g.sends[0][1]
+    assert deliveries(g)[0].state == "DELIVERED"
+    assert deliveries(g)[0].message_event_id == "native-user-run-1"
     enqueue_event(g)
     g.status = "finished"
     execute(g)
-    execute(g)
-    assert len(g.posts) == 2  # The older reserved batch is processed first.
+    assert len(g.posts) == len(g.runs) == 1  # An idle/finished one keeps append + run.
 
 
 @pytest.mark.parametrize(
