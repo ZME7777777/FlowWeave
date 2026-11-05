@@ -41,6 +41,7 @@ from flowweave.shared.schemas import (
     AttemptVersionWrite,
     AutomaticRunCopyWrite,
     AutomaticRunStartWrite,
+    CaseBundleImportWrite,
     CaseControlConversationWrite,
     CaseControlPlanWrite,
     CaseControlSuggestionWrite,
@@ -585,32 +586,51 @@ def create_case(db: Session, payload: CaseCreateWrite) -> dict[str, Any]:
     return _case_dict(db, item)
 
 
-def copy_case(db: Session, case_id: str) -> dict[str, Any]:
-    """Create a new Case from a source Case's *configuration*, never its runtime.
+_CASE_BUNDLE_FORMAT = "flowweave.case-bundle"
 
-    Copied: name/description/objective, work directory, LINK and FILE materials (file bytes are
-    re-written into the new Case's own directory), every stage, each stage's reusable launch
-    template (as an independent copy - ``flow_run_id`` is unique per stage), and the Case Agent
-    session configuration (re-validated against what is available now).
 
-    Never copied: coordinator conversations/rounds, execution copies and their binding, decision
-    proposals, control plans, event inbox, pause/resume state, or the Case work directory
-    contents. Anything that cannot be carried over is reported in ``copy_report`` instead of
-    failing the whole copy or being silently dropped.
+def _stage_blueprint(stage: CaseStage) -> dict[str, Any]:
+    return {
+        "stage_key": stage.stage_key,
+        "name": stage.name,
+        "objective": stage.objective,
+        "execution_mode": stage.execution_mode,
+        "template_flow_run_id": stage.flow_run_id,
+    }
+
+
+def _build_case_from_blueprint(
+    db: Session,
+    *,
+    name: str,
+    description: str,
+    objective: str,
+    work_directory_id: str | None,
+    link_materials: list[dict[str, Any]],
+    file_materials: list[tuple[str, bytes | None]],
+    stages: list[dict[str, Any]],
+    session_config: dict[str, Any],
+) -> dict[str, Any]:
+    """One creation path for both *copy* and *import*, so they can never diverge.
+
+    A blueprint is configuration only. Each stage's reusable launch template is cloned into a
+    new, independent record (``case_stages.flow_run_id`` is unique, so two Cases can never share
+    one). Runtime state - coordinator conversations, execution copies, plans, proposals, pause
+    state - has no place in a blueprint and is therefore never inherited. Whatever cannot be
+    carried over is reported in ``copy_report`` instead of failing the whole operation or being
+    silently dropped.
     """
 
-    source = _case(db, case_id)
-    stages = list(
-        db.scalars(select(CaseStage).where(CaseStage.case_id == source.id).order_by(CaseStage.position))
-    )
     workspace = agent_workspaces.ensure_default_agent_workspace(db)
     report: dict[str, list[dict[str, str]]] = {"copied": [], "skipped": []}
+    if work_directory_id:
+        work_directories.get_work_directory(db, workspace.id, work_directory_id)
 
     item = Case(
-        name=f"{source.name} 副本"[:220],
-        description=source.description,
-        objective=source.objective,
-        work_directory_id=source.work_directory_id,
+        name=name[:220],
+        description=description,
+        objective=objective,
+        work_directory_id=work_directory_id,
         materials_json=[],
     )
     db.add(item)
@@ -620,69 +640,59 @@ def copy_case(db: Session, case_id: str) -> dict[str, Any]:
     )
     item.control_work_directory_id = str(directory["id"])
 
-    materials: list[dict[str, Any]] = []
-    for material in source.materials_json or []:
-        if material["kind"] == "LINK":
-            materials.append(dict(material))
+    materials: list[dict[str, Any]] = [dict(material) for material in link_materials]
+    for filename, content in file_materials:
+        if content is None:
+            report["skipped"].append({"item": f"资料 {filename}", "reason": "FILE_UNAVAILABLE"})
             continue
-        try:
-            content = agent_workspaces.read_case_material_file(
-                db, workspace.id, source.id, material["value"]
-            )
-            stored = agent_workspaces.write_case_material_file(
-                db, workspace.id, item.id, content
-            )
-            materials.append({"kind": "FILE", "name": material["name"], "value": stored})
-        except DomainError as exc:
-            report["skipped"].append(
-                {"item": f"资料 {material['name']}", "reason": exc.code}
-            )
+        stored = agent_workspaces.write_case_material_file(db, workspace.id, item.id, content)
+        materials.append({"kind": "FILE", "name": filename, "value": stored})
     item.materials_json = materials
 
-    for stage in stages:
+    for position, blueprint in enumerate(stages):
+        label = f"「{blueprint['name']}」的流程模板"
         copied_stage = CaseStage(
             case_id=item.id,
-            stage_key=stage.stage_key,
-            name=stage.name,
-            objective=stage.objective,
-            position=stage.position,
-            state="ACTIVE" if stage.position == 0 else "PENDING",
-            execution_mode=stage.execution_mode,
+            stage_key=blueprint["stage_key"],
+            name=blueprint["name"],
+            objective=blueprint["objective"],
+            position=position,
+            state="ACTIVE" if position == 0 else "PENDING",
+            execution_mode=blueprint["execution_mode"],
         )
         db.add(copied_stage)
-        if not stage.flow_run_id:
+        template_id = blueprint.get("template_flow_run_id")
+        if not template_id:
             continue
-        template = db.get(FlowRun, stage.flow_run_id)
+        template = db.get(FlowRun, template_id)
         if template is None:
-            report["skipped"].append({"item": f"「{stage.name}」的流程模板", "reason": "TEMPLATE_UNAVAILABLE"})
+            report["skipped"].append({"item": label, "reason": "TEMPLATE_UNAVAILABLE"})
             continue
+        clone_name = f"{item.name} · {blueprint['name']} 模板"[:220]
         try:
             with savepoint(db):
-                if stage.execution_mode == "STEPWISE":
+                if blueprint["execution_mode"] == "STEPWISE":
                     if template.parent_flow_run_id is None:
                         raise conflict("source stepwise template is not a record")
                     clone = orchestration.copy_nested_stepwise_run_record(
                         db,
                         template.parent_flow_run_id,
                         template.id,
-                        StepwiseRunRecordCopyWrite(name=f"{item.name} · {stage.name} 模板"[:220]),
+                        StepwiseRunRecordCopyWrite(name=clone_name),
+                        as_template=True,
                     )
                 else:
                     clone = orchestration.copy_automatic_run_draft(
-                        db,
-                        template.id,
-                        AutomaticRunCopyWrite(name=f"{item.name} · {stage.name} 模板"[:220]),
+                        db, template.id, AutomaticRunCopyWrite(name=clone_name)
                     )
             copied_stage.flow_run_id = str(clone["id"])
-            report["copied"].append({"item": f"「{stage.name}」的流程模板", "reason": "COPIED"})
+            report["copied"].append({"item": label, "reason": "COPIED"})
         except DomainError as exc:
-            report["skipped"].append(
-                {"item": f"「{stage.name}」的流程模板", "reason": exc.code or "TEMPLATE_NOT_COPIED"}
-            )
+            report["skipped"].append({"item": label, "reason": exc.code or "TEMPLATE_NOT_COPIED"})
 
-    if source.session_config_json:
+    if session_config:
         try:
-            config = CaseControlConversationWrite.model_validate(source.session_config_json)
+            config = CaseControlConversationWrite.model_validate(session_config)
             item.session_config_json = validate_case_session_config(db, config)
             report["copied"].append({"item": "Case Agent 会话配置", "reason": "COPIED"})
         except (DomainError, ValueError) as exc:
@@ -697,6 +707,131 @@ def copy_case(db: Session, case_id: str) -> dict[str, Any]:
     write_case_files(db, item)
     finish(db)
     return {**_case_dict(db, item), "copy_report": report}
+
+
+def _read_source_files(
+    db: Session, source: Case
+) -> list[tuple[str, bytes | None]]:
+    workspace = agent_workspaces.ensure_default_agent_workspace(db)
+    files: list[tuple[str, bytes | None]] = []
+    for material in source.materials_json or []:
+        if material["kind"] != "FILE":
+            continue
+        try:
+            content: bytes | None = agent_workspaces.read_case_material_file(
+                db, workspace.id, source.id, material["value"]
+            )
+        except DomainError:
+            content = None
+        files.append((material["name"], content))
+    return files
+
+
+def copy_case(db: Session, case_id: str) -> dict[str, Any]:
+    """Create a new Case from a source Case's configuration, never its runtime."""
+
+    source = _case(db, case_id)
+    stages = list(
+        db.scalars(
+            select(CaseStage).where(CaseStage.case_id == source.id).order_by(CaseStage.position)
+        )
+    )
+    return _build_case_from_blueprint(
+        db,
+        name=f"{source.name} 副本",
+        description=source.description,
+        objective=source.objective,
+        work_directory_id=source.work_directory_id,
+        link_materials=[m for m in source.materials_json or [] if m["kind"] == "LINK"],
+        file_materials=_read_source_files(db, source),
+        stages=[_stage_blueprint(stage) for stage in stages],
+        session_config=dict(source.session_config_json or {}),
+    )
+
+
+def export_cases(db: Session, case_ids: Sequence[str]) -> dict[str, Any]:
+    """Export Cases as a self-describing bundle (references + file contents, no runtime).
+
+    The bundle refers to each stage's template record by id, which is meaningful on the same
+    platform only; it is a backup/migration document, not a portable template definition.
+    Secrets never appear: the session configuration holds capability and credential *ids*.
+    """
+
+    import base64
+
+    entries: list[dict[str, Any]] = []
+    for case_id in case_ids:
+        source = _case(db, case_id)
+        stages = list(
+            db.scalars(
+                select(CaseStage)
+                .where(CaseStage.case_id == source.id)
+                .order_by(CaseStage.position)
+            )
+        )
+        entries.append(
+            {
+                "name": source.name,
+                "description": source.description,
+                "objective": source.objective,
+                "work_directory_id": source.work_directory_id,
+                "link_materials": [m for m in source.materials_json or [] if m["kind"] == "LINK"],
+                "file_materials": [
+                    {
+                        "name": name,
+                        "content_base64": None
+                        if content is None
+                        else base64.b64encode(content).decode("ascii"),
+                    }
+                    for name, content in _read_source_files(db, source)
+                ],
+                "stages": [_stage_blueprint(stage) for stage in stages],
+                "session_config": dict(source.session_config_json or {}),
+            }
+        )
+    return {
+        "format": _CASE_BUNDLE_FORMAT,
+        "version": 1,
+        "exported_at": now().isoformat(),
+        "cases": entries,
+    }
+
+
+def import_cases(db: Session, payload: CaseBundleImportWrite) -> list[dict[str, Any]]:
+    """Recreate Cases from an export bundle through the same path as *copy*."""
+
+    import base64
+    import binascii
+
+    created: list[dict[str, Any]] = []
+    for entry in payload.cases:
+        files: list[tuple[str, bytes | None]] = []
+        for material in entry.file_materials:
+            try:
+                content = (
+                    base64.b64decode(material.content_base64, validate=True)
+                    if material.content_base64 is not None
+                    else None
+                )
+            except (binascii.Error, ValueError):
+                content = None
+            if content is not None and len(content) > 64 * 1024 * 1024:
+                content = None
+            files.append((material.name, content))
+        created.append(
+            _build_case_from_blueprint(
+                db,
+                name=entry.name,
+                description=entry.description,
+                objective=entry.objective,
+                work_directory_id=entry.work_directory_id,
+                link_materials=[m.model_dump() for m in entry.link_materials],
+                file_materials=files,
+                stages=[stage.model_dump() for stage in entry.stages],
+                session_config=entry.session_config,
+            )
+        )
+    return created
 
 
 def _editable_case(db: Session, case_id: str, expected_row_version: int) -> Case:

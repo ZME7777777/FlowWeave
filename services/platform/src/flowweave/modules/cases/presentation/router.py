@@ -11,6 +11,7 @@ from flowweave.modules.cases import public as service
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import Db, IdempotencyKey, command_key, run_sync
 from flowweave.shared.schemas import (
+    CaseBundleImportWrite,
     CaseConclusionDecisionWrite,
     CaseControlConversationWrite,
     CaseControlPlanWrite,
@@ -18,6 +19,7 @@ from flowweave.shared.schemas import (
     CaseCoordinationStateWrite,
     CaseCreateWrite,
     CaseDecisionProposalWrite,
+    CaseExportWrite,
     CaseFlowRunWrite,
     CasePathWrite,
     CaseSessionConfigWrite,
@@ -60,6 +62,16 @@ async def cases(db: Db) -> list[dict[str, Any]]:
 @router.post("/cases", status_code=201)
 async def create_case(payload: CaseCreateWrite, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.create_case(session, payload))
+
+
+@router.post("/cases/export")
+async def export_cases(payload: CaseExportWrite, db: Db) -> dict[str, Any]:
+    return await run_sync(db, lambda session: service.export_cases(session, payload.case_ids))
+
+
+@router.post("/cases/import", status_code=201)
+async def import_cases(payload: CaseBundleImportWrite, db: Db) -> list[dict[str, Any]]:
+    return await run_sync(db, lambda session: service.import_cases(session, payload))
 
 
 @router.post("/cases/{case_id}/copy", status_code=201)

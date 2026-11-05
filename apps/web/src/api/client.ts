@@ -327,6 +327,9 @@ const conversationReferencePayload = (references: AgentConversationReference[]) 
     ...(selection ? { selection } : {}),
   };
 });
+export interface CaseCopyReport { copied: Array<{ item: string; reason: string }>; skipped: Array<{ item: string; reason: string }> }
+export interface CaseBundle { format: 'flowweave.case-bundle'; version: 1; exported_at?: string; cases: Array<Record<string, unknown>> }
+
 export const api = {
   authMe: () => request<AuthUser>('/auth/me'),
   currentUserProfile: () => request<{ display_name: string | null; email: string | null }>('/auth/profile'),
@@ -628,7 +631,9 @@ export const api = {
   deleteDirectory: (id: string) => request<void>(`/node-directories/${encodeURIComponent(id)}`, json('DELETE')),
   cases: () => request<Case[]>('/cases'),
   createCase: (body: import('../types').CaseBasics) => request<Case>('/cases', json('POST', body)),
-  copyCase: (id: string) => request<Case & { copy_report?: { copied: Array<{ item: string; reason: string }>; skipped: Array<{ item: string; reason: string }> } }>(`/cases/${encodeURIComponent(id)}/copy`, json('POST')),
+  copyCase: (id: string) => request<Case & { copy_report?: CaseCopyReport }>(`/cases/${encodeURIComponent(id)}/copy`, json('POST')),
+  exportCases: (caseIds: string[]) => request<CaseBundle>('/cases/export', json('POST', { case_ids: caseIds })),
+  importCases: (bundle: CaseBundle) => request<Array<Case & { copy_report?: CaseCopyReport }>>('/cases/import', json('POST', bundle)),
   updateCase: (id: string, body: import('../types').CaseBasics & { expected_row_version: number }) =>
     request<Case>(`/cases/${encodeURIComponent(id)}`, json('PUT', body)),
   uploadCaseMaterial: async (id: string, expectedRowVersion: number, file: File): Promise<Case> => {

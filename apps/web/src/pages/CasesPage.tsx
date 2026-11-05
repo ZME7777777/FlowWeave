@@ -622,16 +622,35 @@ export function CasesPage({ onNavigate, sessionRoute }: { onNavigate: (path: str
     setBatchBusy(true); setBatchNotice('');
     try {
       const parsed = JSON.parse(await file.text());
-      const list: Array<Record<string, any>> = Array.isArray(parsed) ? parsed : [parsed];
-      if (!list.length || list.some(entry => !entry || typeof entry.name !== 'string' || typeof entry.objective !== 'string' || !Array.isArray(entry.stages))) throw new Error('文件格式不正确，需要由“导出”生成的场景 JSON');
+      const imported: Array<Case & { copy_report?: { skipped: Array<{ item: string; reason: string }> } }> = [];
       const failures: string[] = [];
-      for (const entry of list) {
-        try {
-          replace(await api.createCase({ name: String(entry.name).slice(0, 220), description: entry.description ?? '', objective: entry.objective, work_directory_id: null, materials: (entry.materials ?? []).filter((material: { kind?: string }) => material.kind === 'LINK'), stages: entry.stages.map((stage: Record<string, string>) => ({ stage_key: stage.stage_key, name: stage.name, objective: stage.objective })) } as never));
-        } catch (error) { failures.push(`${entry.name}：${error instanceof Error ? error.message : String(error)}`); }
+      if (parsed && !Array.isArray(parsed) && parsed.format === 'flowweave.case-bundle') {
+        // Current format: one server-side transaction per Case, same path as "复制".
+        for (const entry of parsed.cases as Array<Record<string, unknown>>) {
+          try {
+            const body = { ...parsed, cases: [entry] };
+            // The gateway rejects bodies above 40 MB with an opaque 413; say what to do instead.
+            if (JSON.stringify(body).length > 36 * 1024 * 1024) throw new Error('该场景的文件资料过大（导入上限约 27 MB 原始文件），请改为导入后在场景内单独上传');
+            imported.push(...await api.importCases(body));
+          } catch (error) { failures.push(`${String(entry.name)}：${error instanceof Error ? error.message : String(error)}`); }
+        }
+      } else {
+        // Legacy export (metadata only): keep old files importable.
+        const list: Array<Record<string, any>> = Array.isArray(parsed) ? parsed : [parsed];
+        if (!list.length || list.some(entry => !entry || typeof entry.name !== 'string' || typeof entry.objective !== 'string' || !Array.isArray(entry.stages))) throw new Error('文件格式不正确，需要由“导出”生成的场景 JSON');
+        for (const entry of list) {
+          try {
+            imported.push(await api.createCase({ name: String(entry.name).slice(0, 220), description: entry.description ?? '', objective: entry.objective, work_directory_id: null, materials: (entry.materials ?? []).filter((material: { kind?: string }) => material.kind === 'LINK'), stages: entry.stages.map((stage: Record<string, string>) => ({ stage_key: stage.stage_key, name: stage.name, objective: stage.objective })) } as never));
+          } catch (error) { failures.push(`${entry.name}：${error instanceof Error ? error.message : String(error)}`); }
+        }
       }
+      imported.forEach(item => replace(item));
       await qc.invalidateQueries({ queryKey: ['cases'] });
-      setBatchNotice(failures.length ? `导入：${list.length - failures.length} 成功，${failures.length} 失败 — ${failures.join('；')}` : `已导入 ${list.length} 个场景`);
+      const partial = imported.flatMap(item => (item.copy_report?.skipped ?? []).map(entry => `${item.name}：${entry.item}（${entry.reason}）`));
+      const parts = [`已导入 ${imported.length} 个场景`];
+      if (partial.length) parts.push(`以下内容未带入，需手动配置 — ${partial.join('；')}`);
+      if (failures.length) parts.push(`${failures.length} 个失败 — ${failures.join('；')}`);
+      setBatchNotice(parts.join('；'));
     } catch (error) { setBatchNotice(`导入失败：${error instanceof Error ? error.message : String(error)}`); }
     finally { setBatchBusy(false); }
   };
@@ -649,10 +668,9 @@ export function CasesPage({ onNavigate, sessionRoute }: { onNavigate: (path: str
   const batchExport = async () => {
     setBatchBusy(true); setBatchNotice('');
     try {
-      const full = await Promise.all(checkedCases.map(item => api.case(item.id)));
-      const payload = full.map(item => ({ name: item.name, description: item.description ?? '', objective: item.objective, state: item.state, materials: item.materials ?? [], stages: item.stages.map(stage => ({ stage_key: stage.stage_key, name: stage.name, objective: stage.objective, state: stage.state, execution_mode: stage.execution_mode })), exported_at: new Date().toISOString() }));
-      const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' }));
-      const link = document.createElement('a'); link.href = url; link.download = `cases-${payload.length}.json`; link.click(); URL.revokeObjectURL(url);
+      const bundle = await api.exportCases(checkedCases.map(item => item.id));
+      const url = URL.createObjectURL(new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json;charset=utf-8' }));
+      const link = document.createElement('a'); link.href = url; link.download = `cases-${bundle.cases.length}.json`; link.click(); URL.revokeObjectURL(url);
     } catch (error) { setBatchNotice(`批量导出失败：${error instanceof Error ? error.message : String(error)}`); }
     finally { setBatchBusy(false); }
   };

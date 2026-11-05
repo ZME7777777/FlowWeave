@@ -916,6 +916,63 @@ class CaseCreateWrite(CaseBasicsWrite):
         return self
 
 
+class CaseBundleLinkWrite(ApiModel):
+    kind: Literal["LINK"]
+    name: str = Field(min_length=1, max_length=220)
+    value: str = Field(min_length=1, max_length=2000)
+
+
+class CaseBundleFileWrite(ApiModel):
+    name: str = Field(min_length=1, max_length=220)
+    # None records a file whose bytes were unavailable at export time (reported on import).
+    content_base64: str | None = Field(default=None, max_length=90_000_000)
+
+
+class CaseBundleStageWrite(ApiModel):
+    stage_key: str = Field(pattern=r"^[a-z][a-z0-9._-]{0,99}$")
+    name: str = Field(min_length=1, max_length=220)
+    objective: str = Field(default="", max_length=10_000)
+    execution_mode: Literal["STEPWISE", "CONTINUOUS"] = "STEPWISE"
+    template_flow_run_id: str | None = Field(default=None, min_length=1, max_length=36)
+
+
+class CaseBundleEntryWrite(ApiModel):
+    name: str = Field(min_length=1, max_length=220)
+    description: str = Field(default="", max_length=20_000)
+    objective: str = Field(default="", max_length=20_000)
+    work_directory_id: str | None = Field(default=None, min_length=1, max_length=36)
+    link_materials: list[CaseBundleLinkWrite] = Field(default_factory=list, max_length=100)
+    file_materials: list[CaseBundleFileWrite] = Field(default_factory=list, max_length=100)
+    stages: list[CaseBundleStageWrite] = Field(default_factory=list, max_length=50)
+    session_config: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_unique_stage_keys(self) -> CaseBundleEntryWrite:
+        keys = [stage.stage_key for stage in self.stages]
+        if len(keys) != len(set(keys)):
+            raise ValueError("case stage keys must be unique")
+        return self
+
+
+class CaseBundleImportWrite(ApiModel):
+    """Versioned document produced by ``POST /cases/export``."""
+
+    format: Literal["flowweave.case-bundle"]
+    version: Literal[1]
+    exported_at: str | None = Field(default=None, max_length=64)
+    cases: list[CaseBundleEntryWrite] = Field(min_length=1, max_length=50)
+
+
+class CaseExportWrite(ApiModel):
+    case_ids: list[str] = Field(min_length=1, max_length=50)
+
+    @model_validator(mode="after")
+    def validate_unique(self) -> CaseExportWrite:
+        if len(self.case_ids) != len(set(self.case_ids)):
+            raise ValueError("case_ids must be unique")
+        return self
+
+
 class CasePathCardWrite(ApiModel):
     id: str | None = Field(default=None, min_length=1, max_length=36)
     flow_run_id: str | None = Field(default=None, min_length=1, max_length=36)

@@ -4611,7 +4611,11 @@ def _create_stepwise_record_runtime(
 
 
 def _create_nested_stepwise_run_record(
-    db: Session, parent_run_id: str, payload: StepwiseRunRecordWrite
+    db: Session,
+    parent_run_id: str,
+    payload: StepwiseRunRecordWrite,
+    *,
+    allow_terminal_parent: bool = False,
 ) -> FlowRun:
     """Create one empty, manually advanced execution record.
 
@@ -4624,7 +4628,10 @@ def _create_nested_stepwise_run_record(
     parent = _locked_run(db, parent_run_id)
     if parent.run_mode != "MANUAL" or parent.parent_flow_run_id is not None:
         raise illegal("stepwise records require a top-level standard FlowRun", state=parent.state)
-    if parent.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
+    if not allow_terminal_parent and parent.state in {
+        FlowRunState.COMPLETED,
+        FlowRunState.CANCELLED,
+    }:
         raise illegal("terminal FlowRun cannot create a stepwise record", state=parent.state)
     if not parent.environment_version_id:
         raise DomainError(
@@ -5608,13 +5615,20 @@ def copy_nested_stepwise_run_record(
     parent_run_id: str,
     source_record_id: str,
     payload: StepwiseRunRecordCopyWrite,
+    *,
+    as_template: bool = False,
 ) -> dict[str, Any]:
-    """Copy a stepwise record's first-node initial configuration into a new record."""
+    """Copy a stepwise record's first-node initial configuration into a new record.
+
+    ``as_template`` is for cloning a Case launch template. A template is only a configuration
+    source and is never executed in place, so the parent being COMPLETED/CANCELLED is no
+    obstacle; the copy is still a DRAFT record that starts no node.
+    """
 
     parent = _locked_run(db, parent_run_id)
     if parent.run_mode != "MANUAL" or parent.parent_flow_run_id is not None:
         raise illegal("stepwise records require a top-level standard FlowRun", state=parent.state)
-    if parent.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
+    if not as_template and parent.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
         raise illegal("terminal FlowRun cannot copy a stepwise record", state=parent.state)
     source = _locked_run(db, source_record_id)
     is_legacy_parent_record = source.id == parent.id
@@ -5629,6 +5643,7 @@ def copy_nested_stepwise_run_record(
         db,
         parent.id,
         StepwiseRunRecordWrite(name=payload.name, start_node_key=source_start_node_key),
+        allow_terminal_parent=as_template,
     )
     source_drafts = _stepwise_node_drafts(source)
     copied_input_count = 0

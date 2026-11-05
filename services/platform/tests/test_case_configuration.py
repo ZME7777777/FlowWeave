@@ -912,3 +912,132 @@ def test_copy_case_reports_what_it_could_not_carry_over(copy_source, monkeypatch
         stage.flow_run_id is None
         for stage in db.scalars(select(CaseStage).where(CaseStage.case_id == new.id))
     )
+
+
+@pytest.mark.parametrize("state", ["COMPLETED", "CANCELLED"])
+def test_stepwise_template_clone_ignores_terminal_parent_but_execution_copy_does_not(
+    case_db, monkeypatch, state
+):
+    """A template is only a configuration source: its parent being finished must not block
+    reuse, while copying an *execution* record under a finished parent stays forbidden."""
+
+    from flowweave.modules.orchestration.application import service as orchestration_service
+    from flowweave.shared.schemas import StepwiseRunRecordCopyWrite
+
+    db, _ = case_db
+    parent = FlowRun(
+        id="parent",
+        flow_definition_id="flow",
+        run_no=1,
+        state=state,
+        name="parent",
+        run_mode="MANUAL",
+    )
+    source = FlowRun(
+        id="source",
+        flow_definition_id="flow",
+        run_no=2,
+        state="DRAFT",
+        name="template",
+        run_mode="MANUAL",
+        parent_flow_run_id="parent",
+    )
+    db.add_all([parent, source])
+    db.commit()
+
+    created: list[bool] = []
+
+    def reached_creation(_db, _parent_id, _payload, *, allow_terminal_parent=False):
+        created.append(allow_terminal_parent)
+        raise DomainError("STOP_AFTER_PARENT_CHECK", "reached record creation", 418)
+
+    monkeypatch.setattr(orchestration_service, "_stepwise_initial_node", lambda db, record: ("start", None))
+    monkeypatch.setattr(orchestration_service, "_create_nested_stepwise_run_record", reached_creation)
+
+    with pytest.raises(DomainError) as template:
+        orchestration_service.copy_nested_stepwise_run_record(
+            db, "parent", "source", StepwiseRunRecordCopyWrite(name="x"), as_template=True
+        )
+    assert template.value.code == "STOP_AFTER_PARENT_CHECK" and created == [True]
+
+    with pytest.raises(DomainError) as execution:
+        orchestration_service.copy_nested_stepwise_run_record(
+            db, "parent", "source", StepwiseRunRecordCopyWrite(name="x")
+        )
+    assert execution.value.code != "STOP_AFTER_PARENT_CHECK"
+    assert created == [True]
+
+
+def test_export_import_round_trip_matches_copy_and_never_carries_runtime(copy_source, monkeypatch):
+    import json
+
+    from flowweave.shared.schemas import CaseBundleImportWrite, CaseExportWrite
+
+    db, source_id = copy_source
+    copies: list[str] = []
+    monkeypatch.setattr(service.orchestration, "copy_automatic_run_draft", _fake_template_copy(copies))
+    source = db.get(Case, source_id)
+    source.control_conversation_binding_id = "old-binding"
+    source.state = "PAUSED"
+    source.pause_reason = "MANUAL"
+    db.commit()
+
+    bundle = service.export_cases(db, CaseExportWrite(case_ids=[source_id]).case_ids)
+    encoded = json.dumps(bundle)  # must be plain JSON
+    # Exports carry ids and content, never runtime state or secrets.
+    for forbidden in ("old-binding", "pause_reason", "control_conversation_binding_id", "token"):
+        assert forbidden not in encoded
+    entry = bundle["cases"][0]
+    assert [stage["template_flow_run_id"] for stage in entry["stages"]] == ["template-0", "template-1"]
+    assert entry["file_materials"][0]["content_base64"] == "aW5wdXQgZGF0YQ=="  # b"input data"
+
+    imported = service.import_cases(db, CaseBundleImportWrite.model_validate(json.loads(encoded)))
+    new = db.get(Case, imported[0]["id"])
+    assert new.id != source_id and new.name == "客户迁移"
+    assert new.session_config_json["capability_version_ids"] == ["skill-version"]
+    assert new.control_conversation_binding_id is None and new.pause_reason is None
+    assert new.state == "ACTIVE"
+    stages = list(
+        db.scalars(select(CaseStage).where(CaseStage.case_id == new.id).order_by(CaseStage.position))
+    )
+    assert {stage.flow_run_id for stage in stages} == {"copy-of-template-0", "copy-of-template-1"}
+    assert sorted(copies) == ["template-0", "template-1"]
+    kinds = {material["kind"]: material for material in new.materials_json}
+    assert service.read_case_material(db, new.id, kinds["FILE"]["value"])[0] == b"input data"
+    assert imported[0]["copy_report"]["skipped"] == []
+
+
+def test_import_reports_unavailable_template_and_corrupt_file_without_failing(copy_source):
+    from flowweave.shared.schemas import CaseBundleImportWrite
+
+    db, _ = copy_source
+    result = service.import_cases(
+        db,
+        CaseBundleImportWrite.model_validate(
+            {
+                "format": "flowweave.case-bundle",
+                "version": 1,
+                "cases": [
+                    {
+                        "name": "迁入场景",
+                        "stages": [
+                            {
+                                "stage_key": "a",
+                                "name": "阶段 A",
+                                "template_flow_run_id": "does-not-exist",
+                            }
+                        ],
+                        "file_materials": [
+                            {"name": "坏文件.txt", "content_base64": "***not-base64***"},
+                            {"name": "缺失.txt", "content_base64": None},
+                        ],
+                    }
+                ],
+            }
+        ),
+    )
+    skipped = {entry["item"]: entry["reason"] for entry in result[0]["copy_report"]["skipped"]}
+    assert skipped["「阶段 A」的流程模板"] == "TEMPLATE_UNAVAILABLE"
+    assert skipped["资料 坏文件.txt"] == "FILE_UNAVAILABLE"
+    assert skipped["资料 缺失.txt"] == "FILE_UNAVAILABLE"
+    assert db.scalar(select(Case).where(Case.name == "迁入场景")) is not None
