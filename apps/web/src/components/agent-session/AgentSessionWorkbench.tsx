@@ -5018,11 +5018,17 @@ function WorkspaceDrawer({
   const gitRepository = useMemo(() => selectedGitRepository(gitRepositoriesQuery.data?.repositories ?? [], gitContextPath), [gitContextPath, gitRepositoriesQuery.data?.repositories]);
   const gitSidebarVisible = fullScreen && filesTabIsActive && gitSidebarRequested && Boolean(gitRepository);
   const gitOptions = { bindingId, workDirectoryId };
-  const workspaceGitRepositoriesQuery = useQuery({
+  const workspaceGitSummaryRepositoriesQuery = useQuery({
     queryKey: sessionQueryKey(host, 'workspace-git-summary-repositories', workspaceId, bindingId, workDirectoryId),
     queryFn: () => api.gitRepositories(workspaceId, gitOptions),
-    // Branch badges are relevant only while the file tree is visible. Recheck
-    // that small read periodically and on focus, rather than polling hidden tools.
+    enabled: Boolean(details?.working_directory),
+    staleTime: 15_000,
+    refetchOnWindowFocus: 'always',
+    retry: (count, error) => !(error instanceof ApiError && (error.status < 500 || error.status === 503)) && count < 2,
+  });
+  const workspaceGitBranchesQuery = useQuery({
+    queryKey: sessionQueryKey(host, 'workspace-git-branch-repositories', workspaceId, bindingId, workDirectoryId),
+    queryFn: () => api.gitRepositories(workspaceId, gitOptions),
     enabled: Boolean(open && filesTabIsActive && details?.working_directory),
     staleTime: 15_000,
     refetchInterval: 30_000,
@@ -5030,10 +5036,10 @@ function WorkspaceDrawer({
     refetchOnWindowFocus: 'always',
     retry: (count, error) => !(error instanceof ApiError && (error.status < 500 || error.status === 503)) && count < 2,
   });
-  const workspaceRepositoryBranches = useMemo(() => new Map((workspaceGitRepositoriesQuery.data?.repositories ?? []).filter(item => item.branch).map(item => [item.path.replace(/\/+$/, ''), item.branch as string])), [workspaceGitRepositoriesQuery.data?.repositories]);
+  const workspaceRepositoryBranches = useMemo(() => new Map((workspaceGitBranchesQuery.data?.repositories ?? []).filter(item => item.branch).map(item => [item.path.replace(/\/+$/, ''), item.branch as string])), [workspaceGitBranchesQuery.data?.repositories]);
   const workspaceGitRepository = useMemo(
-    () => workspaceRootGitRepository(workspaceGitRepositoriesQuery.data?.repositories ?? [], details?.working_directory),
-    [details?.working_directory, workspaceGitRepositoriesQuery.data?.repositories],
+    () => workspaceRootGitRepository(workspaceGitSummaryRepositoriesQuery.data?.repositories ?? [], details?.working_directory),
+    [details?.working_directory, workspaceGitSummaryRepositoriesQuery.data?.repositories],
   );
   const workspaceGitChangesQuery = useQuery({
     queryKey: sessionQueryKey(host, 'workspace-git-summary-changes', workspaceId, bindingId, workDirectoryId, workspaceGitRepository?.path),
@@ -5051,7 +5057,7 @@ function WorkspaceDrawer({
     setGitBranchRefreshing(true);
     try {
       await Promise.all([
-        workspaceGitRepositoriesQuery.refetch(),
+        workspaceGitBranchesQuery.refetch(),
         ...(gitSidebarVisible ? [gitRepositoriesQuery.refetch()] : []),
       ]);
     } finally {
@@ -5065,7 +5071,7 @@ function WorkspaceDrawer({
     try {
       await api.syncGitRepository(workspaceId, workspaceGitRepository.path, gitOptions);
       await Promise.all([
-        workspaceGitRepositoriesQuery.refetch(),
+        workspaceGitSummaryRepositoriesQuery.refetch(),
         workspaceGitChangesQuery.refetch(),
       ]);
     } catch (error) {
@@ -8135,6 +8141,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       'workspace-reference-index',
       'workspace-directory',
       'workspace-git-repositories',
+      'workspace-git-summary-repositories',
+      'workspace-git-branch-repositories',
       'workspace-git-log',
       'workspace-git-changes',
       'conversation-file-preview',
