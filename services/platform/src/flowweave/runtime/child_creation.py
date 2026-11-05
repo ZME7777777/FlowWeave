@@ -125,6 +125,7 @@ class NativeChildConfiguration(BaseModel):
     persistence_dir: str | None
     title: str | None = None
     agent: dict[str, Any] = Field(repr=False)
+    secret_registry: dict[str, Any] = Field(default_factory=dict, repr=False)
 
 
 def child_contract_error(*, outcome_unknown: bool = False) -> DomainError:

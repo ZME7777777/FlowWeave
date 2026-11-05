@@ -43,6 +43,7 @@ from flowweave.runtime.base import (
     RuntimeProvider,
     RuntimeWorkspaceFile,
 )
+from flowweave.runtime.child_creation import NativeChildConfiguration
 from flowweave.runtime.child_governance import NativeGovernedChildPreparation
 from flowweave.runtime.dependencies import get_runtime
 from flowweave.shared.database import now
@@ -230,7 +231,7 @@ def revalidate(
     return child
 
 
-def verify_native(locator: ChildLocator) -> None:
+def verify_native(locator: ChildLocator) -> NativeChildConfiguration:
     runtime = get_runtime()
     prepared = runtime.read_child_preparation(locator.parent_handle, locator.creation_id)
     configuration = runtime.child_conversation_configuration(locator.handle)
@@ -260,6 +261,16 @@ def verify_native(locator: ChildLocator) -> None:
             or action.payload.get("tool_call_id") != locator.tool_call_id
         ):
             raise unavailable()
+
+    return configuration
+
+
+def credential_names(locator: ChildLocator) -> frozenset[str]:
+    configuration = verify_native(locator)
+    sources = configuration.secret_registry.get("secret_sources")
+    # Native configuration masks values, but preserves the formally registered
+    # variable names. Names prove availability, never a current credential version.
+    return frozenset(sources) if isinstance(sources, dict) else frozenset()
 
 
 def read(

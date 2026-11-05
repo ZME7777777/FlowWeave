@@ -781,3 +781,79 @@ def test_child_annotation_and_workspace_context_fail_closed(child_http, invalid)
     )
     assert response.status_code in {404, 422}, response.text
     assert not x.submissions
+
+
+@pytest.mark.parametrize("parent_profile", ["OH_FW_V4", "OH_FW_V5"], indirect=True)
+def test_child_credential_projection_recognizes_native_inheritance_without_claiming_versions(
+    child_http, monkeypatch
+):
+    from flowweave.modules.agent_sessions.infrastructure.models import (
+        AgentConversationCredentialSync,
+    )
+    from flowweave.modules.credentials.application.service import list_credentials
+    from flowweave.modules.credentials.infrastructure.models import WebsiteCredential
+    from flowweave.shared.credentials_crypto import encrypt_secret
+
+    x = child_http
+    for name, auth_type in (
+        ("inherited", "TOKEN"),
+        ("absent", "TOKEN"),
+        ("partial", "USERNAME_PASSWORD"),
+    ):
+        x.g.db.add(
+            WebsiteCredential(
+                name=name,
+                target_host=f"{name}.example.test",
+                auth_type=auth_type,
+                encrypted_username=encrypt_secret("test-user")
+                if auth_type == "USERNAME_PASSWORD"
+                else None,
+                encrypted_secret=encrypt_secret("fixture-private-value"),
+            )
+        )
+    x.g.db.flush()
+    catalog = {entry["name"]: entry for entry in list_credentials(x.g.db)}
+    x.g.db.commit()
+    configuration = x.runtime.child_conversation_configuration(x.loc.handle)
+    secrets = {}
+    inherited_name = catalog["inherited"]["environment_names"]["token"]
+    partial_name = catalog["partial"]["environment_names"]["username"]
+    for name in (inherited_name, partial_name):
+        secrets[name] = {"kind": "StaticSecret", "value": "**********"}
+    monkeypatch.setattr(
+        x.runtime,
+        "child_conversation_configuration",
+        lambda handle: configuration.model_copy(
+            update={"secret_registry": {"secret_sources": secrets}}
+        ),
+    )
+
+    response = x.client.get(x.root + "/credentials")
+    assert response.status_code == 200, response.text
+    state = response.json()
+    entries = {entry["name"]: entry for entry in state["credentials"]}
+    assert state["initialized_at"] is None
+    assert entries["inherited"]["sync_state"] == "UNRECORDED"
+    assert entries["inherited"]["inherited_from_binding_id"] == x.loc.parent_id
+    assert "inherited_from_binding_id" not in entries["absent"]
+    assert "inherited_from_binding_id" not in entries["partial"]
+    assert "fixture-private-value" not in response.text
+    assert "**********" not in response.text
+    assert x.g.db.scalar(select(AgentConversationCredentialSync.id)) is None
+    x.g.db.commit()
+
+    def synchronize(handle, values, **kwargs):
+        assert handle.conversation_id == x.loc.handle.conversation_id
+        assert x.g.sessions.kw["bind"].pool.checkedout() == 0
+
+    monkeypatch.setattr(x.runtime, "update_conversation_secrets", synchronize, raising=False)
+    synced = x.client.post(
+        x.root + "/credentials/sync",
+        json={"credential_ids": [catalog["inherited"]["id"]]},
+    )
+    assert synced.status_code == 200, synced.text
+    current = x.client.get(x.root + "/credentials")
+    entries = {entry["name"]: entry for entry in current.json()["credentials"]}
+    assert entries["inherited"]["sync_state"] == "CURRENT"
+    assert "inherited_from_binding_id" not in entries["inherited"]
+    assert entries["absent"]["sync_state"] == "NEW"

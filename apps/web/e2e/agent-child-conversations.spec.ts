@@ -85,7 +85,7 @@ async function openParent(page: Page, host: 'workspace' | 'node', delayFirst = f
       }
       if (suffix[2] === 'credentials') {
         if (suffix[3]) childWrites.push({ childId, action: 'credentials', payload });
-        return json(route, { credentials: [{ id: 'credential-one', name: '测试认证', sync_state: 'NEW' }] });
+        return json(route, { credentials: [{ id: 'credential-one', name: '测试认证', sync_state: 'UNRECORDED', inherited_from_binding_id: parentId }] });
       }
       if (suffix[2] === 'unread') { unread.delete(childId); return json(route, { id: childId, unread: false, unread_origin: null }); }
       if (suffix[2] === 'hydration') {
@@ -418,6 +418,8 @@ for (const host of ['workspace', 'node'] as const) {
     await config.screenshot({ path: test.info().outputPath('child-config-capabilities.png') });
     await config.getByRole('tab', { name: '认证', exact: true }).click();
     await expect(config.getByRole('button', { name: /测试认证/ })).toHaveAttribute('aria-pressed', 'true');
+    await expect(config.getByRole('button', { name: /测试认证/ })).toContainText('已继承');
+    await expect(config.getByRole('button', { name: /测试认证/ })).toHaveAttribute('title', /同步后可确认当前认证版本/);
     await config.screenshot({ path: test.info().outputPath('child-config-credentials.png') });
     await config.getByRole('button', { name: '同步认证' }).click();
     await expect.poll(() => state.childWrites.filter(write => write.action === 'credentials').length).toBe(1);
@@ -644,5 +646,27 @@ for (const host of ['workspace', 'node'] as const) {
     await expect(page.locator(`[data-conversation-binding-id="${parentId}"]:visible`)).toHaveCount(0);
     await expect(page).toHaveURL(`${state.root}/${otherParentId}`);
     expect(state.messages).toHaveLength(0);
+  });
+}
+
+for (const host of ['workspace', 'node'] as const) {
+  test(`parent all filter includes frozen Context Agent and Hook like the child (${host})`, async ({ page }) => {
+    const state = await openParent(page, host);
+    const types = ['CONTEXT', 'AGENT_DEFINITION', 'HOOK'];
+    const capabilities = types.map(type => ({id: `parent-${type}`, capability_type: type, capability_key: `父会话${type}`, digest: 'frozen-digest'}));
+    await page.route(url => url.pathname.includes('/api/v1/') && (url.pathname.endsWith(`/conversations/${parentId}`) || url.pathname.endsWith(`/agent-sessions/${parentId}`)), route => json(route, {...state.parents[0], capabilities}));
+    await page.reload();
+    await page.getByRole('button', {name:'会话配置',exact:true}).click();
+    const config = page.getByRole('dialog', {name:'会话配置',exact:true});
+    for (const type of types) await expect(config.getByRole('button', {name:`父会话${type}（已装配）`,exact:true})).toBeDisabled();
+    await expect(config.locator('.agent-capability-frozen-badge')).toHaveCount(3);
+    await config.getByRole('button', {name:'只看已选',exact:true}).click();
+    for (const type of types) await expect(config.getByText(`父会话${type}`, {exact:true})).toBeVisible();
+    await config.getByRole('button', {name:'context',exact:true}).click();
+    await expect(config.locator('.agent-capability-list button')).toHaveCount(1);
+    await config.getByRole('button', {name:'all',exact:true}).click();
+    await expect(config.locator('.agent-capability-list button')).toHaveCount(3);
+    await config.screenshot({path:test.info().outputPath('parent-all-frozen.png')});
+    await config.getByRole('button', {name:'关闭会话配置',exact:true}).click();
   });
 }

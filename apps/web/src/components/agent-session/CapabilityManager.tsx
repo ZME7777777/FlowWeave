@@ -20,7 +20,7 @@ function capabilityLineageIdentity(item: CapabilityChoice): string {
 }
 
 
-type DraftCredentialEntry = WebsiteCredential & { sync_state?: AgentConversationCredentialSyncEntry['sync_state'] };
+type DraftCredentialEntry = WebsiteCredential & Partial<Pick<AgentConversationCredentialSyncEntry, 'sync_state' | 'inherited_from_binding_id'>>;
 
 
 export function CapabilityManager({ workspaceId, bindingId, conversationCapabilities, draftCapabilityIds, draftCredentialIds, configurationPreset = false, capabilitiesOnly = false, onDraftCapabilityIdsChange, onClose, onCreateEnhancedConversation, onDraftCredentialIdsChange, onSaveConfiguration, childParentId, credentialSyncDisabled = false }: {
@@ -90,7 +90,7 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
     if (bindingId && credentialQuery.data) {
       credentialSelectionInitialized.current = true;
       setSelectedCredentialIds(credentialQuery.data.credentials
-        .filter(item => item.sync_state === 'NEW' || item.sync_state === 'MODIFIED')
+        .filter(item => item.sync_state === 'NEW' || item.sync_state === 'MODIFIED' || item.inherited_from_binding_id)
         .map(item => item.id));
     } else if (!bindingId && credentialCatalogQuery.data) {
       credentialSelectionInitialized.current = true;
@@ -181,12 +181,11 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
     const needle = query.trim().toLocaleLowerCase();
     return capabilities.filter(item =>
       (kind === 'ALL' || item.capability_type === kind)
-      && (childParentId || !bindingId || !['CONTEXT', 'AGENT_DEFINITION', 'HOOK'].includes(item.capability_type) || kind === item.capability_type)
       && (!showSelectedOnly || selectedIds.includes(item.id))
       && (!['ALL', 'SKILL'].includes(kind) || !selectedCollectionIds.length || selectedCollectionMemberIds.has(item.id))
       && (!needle || `${item.capability_key} ${item.description} ${item.filename}`.toLocaleLowerCase().includes(needle)),
     );
-  }, [bindingId, capabilities, childParentId, kind, query, selectedCollectionIds.length, selectedCollectionMemberIds, selectedIds, showSelectedOnly]);
+  }, [capabilities, kind, query, selectedCollectionIds.length, selectedCollectionMemberIds, selectedIds, showSelectedOnly]);
   const selectedMcpIds = useMemo(() => selectedIds.filter(id => byId.get(id)?.capability_type === 'MCP'), [byId, selectedIds]);
   const readonlyCreationOnly = Boolean(childParentId || bindingId && (kind === 'CONTEXT' || kind === 'AGENT_DEFINITION' || kind === 'HOOK'));
   const selectableVisibleIds = useMemo(() => visible
@@ -324,9 +323,9 @@ export function CapabilityManager({ workspaceId, bindingId, conversationCapabili
           <div className="agent-capability-list">{credentialLoading ? <p>正在读取认证信息…</p> : credentialError ? <p>{credentialError instanceof Error ? credentialError.message : '认证信息暂不可用。'}</p> : credentialEntries?.length ? credentialEntries.map(credential => {
             const selected = selectedCredentialIds.includes(credential.id);
             const current = Boolean(bindingId && credential.sync_state === 'CURRENT');
-            const state = !bindingId ? '默认' : credential.sync_state === 'CURRENT' ? '已同步' : credential.sync_state === 'NEW' ? '有新增' : credential.sync_state === 'MODIFIED' ? '有修改' : '未记录';
+            const state = !bindingId ? '默认' : credential.sync_state === 'CURRENT' ? '已同步' : credential.inherited_from_binding_id ? '已继承' : credential.sync_state === 'NEW' ? '有新增' : credential.sync_state === 'MODIFIED' ? '有修改' : '未记录';
             const stateClass = bindingId ? credential.sync_state?.toLocaleLowerCase() ?? 'unrecorded' : 'default';
-            return <button type="button" key={credential.id} className={`${selected || current ? 'selected' : ''}${current ? ' locked' : ''}`} disabled={current || busy} aria-pressed={selected || current} aria-label={current ? `${credential.name}（已同步）` : undefined} title={current ? '该认证已同步到当前会话。' : undefined} onClick={() => toggleCredential(credential)}><i className="agent-selection-checkbox" aria-hidden="true">{selected || current ? <Check size={12}/> : null}</i><span className="agent-capability-icon credential" aria-hidden="true"><ShieldAlert size={16}/></span><span className="agent-capability-copy"><b>{credential.name}</b><small>{credential.target_host}{credential.target_path} · {credential.auth_type === 'TOKEN' ? 'Token' : '用户名密码'}</small></span><em className={`agent-credential-sync-state ${stateClass}`}>{state}</em></button>;
+            return <button type="button" key={credential.id} className={`${selected || current ? 'selected' : ''}${current ? ' locked' : ''}`} disabled={current || busy} aria-pressed={selected || current} aria-label={current ? `${credential.name}（已同步）` : undefined} title={current ? '该认证已同步到当前会话。' : credential.inherited_from_binding_id ? '已从父会话继承认证变量，同步后可确认当前认证版本。' : undefined} onClick={() => toggleCredential(credential)}><i className="agent-selection-checkbox" aria-hidden="true">{selected || current ? <Check size={12}/> : null}</i><span className="agent-capability-icon credential" aria-hidden="true"><ShieldAlert size={16}/></span><span className="agent-capability-copy"><b>{credential.name}</b><small>{credential.target_host}{credential.target_path} · {credential.auth_type === 'TOKEN' ? 'Token' : '用户名密码'}</small></span><em className={`agent-credential-sync-state ${stateClass}`}>{state}</em></button>;
           }) : <p>当前没有可用认证信息。</p>}</div>
         </div>
         {credentialSync.error && <div className="agent-capability-error"><p>{credentialSync.error.message}</p></div>}

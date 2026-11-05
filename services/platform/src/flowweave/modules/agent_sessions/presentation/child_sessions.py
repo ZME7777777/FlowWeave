@@ -446,11 +446,27 @@ async def reference(
 
 @child_router.get("/credentials")
 async def credentials(parent_id: str, child_id: str, container: ContainerDep) -> dict[str, Any]:
-    def read(db: Session) -> dict[str, Any]:
-        loc = children.resolve(db, parent_id, child_id)
-        return credential_sync.list_credential_sync_state(db, children.revalidate(db, loc))
+    def project(
+        db: Session, loc: children.ChildLocator, native_names: frozenset[str]
+    ) -> dict[str, Any]:
+        state = credential_sync.list_credential_sync_state(db, children.revalidate(db, loc))
+        for credential in state["credentials"]:
+            names = set(credential["environment_names"].values())
+            if (
+                credential["sync_state"] in {"UNRECORDED", "NEW"}
+                and names
+                and names <= native_names
+            ):
+                credential["inherited_from_binding_id"] = loc.parent_id
+        return state
 
-    return await run_blocking_mutation(container, read)
+    return await run_formal_events(
+        container,
+        lambda db: children.resolve(db, parent_id, child_id),
+        children.credential_names,
+        project,
+        history=False,
+    )
 
 
 @child_router.post("/credentials/sync")

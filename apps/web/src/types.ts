@@ -189,6 +189,7 @@ export interface WebsiteCredentialWrite {
 }
 export interface AgentConversationCredentialSyncEntry extends WebsiteCredential {
   sync_state: 'CURRENT' | 'NEW' | 'MODIFIED' | 'UNRECORDED';
+  inherited_from_binding_id?: string;
 }
 export interface AgentConversationCredentialSyncState {
   initialized_at?: string | null;
