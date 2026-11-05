@@ -113,7 +113,31 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 沿用 FR-730 的 AST 临时提取方式绕过原 schedules spec 重复声明。Web typecheck、
 production build、定向 ESLint（0 error）及 diff 检查通过；保留既有 bootstrap
 Hook 依赖警告与构建 chunk 提示。两宿主 1024／1440 预览、完整详情与子全屏截图
-核验通过。本片只提交 Web 和必要设计／进度文档，待部署。
+核验通过。本片 Web 已按下述记录完成发布。
+
+#### FR-731 与侧边聊天图标 Web 发布验收
+
+2026-11-06。发布 `789e21a71dd99adca516a3d52ea7e3ceb78943bd`，包含 FR-731
+及侧边聊天入口、标签和选中文本菜单的加号气泡图标。正式 Web 预检、最小上下文
+准备与 linux/amd64 镜像构建通过，源码归档 SHA-256 为
+`cdd6f542cb293767cc3c41fd974fd9a22dcc0ee267447fbcb2758e2cd7af74f3`，
+运行 Web 镜像为
+`sha256:6f51d017b5e818893eba25a93062d5bec81a6848c50b10245715d2d3740003e1`。
+
+旧镜像回滚标签和服务日志保留，仅重建 Web。实际 revision、架构、HTTP 入口、
+API／stream-api 健康与 readiness 通过。两项公网 HTML 和六项入口／工作台资源
+SHA-256 与运行镜像一致，包含完整子会话列表及 MessageCirclePlus／MessagesSquare
+图标，卡内分页样式已移除。服务器配置及其余 37 个容器镜像／启动时间核验通过。
+
+服务器网络中的全新 Chromium 验证平台登录页、Agent 深层路由及根登录页通过，
+根路径 API 请求和 JavaScript 错误为 0。线上静态资源配合隔离 API 夹具的五项
+浏览器用例全部通过，覆盖两宿主的两项预览／完整详情、子标签全屏／草稿／历史／
+配置 Escape 与侧边聊天入口／标签图标。本地首轮验收因临时 SSH 通道结束而连接
+失败，保留通道后重跑通过；临时浏览器和通道均已关闭。
+
+remote-release-finish 成功，无过期上下文候选；按受管规则回收一个过期 Web 回滚
+标签并保留最新回滚镜像。收尾后实际版本、平台健康、服务器配置及其余 37 个容器
+复核通过。本记录仅覆盖 Web 发布，FR-732 后台发布状态仍见其自身记录。
 
 ### FR-732 移除 FlowWeave 子会话调用指导注入 — DONE
 
