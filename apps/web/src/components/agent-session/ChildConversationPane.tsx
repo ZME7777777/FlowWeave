@@ -1,3 +1,5 @@
+import { createPortal } from 'react-dom';
+import { CapabilityManager } from './CapabilityManager';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { LoaderCircle, Play, Plus, Quote, Send, Settings, Square, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -86,7 +88,6 @@ export function ChildConversationPane({
   const [escapeArmed, setEscapeArmed] = useState<string>();
   const escapeTimer = useRef<number | undefined>(undefined);
   const [configurationScope, setConfigurationScope] = useState<string>();
-  const [credentialIds, setCredentialIds] = useState<string[]>([]);
   const [confirmationReason, setConfirmationReason] = useState('');
   const [referenceLocation, setReferenceLocation] = useState<AgentConversationReference>();
 
@@ -423,7 +424,6 @@ export function ChildConversationPane({
 
   useEffect(() => {
     setConfirmationReason('');
-    setCredentialIds([]);
     setReferenceLocation(undefined);
     setCompleted({});
   }, [scope, active]);
@@ -556,30 +556,6 @@ export function ChildConversationPane({
       if (selectedScope.current === scope) setConfirmationReason('');
       await queryClient.invalidateQueries({ queryKey: ['agent-child', scope, 'confirmation'] });
       if (selectedScope.current === scope) await hydration.refresh();
-    } catch (reason) {
-      fail(scope, reason);
-    } finally {
-      if (mounted.current) setControls((current) => ({ ...current, [scope]: false }));
-    }
-  };
-  const credentialQuery = useQuery({
-    queryKey: ['agent-child', scope, 'credentials'],
-    queryFn: () => api.agentChildCredentials(parentId!, childId!),
-    enabled: Boolean(active && scope && configurationScope === scope),
-    retry: false,
-  });
-  useEffect(() => {
-    if (configurationScope === scope && credentialQuery.data)
-      setCredentialIds(
-        credentialQuery.data.credentials.filter((item) => item.sync_state !== 'NEW').map((item) => item.id),
-      );
-  }, [configurationScope, credentialQuery.data, scope]);
-  const synchronizeCredentials = async () => {
-    if (!scope || !parentId || !childId || !writable || mutating) return;
-    setControls((current) => ({ ...current, [scope]: true }));
-    try {
-      const result = await api.syncAgentChildCredentials(parentId, childId, credentialIds);
-      queryClient.setQueryData(['agent-child', scope, 'credentials'], result);
     } catch (reason) {
       fail(scope, reason);
     } finally {
@@ -725,48 +701,17 @@ export function ChildConversationPane({
                 </button>
               </section>
             )}
-            {configurationScope === scope && (
-              <section className="agent-child-configuration" aria-label="子会话配置">
-                <header>
-                  <b>子会话配置</b>
-                  <button type="button" aria-label="关闭子会话配置" onClick={() => setConfigurationScope(undefined)}>
-                    <X size={14} />
-                  </button>
-                </header>
-                <small>已冻结的能力</small>
-                <p>{details.data?.capabilities?.map((item) => item.capability_key).join('、') || '暂无额外能力'}</p>
-                <small>认证</small>
-                {credentialQuery.isLoading ? (
-                  <p>正在读取认证</p>
-                ) : credentialQuery.isError ? (
-                  <p role="alert">认证暂时不可用</p>
-                ) : (
-                  credentialQuery.data?.credentials.map((item) => (
-                    <label key={item.id}>
-                      <input
-                        type="checkbox"
-                        checked={credentialIds.includes(item.id)}
-                        onChange={(event) =>
-                          setCredentialIds((current) =>
-                            event.target.checked ? [...current, item.id] : current.filter((id) => id !== item.id),
-                          )
-                        }
-                      />
-                      {item.name}
-                      <small>
-                        {item.sync_state === 'CURRENT' ? '已同步' : item.sync_state === 'NEW' ? '未注入' : '待同步'}
-                      </small>
-                    </label>
-                  ))
-                )}
-                <button
-                  type="button"
-                  disabled={!writable || nativeBusy || mutating || !credentialQuery.data}
-                  onClick={() => void synchronizeCredentials()}
-                >
-                  同步认证
-                </button>
-              </section>
+            {active && configurationScope === scope && createPortal(
+              <CapabilityManager
+                key={scope}
+                workspaceId={parentId!}
+                bindingId={childId}
+                childParentId={parentId}
+                conversationCapabilities={details.data?.capabilities}
+                credentialSyncDisabled={!writable || nativeBusy || mutating}
+                onClose={() => setConfigurationScope(undefined)}
+              />,
+              document.body,
             )}
             {(draft.queue.length > 0 || !draft.autoSend) && (
               <section className="agent-queued-messages agent-child-message-queue" aria-label="子会话消息队列">

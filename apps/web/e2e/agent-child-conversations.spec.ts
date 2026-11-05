@@ -97,7 +97,7 @@ async function openParent(page: Page, host: 'workspace' | 'node', delayFirst = f
         return;
       }
       if (suffix[2] === 'events') return json(route, { events: [], next_cursor: `${childId}-answer` });
-      return json(route, { ...children.find(child => child.id === childId), working_directory: '/runtime/workspace/project', model_provider_id: providers[0].id, model_name: models.get(childId) ?? 'child-model', capabilities: [], write_available: true, streaming_callback_ready: true });
+      return json(route, { ...children.find(child => child.id === childId), working_directory: '/runtime/workspace/project', model_provider_id: providers[0].id, model_name: models.get(childId) ?? 'child-model', capabilities: ['CONTEXT', 'SKILL', 'MCP'].map(type => ({ id: `frozen-${type}`, capability_key: `子会话${type}`, capability_type: type })), write_available: true, streaming_callback_ready: true });
     }
     if (path.endsWith('/default') || path.endsWith('/agent-sessions/host')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
@@ -111,6 +111,7 @@ async function openParent(page: Page, host: 'workspace' | 'node', delayFirst = f
     if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
     if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', files: [], repositories: [], runtime: {}, ide: { gateway: { supported: false } } });
     if (path.endsWith('/model-providers')) return json(route, providers);
+    if (path.endsWith('/user-configurable-capabilities')) return json(route, [{ id: 'frozen-SKILL', capability_type: 'SKILL', capability_key: '子会话SKILL', revision_number: 1, is_latest: false }, { id: 'latest-SKILL', capability_type: 'SKILL', capability_key: '子会话SKILL', revision_number: 2, is_latest: true }, { id: 'unrelated-SKILL', capability_type: 'SKILL', capability_key: '其他能力', is_latest: true }]);
     if (path.endsWith('/pinned-conversations') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
     if (path.includes('/conversations/') || path.includes('/agent-sessions/')) return json(route, parents.find(parent => path.endsWith(parent.id)) ?? parents[0]);
     return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
@@ -120,15 +121,14 @@ async function openParent(page: Page, host: 'workspace' | 'node', delayFirst = f
   await page.getByLabel('密码').fill('test-password');
   await page.getByRole('button', { name: '进入工作空间' }).click();
   await page.goto(`${root}/${parentId}`);
-  await expect(page.getByRole('button', { name: '查看子会话', exact: true })).toBeVisible();
+  await expect(page.getByRole('list', { name: '子会话列表', exact: true })).toBeVisible();
   return { writes, requests, root, unread, parents, messages, childWrites, statuses, nativeEvents, eventsFor, streams, signal, held, release: () => release?.(), hasPending: () => Boolean(release), peak: () => peak };
 }
 async function chooseChild(page: Page, childId: string) {
   const showCard = page.getByRole('button', { name: '显示悬浮信息卡' });
   if (await showCard.isVisible()) await showCard.click();
-  await page.getByRole('button', { name: '查看子会话', exact: true }).click();
-  const picker = page.getByRole('dialog', { name: '子会话列表' });
-  await picker.locator(`[data-child-binding-id="${childId}"]`).click();
+  const list = page.getByRole('list', { name: '子会话列表', exact: true });
+  await list.locator(`[data-child-binding-id="${childId}"]`).click();
 }
 for (const host of ['workspace', 'node'] as const) {
   test(`child card opens independent titled side tabs and closes only views (${host})`, async ({ page }) => {
@@ -160,10 +160,10 @@ for (const host of ['workspace', 'node'] as const) {
     await expect(page.getByRole('region', { name: `子会话 ${children[1].display_title}` })).toBeVisible();
     await tabs.getByRole('button', { name: `关闭${children[1].display_title}页签` }).click();
     expect(state.writes.filter(write => /DELETE|\/control/.test(write))).toEqual([]);
-    await expect(page.getByRole('button', { name: '查看子会话', exact: true })).toBeVisible();
+    await expect(page.getByRole('list', { name: '子会话列表', exact: true })).toBeVisible();
     await chooseChild(page, children[0].id);
     await page.reload();
-    await expect(page.getByRole('button', { name: '查看子会话', exact: true })).toBeVisible();
+    await expect(page.getByRole('list', { name: '子会话列表', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: `关闭${children[0].display_title}页签` })).toHaveCount(0);
   });
   test(`child reads serialize across fast tab selection and reject late display (${host})`, async ({ page }) => {
@@ -180,22 +180,34 @@ for (const host of ['workspace', 'node'] as const) {
   });
 }
 
-test('child picker pages separately and the floating card never scrolls', async ({ page }) => {
+test('child list pages inline and follows floating card visibility and width without scrolling', async ({ page }) => {
   await openParent(page, 'workspace');
-  await page.getByRole('button', { name: '查看子会话', exact: true }).click();
-  const picker = page.getByRole('dialog', { name: '子会话列表' });
-  await expect(picker.locator('[data-child-binding-id]')).toHaveCount(6);
-  await picker.getByRole('button', { name: '下一页子会话' }).click();
-  await expect(picker.locator('[data-child-binding-id]')).toHaveCount(2);
-  await page.keyboard.press('Escape');
-  await expect(picker).toHaveCount(0);
-  const dimensions = await page.locator('.agent-workspace-summary').evaluate(element => ({
-    width: element.clientWidth, contentWidth: element.scrollWidth,
-    height: element.clientHeight, contentHeight: element.scrollHeight,
-  }));
-  expect(dimensions.contentWidth).toBeLessThanOrEqual(dimensions.width);
-  expect(dimensions.contentHeight).toBeLessThanOrEqual(dimensions.height);
-  await page.screenshot({ path: test.info().outputPath('child-card.png') });
+  const list = page.getByRole('list', { name: '子会话列表', exact: true });
+  await expect(page.getByRole('dialog', { name: '子会话列表' })).toHaveCount(0);
+  await expect(list.locator('[data-child-binding-id]')).toHaveCount(2);
+  for (let index = 0; index < 4; index += 1) {
+    await expect(list.locator('[data-child-binding-id]').first()).toHaveAttribute('data-child-binding-id', children[index * 2].id);
+    if (index < 3) await page.getByRole('button', { name: '下一页子会话' }).click();
+  }
+  await expect(page.getByRole('button', { name: '下一页子会话' })).toBeDisabled();
+  await page.getByRole('button', { name: '上一页子会话' }).click();
+  await page.getByRole('button', { name: '上一页子会话' }).click();
+  for (const width of [1440, 1024]) {
+    await page.setViewportSize({ width, height: 1000 });
+    const dimensions = await page.locator('.agent-workspace-summary').evaluate(element => [element, element.querySelector('.agent-workspace-overview')!, element.querySelector('.agent-workspace-children')!].map(item => ({
+      width: item.clientWidth, contentWidth: item.scrollWidth,
+      height: item.clientHeight, contentHeight: item.scrollHeight,
+    })));
+    for (const item of dimensions) {
+      expect(item.contentWidth).toBeLessThanOrEqual(item.width);
+      expect(item.contentHeight).toBeLessThanOrEqual(item.height);
+    }
+    await page.screenshot({ path: test.info().outputPath(`child-card-${width}.png`) });
+  }
+  await page.getByRole('button', { name: '隐藏悬浮信息卡', exact: true }).click();
+  await expect(list).not.toBeVisible();
+  await page.getByRole('button', { name: '显示悬浮信息卡', exact: true }).click();
+  await expect(list.locator('[data-child-binding-id]').first()).toHaveAttribute('data-child-binding-id', children[2].id);
 });
 
 for (const host of ['workspace', 'node'] as const) {
@@ -334,12 +346,31 @@ for (const host of ['workspace', 'node'] as const) {
     await expect.poll(() => state.childWrites.filter(write => write.action === 'model').length).toBe(1);
     expect(state.childWrites[0].payload.model_name).toBe('child-model-two');
     await pane.getByRole('button', { name: '子会话配置', exact: true }).click();
-    const config = page.getByRole('region', { name: '子会话配置' });
-    await config.getByRole('checkbox', { name: /测试认证/ }).check();
+    const config = page.getByRole('dialog', { name: '子会话配置', exact: true });
+    await expect(config).toHaveClass(/session-configuration-editor/);
+    await expect(config.locator('.agent-capability-frozen-badge')).toHaveCount(3);
+    await expect(config.getByRole('button', { name: '子会话CONTEXT（已装配）', exact: true })).toBeDisabled();
+    await expect(config.getByRole('button', { name: '子会话SKILL（已装配）', exact: true })).toBeDisabled();
+    await expect(config.getByRole('button', { name: '子会话MCP（已装配）', exact: true })).toBeDisabled();
+    await expect(config.getByRole('button', { name: '保存', exact: true })).toHaveCount(0);
+    await expect(config.getByText('其他能力', {exact:true})).toHaveCount(0);
+    await expect(config.getByRole('button', { name: /同步 子会话SKILL/ })).toHaveCount(0);
+    await config.screenshot({ path: test.info().outputPath('child-config-capabilities.png') });
+    await config.getByRole('tab', { name: '认证', exact: true }).click();
+    await expect(config.getByRole('button', { name: /测试认证/ })).toHaveAttribute('aria-pressed', 'true');
+    await config.screenshot({ path: test.info().outputPath('child-config-credentials.png') });
     await config.getByRole('button', { name: '同步认证' }).click();
     await expect.poll(() => state.childWrites.filter(write => write.action === 'credentials').length).toBe(1);
     expect(state.childWrites.at(-1)?.payload).toEqual({ credential_ids: ['credential-one'] });
     await config.getByRole('button', { name: '关闭子会话配置' }).click();
+    expect(state.requests.filter(path => /credential-sync|mcp-readiness|capability-collections/.test(path))).toEqual([]);
+    expect(state.writes.filter(path => /capabilities/.test(path))).toEqual([]);
+    await pane.getByRole('button', { name: '子会话配置', exact: true }).click();
+    await page.keyboard.press('Escape');
+    await expect(config).toHaveCount(0);
+    await pane.getByRole('button', { name: '子会话配置', exact: true }).click();
+    await page.locator('.agent-capability-backdrop').click({ position: { x: 5, y: 5 } });
+    await expect(config).toHaveCount(0);
     state.statuses.set(children[0].id, 'waiting_for_confirmation');
     state.signal(children[0].id);
     const confirmation = page.getByRole('region', { name: '子会话工具执行确认' });
@@ -534,9 +565,7 @@ for (const host of ['workspace', 'node'] as const) {
     await page.getByRole('button', { name: '返回工作区列表' }).click();
     const showCard = page.getByRole('button', { name: '显示悬浮信息卡' });
     if (await showCard.isVisible()) await showCard.click();
-    await page.getByRole('button', { name: '查看子会话', exact: true }).click();
-    await expect(page.getByRole('dialog', { name: '子会话列表' }).locator(`[data-child-binding-id="${children[0].id}"]`)).toBeDisabled();
-    await page.keyboard.press('Escape');
+    await expect(page.getByRole('list', { name: '子会话列表', exact: true }).locator(`[data-child-binding-id="${children[0].id}"]`)).toBeDisabled();
     deletionState = 'DEAD';
     await expect(progress).toContainText('RUNTIME_UNAVAILABLE');
     await expect(progress.getByRole('button', { name: '重试原清理任务' })).toBeVisible();

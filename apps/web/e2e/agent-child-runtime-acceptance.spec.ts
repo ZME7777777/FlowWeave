@@ -33,9 +33,8 @@ test('native child browser followup attachment and result quote stay under the o
     socket.onClose(() => upstream.close());
   });
   await page.goto(fixture.route);
-  await expect(page.getByRole('button', { name: '查看子会话', exact: true })).toBeVisible({ timeout: 30_000 });
-  await page.getByRole('button', { name: '查看子会话', exact: true }).click();
-  await page.getByRole('dialog', { name: '子会话列表' }).locator(`[data-child-binding-id="${fixture.childId}"]`).click();
+  await expect(page.getByRole('list', { name: '子会话列表', exact: true })).toBeVisible({ timeout: 30_000 });
+  await page.getByRole('list', { name: '子会话列表', exact: true }).locator(`[data-child-binding-id="${fixture.childId}"]`).click();
   const pane = page.getByRole('region', { name: `子会话 ${fixture.childTitle}`, exact: true });
   await expect(pane).toContainText('user follow-up', { timeout: 90_000 });
   await expect(pane.locator('.conversation-message.user')).toHaveCount(3);
