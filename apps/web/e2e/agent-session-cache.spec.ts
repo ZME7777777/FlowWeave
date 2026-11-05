@@ -1461,6 +1461,9 @@ test('Sidebar chat tabs stay isolated to their source conversation', async ({ pa
   await expect(page.locator('.agent-workspace-tabs > div.active')).toContainText('侧边聊天');
   await page.getByRole('button', { name: '关闭侧边聊天页签', exact: true }).click();
   await expect(pane).toHaveCount(0);
+  await page.locator('.agent-workspace-new-tab-trigger').click();
+  await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: '侧边聊天', exact: true }).click();
+  await expect(page.getByRole('region', { name: '侧边聊天' }).getByRole('textbox', { name: '发送侧边聊天消息' })).toHaveValue('');
 });
 
 
@@ -2016,8 +2019,10 @@ test('Sidebar chat can cancel its first message while it is being created and ke
   await composer.fill('请先别发出去');
   await sidebarPane.getByRole('button', { name: '发送侧边聊天消息' }).click();
 
-  // The user's message and the submitting state show immediately, with a cancel control.
+  // The optimistic message is visible immediately, while the composer transfers
+  // the draft out of the editable state until a cancellation restores it.
   await expect(sidebarPane.locator('.conversation-surface').getByText('请先别发出去')).toBeVisible();
+  await expect(composer).toHaveValue('');
   await expect(sidebarPane.getByText('正在提交消息')).toBeVisible();
   await sidebarPane.getByRole('button', { name: '取消发送' }).click();
 

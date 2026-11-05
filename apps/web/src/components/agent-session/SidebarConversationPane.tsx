@@ -23,6 +23,8 @@ interface SidebarConversationPaneProps {
 
 export interface SidebarConversationDraft {
   content: string;
+  attachments?: AgentAttachment[];
+  draftConversationId?: string;
   reference?: AgentConversationReference;
 }
 
@@ -40,7 +42,22 @@ function readSidebarDraft(workspaceId: string, sourceBindingId: string): Sidebar
       || typeof reference.content !== 'string'
       || typeof reference.source_binding_id !== 'string'
     )) return undefined;
-    return { content: value.content, ...(reference ? { reference } : {}) };
+    const attachments = value.attachments;
+    if (attachments !== undefined && (!Array.isArray(attachments) || attachments.some(attachment => (
+      !attachment || typeof attachment !== 'object'
+      || typeof attachment.filename !== 'string'
+      || typeof attachment.mime_type !== 'string'
+      || typeof attachment.byte_size !== 'number'
+      || typeof attachment.path !== 'string'
+    )))) return undefined;
+    const draftConversationId = value.draftConversationId;
+    if (draftConversationId !== undefined && (typeof draftConversationId !== 'string' || !draftConversationId)) return undefined;
+    return {
+      content: value.content,
+      ...(attachments ? { attachments: attachments as AgentAttachment[] } : {}),
+      ...(draftConversationId ? { draftConversationId } : {}),
+      ...(reference ? { reference } : {}),
+    };
   } catch {
     return undefined;
   }
@@ -49,10 +66,18 @@ function readSidebarDraft(workspaceId: string, sourceBindingId: string): Sidebar
 function writeSidebarDraft(workspaceId: string, sourceBindingId: string, draft: SidebarConversationDraft): void {
   try {
     const key = sidebarDraftStorageKey(workspaceId, sourceBindingId);
-    if (draft.content || draft.reference) localStorage.setItem(key, JSON.stringify(draft));
+    if (draft.content || draft.reference || draft.attachments?.length) localStorage.setItem(key, JSON.stringify(draft));
     else localStorage.removeItem(key);
   } catch {
     // Draft recovery must not block normal side-chat interaction.
+  }
+}
+
+export function clearSidebarDraft(workspaceId: string, sourceBindingId: string): void {
+  try {
+    localStorage.removeItem(sidebarDraftStorageKey(workspaceId, sourceBindingId));
+  } catch {
+    // Explicit close must still complete when browser storage is unavailable.
   }
 }
 
@@ -118,15 +143,22 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
   const removedPendingAttachmentIds = useRef(new Set<string>());
   const [bindingId, setBindingId] = useState<string | undefined>(sidebarBindingId);
   const bindingIdRef = useRef(bindingId);
-  const [draftConversationId] = useState(randomId);
+  useEffect(() => {
+    if (!sidebarBindingId || bindingIdRef.current) return;
+    bindingIdRef.current = sidebarBindingId;
+    setBindingId(sidebarBindingId);
+  }, [sidebarBindingId]);
   const recoveredDraft = useState(() => draft ?? readSidebarDraft(workspaceId, sourceBindingId))[0];
+  const [draftConversationId] = useState(() => recoveredDraft?.draftConversationId ?? randomId());
   const [reference, setReference] = useState<AgentConversationReference | undefined>(() => recoveredDraft?.reference ?? initialReference);
   const [content, setContent] = useState(() => recoveredDraft?.content ?? '');
+  const [attachments, setAttachments] = useState<AgentAttachment[]>(() => recoveredDraft?.attachments ?? []);
   const referenceRef = useRef(reference);
   referenceRef.current = reference;
   const contentRef = useRef(content);
   contentRef.current = content;
-  const [attachments, setAttachments] = useState<AgentAttachment[]>([]);
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
   const [pendingAttachments, setPendingAttachments] = useState<PendingSidebarAttachment[]>([]);
   const [error, setError] = useState<string>();
   const [sending, setSending] = useState(false);
@@ -137,17 +169,19 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
   const [optimisticMessage, setOptimisticMessage] = useState<OpenHandsConversationEvent>();
   const [selectedModelKey, setSelectedModelKey] = useState<string>();
   const persistDraft = useCallback((next: SidebarConversationDraft) => {
-    onDraftChangeRef.current(next);
-    writeSidebarDraft(workspaceId, sourceBindingId, next);
-  }, [sourceBindingId, workspaceId]);
+    const snapshot: SidebarConversationDraft = {
+      ...next,
+      attachments: next.attachments ?? attachmentsRef.current,
+      draftConversationId,
+    };
+    onDraftChangeRef.current(snapshot);
+    writeSidebarDraft(workspaceId, sourceBindingId, snapshot);
+  }, [draftConversationId, sourceBindingId, workspaceId]);
   useEffect(() => {
     if (!initialReference) return;
     setReference(initialReference);
     persistDraft({ content: composerInput.current?.value() ?? contentRef.current, reference: initialReference });
   }, [initialReference, persistDraft]);
-  useEffect(() => () => {
-    persistDraft({ content: composerInput.current?.value() ?? contentRef.current, reference: referenceRef.current });
-  }, [persistDraft]);
   const sourceQuery = useQuery({
     queryKey: ['agent-session', 'sidebar-source', workspaceId, sourceBindingId],
     queryFn: () => api.agentConversation(workspaceId, sourceBindingId),
@@ -215,13 +249,26 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
       ? { ...current, id: cursor }
       : current);
   };
+  const restoreSubmission = (current: NonNullable<typeof submission.current>) => {
+    setContent(current.message);
+    composerInput.current?.replace(current.message);
+    setAttachments(current.attachments);
+    setReference(current.reference);
+    persistDraft({ content: current.message, attachments: current.attachments, reference: current.reference });
+  };
   const send = async () => {
     const message = composerInput.current?.value().trim() ?? content.trim();
-    if ((!message && !attachments.length) || sending || pendingAttachments.length > 0 || !selectedModel || expired || running) return;
+    if ((!message && !attachments.length) || sending || pendingAttachments.length > 0 || !selectedModel || expired) return;
     const submissionId = randomId();
-    submission.current = { id: submissionId, bindingId, message, attachments, reference, cancelled: false };
+    const currentSubmission = { id: submissionId, bindingId, message, attachments, reference, cancelled: false };
+    submission.current = currentSubmission;
     setSending(true);
     setError(undefined);
+    setContent('');
+    composerInput.current?.replace('');
+    setAttachments([]);
+    setReference(undefined);
+    persistDraft({ content: '', attachments: [] });
     setOptimisticMessage({ id: submissionId, event_type: 'MESSAGE', payload: { source: 'user', content: message, attachments, conversation_references: reference ? [reference] : [], _flowweave_submission_id: submissionId, _flowweave_projection_state: 'submitting' } });
     try {
       if (!bindingId) {
@@ -232,11 +279,6 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
         bindingIdRef.current = result.conversation.id;
         setBindingId(result.conversation.id);
         onBindingCreated(result.conversation.id);
-        setContent('');
-        composerInput.current?.replace('');
-        setAttachments([]);
-        setReference(undefined);
-        persistDraft({ content: '' });
         queryClient.setQueryData(['agent-session', 'sidebar', workspaceId, result.conversation.id], {
           binding_id: result.conversation.id, source_binding_id: sourceBindingId, expires_at: result.expires_at, expired: false,
         });
@@ -244,27 +286,16 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
       } else {
         const result = await api.sendAgentMessage(workspaceId, bindingId, message, attachments, reference ? [reference] : [], [], [], submissionId);
         acknowledgeOptimisticMessage(submissionId, result.cursor);
-        setContent('');
-        composerInput.current?.replace('');
-        setAttachments([]);
-        persistDraft({ content: '', reference });
         await invalidate(bindingId);
       }
     } catch (reason) {
-      setOptimisticMessage(undefined);
-      if (reason instanceof ApiError && reason.code === 'AGENT_MESSAGE_CANCELLED') {
-        // Same restore as the main conversation: the text, attachments and the
-        // quoted reference go back to the composer instead of being lost.
-        const restored = submission.current;
-        if (restored) {
-          setContent(restored.message);
-          composerInput.current?.replace(restored.message);
-          setAttachments(restored.attachments);
-          setReference(restored.reference);
-          persistDraft({ content: restored.message, reference: restored.reference });
-        }
-        return;
+      const cancelled = reason instanceof ApiError && reason.code === 'AGENT_MESSAGE_CANCELLED';
+      const ambiguous = reason instanceof ApiError && reason.code === 'AGENT_MESSAGE_DELIVERY_AMBIGUOUS';
+      if (!ambiguous) {
+        setOptimisticMessage(undefined);
+        if (submission.current?.id === submissionId) restoreSubmission(currentSubmission);
       }
+      if (cancelled) return;
       if (reason instanceof ApiError && reason.code === 'AGENT_SIDEBAR_CONVERSATION_EXPIRED') markExpired();
       setError(reason instanceof Error ? reason.message : '侧边聊天暂时不可用');
     } finally {
@@ -328,7 +359,11 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
         : await api.uploadAgentWorkspaceAttachment(workspaceId, request.file, undefined, ownerId, progress => setPendingAttachments(current => current.map(item => item.id === request.id ? { ...item, progress } : item)));
       const removed = removedPendingAttachmentIds.current.delete(request.id);
       setPendingAttachments(current => current.filter(item => item.id !== request.id));
-      if (!removed) setAttachments(current => [...current, added]);
+      if (!removed) {
+        const nextAttachments = [...attachmentsRef.current, added];
+        setAttachments(nextAttachments);
+        persistDraft({ content: composerInput.current?.value() ?? contentRef.current, attachments: nextAttachments, reference: referenceRef.current });
+      }
       if (request.previewUrl) URL.revokeObjectURL(request.previewUrl);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '附件上传失败');
@@ -371,9 +406,6 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
       setError(reason instanceof Error ? reason.message : '保存模型设置失败');
     }
   };
-  useEffect(() => () => {
-    if (!bindingIdRef.current) void api.deleteAgentWorkspaceDraftAttachments(workspaceId, draftConversationId).catch(() => undefined);
-  }, [draftConversationId, workspaceId]);
   const connectedProviders = (providersQuery.data ?? []).filter(provider => provider.connection_state === 'CONNECTED');
   const provider = connectedProviders.find(item => item.id === currentModel?.providerId);
   const availableModels = provider?.models.filter(item => item.enabled) ?? [];
@@ -386,8 +418,8 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
     }] : []),
     ...sidebarComposerSuggestions(sourceQuery.data?.capabilities, capabilitiesQuery.data ?? []),
   ], [bindingId, canCondense, capabilitiesQuery.data, sourceQuery.data?.capabilities]);
-  const composerDisabled = expired || sending || condensing || !currentModel || running;
-  const composerControl = bindingId && (running || paused)
+  const composerDisabled = expired || sending || condensing || !currentModel;
+  const composerControl = bindingId && (paused || (running && !content.trim() && !attachments.length))
     ? { label: running ? '暂停侧边聊天 Agent' : '继续侧边聊天 Agent', action: running ? 'interrupt' as const : 'resume' as const }
     : undefined;
   const updateDraft = useCallback((_scope: string | undefined, value: string) => {
@@ -420,9 +452,9 @@ export function SidebarConversationPane({ workspaceId, sourceBindingId, sidebarB
       <div className="agent-composer agent-sidebar-composer">
         <div className="agent-composer-attachments">
           {reference && <div className="agent-attachments agent-conversation-references" aria-label="已添加的会话引用"><span><button type="button" className="agent-attachment-open" aria-label="定位引用来源会话" title={reference.content} onClick={() => onOpenConversationReference(reference)}><Quote size={14}/><em>会话引用</em></button><button type="button" className="agent-attachment-remove" onClick={() => { setReference(undefined); persistDraft({ content: composerInput.current?.value() ?? contentRef.current }); }} aria-label="移除引用">×</button></span></div>}
-          {(attachments.length > 0 || pendingAttachments.length > 0) && <div className="agent-attachments" aria-label="已添加的附件">{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => onPreviewAttachment(item, bindingId)}>{item.image_data_url ? <img src={item.image_data_url} alt=""/> : <FileTypeIcon filename={item.filename} mimeType={item.mime_type} size={16}/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => setAttachments(current => current.filter(candidate => candidate.path !== item.path))}>×</button></span>)}{pendingAttachments.map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileTypeIcon filename={item.file.name} mimeType={item.file.type} size={16}/>}<em>{item.file.name}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.file.name}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</div>}
+          {(attachments.length > 0 || pendingAttachments.length > 0) && <div className="agent-attachments" aria-label="已添加的附件">{attachments.map(item => <span key={item.path}><button type="button" className="agent-attachment-open" title={`预览附件：${item.filename}`} onClick={() => onPreviewAttachment(item, bindingId)}>{item.image_data_url ? <img src={item.image_data_url} alt=""/> : <FileTypeIcon filename={item.filename} mimeType={item.mime_type} size={16}/>}<em>{item.filename}</em></button><button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.filename}`} onClick={() => { const nextAttachments = attachmentsRef.current.filter(candidate => candidate.path !== item.path); setAttachments(nextAttachments); persistDraft({ content: composerInput.current?.value() ?? contentRef.current, attachments: nextAttachments, reference: referenceRef.current }); }}>×</button></span>)}{pendingAttachments.map(item => <span key={item.id} className={`agent-pending-attachment ${item.state}`} title={item.state === 'failed' ? '附件上传失败，请重试或删除。' : `正在上传 ${item.progress}%`}><span className="agent-attachment-open">{item.previewUrl ? <img src={item.previewUrl} alt=""/> : <FileTypeIcon filename={item.file.name} mimeType={item.file.type} size={16}/>}<em>{item.file.name}</em>{item.state === 'uploading' && <small>{item.progress}%</small>}{item.state === 'failed' && <span className="agent-attachment-retry-overlay"><button type="button" onClick={() => retryPendingAttachment(item.id)}>重试</button></span>}</span>{item.state === 'uploading' && <i className="agent-attachment-progress" style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/>}<button type="button" className="agent-attachment-remove" aria-label={`移除附件 ${item.file.name}`} onClick={() => removePendingAttachment(item.id)}>×</button></span>)}</div>}
         </div>
-        <AgentComposerInput ref={composerInput} ariaLabel="发送侧边聊天消息" initialDraft={content} scope={bindingId ?? draftConversationId} suggestions={composerSuggestions} disabled={composerDisabled} placeholder={expired ? '侧边聊天会话已过期' : running ? '当前回复完成后可继续发送' : '给 Agent 发消息…'} onDraftChange={updateDraft} onContentPresenceChange={updateContentPresence} onDraftPersist={persistComposerDraft} onPaste={event => {
+        <AgentComposerInput ref={composerInput} ariaLabel="发送侧边聊天消息" initialDraft={content} scope={bindingId ?? draftConversationId} suggestions={composerSuggestions} disabled={composerDisabled} placeholder={expired ? '侧边聊天会话已过期' : '给 Agent 发消息…'} onDraftChange={updateDraft} onContentPresenceChange={updateContentPresence} onDraftPersist={persistComposerDraft} onPaste={event => {
           const files = transferredFiles(event.clipboardData);
           if (!files.length) return;
           event.preventDefault();

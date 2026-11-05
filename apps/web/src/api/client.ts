@@ -546,6 +546,8 @@ export const api = {
     request<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null; expires_at: string }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(sourceBindingId)}/sidebar`, json('POST', { conversation_id, content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references) }, conversation_id)),
   agentSidebarConversation: (workspaceId: string, bindingId: string) =>
     request<{ binding_id: string; source_binding_id?: string; expires_at: string; expired: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/sidebars/${encodeURIComponent(bindingId)}`),
+  agentSidebarConversationForSource: (workspaceId: string, sourceBindingId: string) =>
+    request<{ binding_id: string; source_binding_id: string; expires_at: string; expired: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(sourceBindingId)}/sidebar`),
   deleteAgentSidebarConversation: (workspaceId: string, bindingId: string) =>
     request<void>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/sidebars/${encodeURIComponent(bindingId)}`, json('DELETE', undefined, true)),
   agentConversation: (workspaceId: string, bindingId: string) =>
