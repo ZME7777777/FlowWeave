@@ -1017,7 +1017,7 @@ function WorkspaceConversationRow({
     setContextMenu({ x: event.clientX, y: event.clientY });
   }}>
     <button type="button" draggable={Boolean(onDragStart)} className={`agent-workspace-conversation-select${selected ? ' active' : ''}`} aria-label={conversationName(item)} title={onDragStart ? '拖入发送框以引用此会话，或拖到其他会话以调整顺序' : undefined} onDragStart={onDragStart} onDragEnd={onDragEnd} onClick={onSelect} onDoubleClick={onDoubleClick}>
-      <span><b>{conversationName(item)}</b>{waitingUserInput && <i className="agent-workspace-conversation-needs-input" role="img" aria-label="需要用户输入" title="需要用户输入"/>}{workspaceName && <small title={workspaceName}><Folder size={11}/><span>{workspaceName}</span></small>}</span>
+      <span><b>{conversationName(item)}</b>{waitingUserInput && <i className="agent-workspace-conversation-needs-input">需要用户输入</i>}{workspaceName && <small title={workspaceName}><Folder size={11}/><span>{workspaceName}</span></small>}</span>
     </button>
     {orderSyncState === 'syncing' && <span className="agent-workspace-conversation-sync" role="status" aria-label="排序正在后台同步" title="排序正在后台同步"><LoaderCircle size={14}/></span>}
     {orderSyncState === 'failed' && <button type="button" className="agent-workspace-conversation-sync failed" aria-label="排序暂未保存，点击重试" title="排序暂未保存，点击重试" onClick={event => { event.stopPropagation(); onRetryOrder?.(); }}>!</button>}
@@ -8485,6 +8485,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // ask_user does not pause the run: the question is open until a user message follows it,
     // so re-read it whenever the formal event window advances.
     staleTime: 0,
+    // The key advances with every event; keep showing the previous read for the same conversation
+    // until the new one lands so the card never unmounts/flashes (which lost the user's choices).
+    placeholderData: (previous, previousQuery) => (previousQuery?.queryKey[previousQuery.queryKey.length - 2] === selected?.id ? previous : undefined),
     refetchOnWindowFocus: false,
     retry: false,
   });
