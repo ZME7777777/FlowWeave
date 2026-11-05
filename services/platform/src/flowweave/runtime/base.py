@@ -175,11 +175,20 @@ class RuntimeProvider:
     model: str
     api_key: str = field(repr=False)
     auth_type: Literal["API_KEY", "ANTHROPIC_API_KEY", "CODEX_OAUTH"] = "API_KEY"
-    api_protocol: Literal["CHAT_COMPLETIONS", "RESPONSES"] = "CHAT_COMPLETIONS"
+    # ``ANTHROPIC`` selects the Anthropic Messages wire protocol; it is chosen
+    # per model, not per provider configuration.
+    api_protocol: Literal["CHAT_COMPLETIONS", "RESPONSES", "ANTHROPIC"] = "CHAT_COMPLETIONS"
     extra_headers: dict[str, str] = field(default_factory=_empty_headers)
     reasoning_effort: str | None = None
     # Resolved only from an immutable session policy; never ambient provider state.
     fallback_providers: tuple[RuntimeProvider, ...] = ()
+
+    def __post_init__(self) -> None:
+        # Frozen pre-multiprotocol bindings carry ``auth_type=ANTHROPIC_API_KEY``;
+        # it is now just the Anthropic wire protocol of an API-key provider.
+        if self.auth_type == "ANTHROPIC_API_KEY":
+            object.__setattr__(self, "auth_type", "API_KEY")
+            object.__setattr__(self, "api_protocol", "ANTHROPIC")
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +208,7 @@ class RuntimeMCP:
     name: str
     config: dict[str, Any]
     workspace_path: str = ""
+    capability_version_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -424,6 +434,9 @@ class RuntimeAgentSpec:
     mcp_servers: tuple[RuntimeMCP, ...] = ()
     hook_config: dict[str, list[dict[str, Any]]] = field(default_factory=_empty_hook_config)
     confirmation_policy: Literal["ALWAYS", "NEVER"] = "NEVER"
+    # Opt-in native ask_user tool (OpenHands AskUserTool). Only interactive Agent
+    # sessions with a human reply surface enable it; unattended FlowRun nodes never do.
+    ask_user: bool = False
     llm_timeout_policy: RuntimeLLMTimeoutPolicy | None = None
     subagent_policy: RuntimeSubagentPolicy | None = None
     condenser: RuntimeCondenser = field(default_factory=RuntimeCondenser)
@@ -504,6 +517,9 @@ class RuntimeHandle:
     # Carries the Agent Spec's immutable LLM policy through later native
     # switch/fork operations without inventing platform-side timeout states.
     llm_timeout_policy: RuntimeLLMTimeoutPolicy | None = None
+    # Frozen conversation directory inside the workspace. Attachment uploads
+    # live here so they share the selected work directory's lifecycle.
+    working_directory: str = ""
 
     def __post_init__(self) -> None:
         if self.llm_timeout_policy is None and self.protocol_profile in {
@@ -611,6 +627,20 @@ class RuntimePendingConfirmation:
     cursor: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimePendingQuestion:
+    """One formal ask_user question awaiting the human (OpenHands ActionEvent)."""
+
+    action_id: str
+    tool_call_id: str
+    question: str
+    options: tuple[str, ...] = ()
+    recommendation: str | None = None
+    cursor: str | None = None
+    # Extra questions asked in the same ask_user call, as (question, options, recommendation).
+    follow_ups: tuple[tuple[str, tuple[str, ...], str | None], ...] = ()
+
+
 RuntimeEventType = Literal[
     "MESSAGE",
     "TOOL",
@@ -705,6 +735,7 @@ class RuntimeEventBatch:
     cursor_anchor_found: bool = True
     task_usage: tuple[RuntimeTaskUsageSnapshot, ...] = field(default_factory=_empty_task_usage)
     usage: tuple[RuntimeUsageSnapshot, ...] = field(default_factory=_empty_usage)
+    stored_event_count: int | None = None
     # When an adapter has already read the authoritative native Conversation
     # state for this batch, expose the derived projections so hydration does
     # not immediately issue duplicate state reads. Incremental callers may
@@ -899,6 +930,10 @@ class RuntimePort(Protocol):
 
     def switch_model(self, handle: RuntimeHandle, provider: RuntimeProvider) -> None: ...
 
+    def restore_condenser_credentials(
+        self, handle: RuntimeHandle, provider: RuntimeProvider
+    ) -> None: ...
+
     def load_plugin(self, handle: RuntimeHandle, plugin_ref: str) -> None: ...
 
     def conversation_mcp_configured(
@@ -932,6 +967,8 @@ class RuntimePort(Protocol):
     def get_pending_confirmation(
         self, handle: RuntimeHandle
     ) -> RuntimePendingConfirmation | None: ...
+
+    def get_pending_question(self, handle: RuntimeHandle) -> RuntimePendingQuestion | None: ...
 
     def respond_to_confirmation(
         self,
@@ -972,6 +1009,14 @@ class RuntimePort(Protocol):
         self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...] = ()
     ) -> RuntimeResult: ...
 
+    def append_message(self, handle: RuntimeHandle, content: str) -> RuntimeResult:
+        """Persist a native user message without running the conversation."""
+        ...
+
+    def run_pending_message(self, handle: RuntimeHandle, event_id: str) -> RuntimeResult:
+        """Run an acknowledged current-branch message, preserving native pauses."""
+        ...
+
     def upload_workspace_file(
         self,
         handle: RuntimeHandle,
@@ -983,6 +1028,17 @@ class RuntimePort(Protocol):
     ) -> str: ...
 
     def workspace_snapshot(self, handle: RuntimeHandle, path: str) -> RuntimeWorkspaceSnapshot: ...
+
+    def workspace_git_operation(
+        self,
+        handle: RuntimeHandle,
+        repository_path: str,
+        action: str,
+        *,
+        ref: str = "",
+        expected_head: str = "",
+        expected_ref: str = "",
+    ) -> None: ...
 
     def workspace_git_identity(
         self,

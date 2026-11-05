@@ -12,7 +12,7 @@ import tarfile
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
@@ -54,6 +54,7 @@ from flowweave.runtime.base import (
     RuntimeMessageSearchResult,
     RuntimePendingAction,
     RuntimePendingConfirmation,
+    RuntimePendingQuestion,
     RuntimePluginValidationRequest,
     RuntimePluginValidationResult,
     RuntimeProvider,
@@ -101,6 +102,7 @@ from flowweave.runtime.contract import OPTIONAL_HTTP_OPERATIONS
 from flowweave.runtime.git_identity import GIT_IDENTITY_SCRIPT
 from flowweave.runtime.model_catalog import declared_context_window
 from flowweave.runtime.read_budget import formal_read_budget, hydration_time_left
+from flowweave.runtime.workspace_git import WORKSPACE_GIT_SCRIPT
 from flowweave.shared.errors import DomainError
 from flowweave.shared.infrastructure.docker_controller import (
     DockerControllerClient,
@@ -293,7 +295,7 @@ class _TransientStreamProjection:
                 attempt is None
                 or maximum is None
                 or attempt > maximum
-                or maximum > 5
+                or maximum > 3
                 or failure_kind not in allowed_kinds
                 or not isinstance(final, bool)
                 or model_role not in {"primary", "fallback"}
@@ -1468,7 +1470,7 @@ class OpenHandsRuntime:
         model = provider.model
         if "/" in model:
             return model
-        if provider.auth_type == "ANTHROPIC_API_KEY":
+        if provider.api_protocol == "ANTHROPIC":
             return f"anthropic/{model}"
         return f"openai/{model}"
 
@@ -1508,9 +1510,9 @@ class OpenHandsRuntime:
             # Workspace conversations, LLM switches, and condensers.
             # OpenHands interprets this as the total number of transport
             # attempts, including the initial call. Keep the product
-            # contract at five attempts so live progress can truthfully reach
-            # 5/5 without a frontend timer or a second send.
-            "num_retries": 5,
+            # contract at three attempts so live progress can truthfully reach
+            # 3/3 without a frontend timer or a second send.
+            "num_retries": 3,
             "retry_multiplier": 2.0,
             "retry_min_wait": 1,
             "retry_max_wait": 4,
@@ -2153,10 +2155,15 @@ class OpenHandsRuntime:
             "tools": configured_tools,
             "tool_concurrency_limit": spec.tool_concurrency_limit,
         }
-        if structured_finish is not None:
+        default_tools = (
+            ["ThinkTool"] if structured_finish is not None else ["FinishTool", "ThinkTool"]
+        )
+        if spec.ask_user:
+            default_tools.append("AskUserTool")
+        if structured_finish is not None or spec.ask_user:
             # FinishTool is a native default. Replacing it with an explicit
             # structured schema requires omitting the default copy.
-            agent["include_default_tools"] = ["ThinkTool"]
+            agent["include_default_tools"] = default_tools
         if spec.critic is not None:
             critic: dict[str, Any] = {
                 "kind": spec.critic.kind,
@@ -3679,6 +3686,9 @@ class OpenHandsRuntime:
         goal_status = cls._goal_status(item)
         if goal_status is not None:
             payload["goal_status"] = goal_status
+        goal_followup = item.get("_flowweave_goal_followup")
+        if isinstance(goal_followup, dict):
+            payload["goal_followup"] = goal_followup
         if kind == "CondensationRequest":
             payload["event_name"] = kind
         elif kind == "Condensation":
@@ -3874,6 +3884,143 @@ class OpenHandsRuntime:
         next_cursor = str(items[-1].get("id")) if items and items[-1].get("id") else cursor
         return items, next_cursor
 
+    @classmethod
+    def _annotate_goal_followups(cls, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Mark the user message OpenHands' Goal loop sends after a failed audit.
+
+        ``_run_goal_loop`` first persists ``goal`` status (active, with the
+        Judge verdict) and then sends the follow-up as a ``source=user``
+        MessageEvent under the same parent. That message is a loop control
+        input, not something the person typed, so identify it by this formal
+        structure and take ``missing`` from the structured verdict. Message
+        text is never parsed, and no persisted data is rewritten, so
+        conversations created before this change are recognised too.
+        """
+
+        pending: dict[str, dict[str, Any]] = {}
+        result: list[dict[str, Any]] = []
+        for item in items:
+            kind = item.get("kind")
+            parent_id = item.get("parent_id")
+            parent = parent_id if isinstance(parent_id, str) else None
+            if kind == "ConversationStateUpdateEvent" and item.get("key") == "goal":
+                value = item.get("value")
+                if isinstance(value, dict) and parent is not None:
+                    status = cast(dict[str, Any], value)
+                    verdict = status.get("verdict")
+                    if (
+                        status.get("active") is True
+                        and status.get("status") == "running"
+                        and isinstance(verdict, dict)
+                        and cast(dict[str, Any], verdict).get("complete") is False
+                    ):
+                        pending[parent] = {
+                            "iteration": status.get("iteration"),
+                            "max_iterations": status.get("max_iterations"),
+                            "missing": str(cast(dict[str, Any], verdict).get("missing") or "")[
+                                :4000
+                            ],
+                        }
+                result.append(item)
+                continue
+            if (
+                kind == "MessageEvent"
+                and str(item.get("source") or "").lower() == "user"
+                and parent is not None
+                and parent in pending
+            ):
+                followup = pending.pop(parent)
+                if isinstance(followup.get("iteration"), int) and not isinstance(
+                    followup.get("iteration"), bool
+                ):
+                    item = {**item, "_flowweave_goal_followup": followup}
+            result.append(item)
+        return result
+
+    def _goal_updates_after_leaf(
+        self,
+        conversation_id: str,
+        leaf_event_id: str,
+        *,
+        base_url: str,
+        session_api_key: str,
+    ) -> list[dict[str, Any]]:
+        """Read the Goal status updates OpenHands appended after the active leaf.
+
+        A state update never becomes the leaf, so the final ``goal`` verdict
+        (complete, capped or interrupted) is written after the last real event
+        and lies past the leaf. A window anchored at the leaf walks backwards and
+        cannot see it. Read only the newest events of the log, which is where
+        such updates are, and keep the Goal ones whose parent is the leaf.
+        """
+
+        try:
+            data = self._request(
+                "GET",
+                f"/api/conversations/{conversation_id}/events/search",
+                base_url=base_url,
+                session_api_key=session_api_key,
+                params={"limit": 20, "sort_order": "TIMESTAMP_DESC"},
+                timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS,
+            )
+        except DomainError:
+            # The Goal verdict only refines the presentation. A failed side read
+            # must never fail the read of the conversation itself.
+            return []
+        raw_items = data.get("items", [])
+        if not isinstance(raw_items, list):
+            return []
+        found: list[dict[str, Any]] = []
+        for raw in cast(list[object], raw_items):
+            if not isinstance(raw, dict):
+                continue
+            item = cast(dict[str, Any], raw)
+            if self._event_identity(item)[0] == leaf_event_id:
+                break
+            if item.get("kind") == "ConversationStateUpdateEvent" and item.get("key") == "goal":
+                found.append(item)
+        return found
+
+    def _with_goal_status_events(
+        self,
+        branch: list[dict[str, Any]],
+        candidates: Iterable[dict[str, Any]],
+        *,
+        extra_parent_ids: frozenset[str] = frozenset(),
+    ) -> list[dict[str, Any]]:
+        """Re-attach OpenHands Goal status updates to a parent-walked branch.
+
+        A ``ConversationStateUpdateEvent`` is a state-sync artifact, not a tree
+        node: it hangs off the active leaf but never becomes the leaf, so the
+        parent walk skips it. The Goal chip is derived from exactly these
+        events, so keep each one whose formal ``parent_id`` is on the branch,
+        placed right after that parent (chronological order is preserved).
+        """
+
+        parents = {self._event_identity(item)[0] for item in branch} | extra_parent_ids
+        by_parent: dict[str, list[dict[str, Any]]] = {}
+        for item in candidates:
+            if item.get("kind") != "ConversationStateUpdateEvent" or item.get("key") != "goal":
+                continue
+            parent_id = self._formal_identity(
+                item.get("parent_id"), field="parent_id", required=False
+            )
+            if parent_id in parents:
+                by_parent.setdefault(parent_id, []).append(item)
+        if not by_parent:
+            return branch
+
+        def ordered(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return sorted(items, key=lambda value: str(value.get("timestamp") or ""))
+
+        result: list[dict[str, Any]] = []
+        for parent_id in sorted(extra_parent_ids):
+            result.extend(ordered(by_parent.pop(parent_id, [])))
+        for item in branch:
+            result.append(item)
+            result.extend(ordered(by_parent.pop(self._event_identity(item)[0], [])))
+        return result
+
     def _active_event_window(
         self,
         conversation_id: str,
@@ -3948,7 +4095,12 @@ class OpenHandsRuntime:
         # ``chain`` is newest-to-oldest.  The returned transcript stays in
         # chronological order, while the missing parent remains the official
         # continuation token for a user-triggered older-history read.
-        return list(reversed(chain)), current_event_id
+        return (
+            self._annotate_goal_followups(
+                self._with_goal_status_events(list(reversed(chain)), page_items)
+            ),
+            current_event_id,
+        )
 
     def _active_events_after_cursor(
         self,
@@ -4044,7 +4196,13 @@ class OpenHandsRuntime:
             current_event_id: str | None = leaf_event_id
             while current_event_id is not None:
                 if current_event_id == anchor:
-                    return list(reversed(chain))
+                    return self._annotate_goal_followups(
+                        self._with_goal_status_events(
+                            list(reversed(chain)),
+                            by_id.values(),
+                            extra_parent_ids=frozenset({anchor}),
+                        )
+                    )
                 item = by_id.get(current_event_id)
                 if item is None:
                     break
@@ -4347,6 +4505,60 @@ class OpenHandsRuntime:
         digest = self._canonical_digest([action.digest for action in actions])
         return RuntimePendingConfirmation(digest, actions, cursor or leaf)
 
+    def get_pending_question(self, handle: RuntimeHandle) -> RuntimePendingQuestion | None:
+        """Read the formal ask_user ActionEvent the conversation is waiting on."""
+
+        with self._auxiliary_read_bulkhead(handle):
+            state = self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
+            # ask_user leaves the run in waiting_for_user_input; the question is open until a user message
+            # follows it on the active branch.
+            if str(state.get("execution_status") or "").lower() in {"deleting"}:
+                return None
+            leaf = str(state.get("leaf_event_id") or "") or None
+            events, cursor = self._events(
+                handle.conversation_id,
+                None,
+                base_url=self._base_url_for_handle(handle),
+                session_api_key=self._session_key_for_handle(handle),
+            )
+            for event in reversed(self._active_branch(events, leaf)):
+                kind = str(event.get("kind") or "")
+                if kind == "MessageEvent" and event.get("source") == "user":
+                    return None
+                if kind != "ActionEvent" or str(event.get("tool_name") or "") != "ask_user":
+                    continue
+                action = event.get("action")
+                if not isinstance(action, dict):
+                    continue
+                options = action.get("options")
+                recommendation = action.get("recommendation")
+                follow_ups: list[tuple[str, tuple[str, ...], str | None]] = []
+                for item in action.get("questions") or []:
+                    if not isinstance(item, dict) or not str(item.get("question") or "").strip():
+                        continue
+                    raw_options = item.get("options")
+                    follow_ups.append(
+                        (
+                            str(item["question"]),
+                            tuple(str(o) for o in raw_options)
+                            if isinstance(raw_options, list)
+                            else (),
+                            str(item["recommendation"]) if item.get("recommendation") else None,
+                        )
+                    )
+                return RuntimePendingQuestion(
+                    follow_ups=tuple(follow_ups),
+                    action_id=str(event.get("id") or ""),
+                    tool_call_id=str(event.get("tool_call_id") or ""),
+                    question=str(action.get("question") or ""),
+                    options=tuple(str(item) for item in options)
+                    if isinstance(options, list)
+                    else (),
+                    recommendation=str(recommendation) if recommendation else None,
+                    cursor=cursor or leaf,
+                )
+            return None
+
     def respond_to_confirmation(
         self,
         handle: RuntimeHandle,
@@ -4501,6 +4713,11 @@ class OpenHandsRuntime:
                 # projection and permanently strands the FlowRun Attempt.
                 if self._is_explicit_pause_interruption(item):
                     continue
+                # Tool-call validation errors are formal, retryable Agent outcomes.
+                # OpenHands feeds them back to the model so it can correct the call;
+                # they are not terminal Runtime failures.
+                if self._is_retryable_agent_tool_error(item):
+                    continue
                 # OpenHands 1.42/1.44 can publish an asynchronous native
                 # auto-title provider failure as a generic ConversationErrorEvent
                 # after the real assistant message.  The title is auxiliary
@@ -4548,6 +4765,20 @@ class OpenHandsRuntime:
             str(item.get("kind") or "") == "AgentErrorEvent"
             and str(item.get("error") or "")
             == "Tool call interrupted before completion. The conversation was paused."
+        )
+
+    @staticmethod
+    def _is_retryable_agent_tool_error(item: dict[str, Any]) -> bool:
+        if str(item.get("kind") or "") != "AgentErrorEvent":
+            return False
+        if not str(item.get("tool_name") or "") or not str(item.get("tool_call_id") or ""):
+            return False
+        classification = item.get("classification")
+        return (
+            isinstance(classification, dict)
+            and classification.get("kind") == "agent_action"
+            and classification.get("retryable") is True
+            and classification.get("user_action") == "retry"
         )
 
     @staticmethod
@@ -4679,6 +4910,7 @@ class OpenHandsRuntime:
             result=self._result_from_events(handle, items, cursor),
             task_usage=self._task_usage_snapshots(state, source_cursor=state_cursor),
             usage=self._usage_snapshots(state),
+            stored_event_count=self._stored_event_count(state),
             context=self._conversation_context_from_state(state),
             readiness=self._input_readiness_from_state(state),
         )
@@ -4734,6 +4966,26 @@ class OpenHandsRuntime:
                 item for item in active_items if not self._is_legacy_autotitle_protocol_error(item)
             ]
             cursor = leaf_event_id
+            if (
+                state is not None
+                and leaf_event_id
+                and not handle.history_cursor
+                and str(state.get("execution_status") or "").lower()
+                in {"finished", "idle", "error", "stuck", "paused"}
+            ):
+                # The Goal loop's final verdict (complete, capped or interrupted)
+                # is appended after the last real event, past the leaf, so a
+                # window anchored at the leaf cannot see it. Only a run that has
+                # ended can have one, so the extra read is limited to that case.
+                active_items = self._with_goal_status_events(
+                    active_items,
+                    self._goal_updates_after_leaf(
+                        handle.conversation_id,
+                        leaf_event_id,
+                        base_url=base_url,
+                        session_api_key=session_api_key,
+                    ),
+                )
         events = tuple(
             RuntimeEvent(
                 cursor=self._event_identity(item)[0],
@@ -4777,6 +5029,7 @@ class OpenHandsRuntime:
                 else ()
             ),
             usage=self._usage_snapshots(state) if state is not None else (),
+            stored_event_count=self._stored_event_count(state),
             context=self._conversation_context_from_state(state) if state is not None else None,
             readiness=self._input_readiness_from_state(state) if state is not None else None,
         )
@@ -5519,12 +5772,30 @@ class OpenHandsRuntime:
     def send_message(
         self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...] = ()
     ) -> RuntimeResult:
+        return self._submit_user_message(handle, content, image_urls, run=True)
+
+    def append_message(self, handle: RuntimeHandle, content: str) -> RuntimeResult:
+        return self._submit_user_message(handle, content, (), run=False)
+
+    def _submit_user_message(
+        self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...], *, run: bool
+    ) -> RuntimeResult:
         parts: list[dict[str, Any]] = []
         if content:
             parts.append({"type": "text", "text": content})
         if image_urls:
             parts.append({"type": "image", "image_urls": list(image_urls)})
-        before = self._message_user_event_ids(handle)
+        try:
+            before = self._message_user_event_ids(handle)
+        except DomainError as exc:
+            if run:
+                raise
+            raise DomainError(
+                "RUNTIME_MESSAGE_NOT_SUBMITTED",
+                "Native message preflight unavailable",
+                503,
+                {"native_append_started": False},
+            ) from exc
         try:
             created = self._request(
                 "POST",
@@ -5535,15 +5806,15 @@ class OpenHandsRuntime:
                 # current LLM/tool step finishes. This formal event append must
                 # wait for that boundary rather than timing out at the ordinary
                 # short control-request limit and inviting a duplicate retry.
-                timeout=3600,
+                timeout=3600 if run else 30,
                 json={
                     "role": "user",
                     "content": parts,
-                    "run": True,
+                    "run": run,
                 },
             )
         except DomainError as exc:
-            if self._is_v2_run_slot_rejection(handle, exc):
+            if run and self._is_v2_run_slot_rejection(handle, exc):
                 return self._retry_v2_persisted_user_event_run(
                     handle, self._appended_user_event_id(handle, before)
                 )
@@ -5589,7 +5860,7 @@ class OpenHandsRuntime:
             len(content),
             len(image_urls),
         )
-        return RuntimeResult(status="RUNNING", cursor=cursor)
+        return RuntimeResult(status="RUNNING" if run else "IDLE", cursor=cursor)
 
     @staticmethod
     def _is_v2_run_slot_rejection(handle: RuntimeHandle, error: DomainError) -> bool:
@@ -5679,7 +5950,22 @@ class OpenHandsRuntime:
         # identify ordinary files (notably PDFs) without trusting a caller
         # supplied path.
         workspace_root = self._validated_workspace_root(handle.workspace_root)
-        target = f"{workspace_root}/uploads/{owner_id}-{uuid4().hex}--{safe_name}"
+        # A FlowRun input upload has no separate working directory: its frozen
+        # record root is the directory. Compare canonical strings on both sides.
+        expected_directory = handle.working_directory or workspace_root.as_posix()
+        working_directory = PurePosixPath(expected_directory)
+        if (
+            not working_directory.is_absolute()
+            or not working_directory.is_relative_to(workspace_root)
+            or working_directory.as_posix() != expected_directory
+            or any(part in {"", ".", ".."} for part in working_directory.parts)
+        ):
+            raise DomainError(
+                "RUNTIME_WORKSPACE_INVALID",
+                "The Agent Workspace working directory is invalid",
+                422,
+            )
+        target = f"{working_directory}/.uploads/{owner_id}-{uuid4().hex}--{safe_name}"
         try:
             response = self._transport().regular.post(
                 f"{self._base_url_for_handle(handle)}/api/file/upload",
@@ -5701,6 +5987,65 @@ class OpenHandsRuntime:
                 "EXECUTOR_UNAVAILABLE", "OpenHands 工作区文件上传不可用", 503
             ) from exc
         return target
+
+    def workspace_git_operation(
+        self,
+        handle: RuntimeHandle,
+        repository_path: str,
+        action: str,
+        *,
+        ref: str = "",
+        expected_head: str = "",
+        expected_ref: str = "",
+    ) -> None:
+        values = {
+            "root": handle.workspace_root,
+            "repository": repository_path,
+            "action": action,
+            "ref": ref,
+            "expected_head": expected_head,
+            "expected_ref": expected_ref,
+        }
+        result = self._request(
+            "POST",
+            "/api/bash/execute_bash_command",
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+            json={
+                "command": "python3 -c "
+                + shlex.quote(WORKSPACE_GIT_SCRIPT)
+                + " "
+                + shlex.quote(json.dumps(values)),
+                "timeout": 15,
+            },
+            timeout=18,
+        )
+        try:
+            data = json.loads(str(result.get("stdout") or ""))
+            if result.get("exit_code") != 0 or not isinstance(data, dict):
+                raise ValueError("Invalid Git result")
+        except (TypeError, ValueError) as exc:
+            raise DomainError("AGENT_WORKSPACE_GIT_UNAVAILABLE", "Git 操作暂时不可用", 503) from exc
+        if data.get("ok") is True:
+            return
+        code = str(data.get("error", "UNAVAILABLE"))
+        messages = {
+            "REMOTE_UNAVAILABLE": "远端状态待确认，请检查工作区 Git 认证和网络后重试",
+            "BRANCH_INVALID": "请选择有效的本地或远程跟踪分支",
+            "BRANCH_MISSING": "分支已不存在，请刷新分支列表",
+            "LOCAL_EXISTS": "已存在同名本地分支，请选择该本地分支",
+            "STALE": "当前分支或提交已变化，请刷新后重新选择",
+            "BUSY": "该仓库正在切换分支，请稍后重试",
+            "SWITCH_CONFLICT": (
+                "无法切换分支，请先处理未提交或未跟踪文件、"
+                "进行中的合并及其他工作树占用"
+            ),
+        }
+        raise DomainError(
+            "AGENT_WORKSPACE_GIT_" + code,
+            messages.get(code, "Git 操作未完成，请刷新仓库状态后重试"),
+            502 if code == "REMOTE_UNAVAILABLE" else 409,
+        )
 
     def workspace_git_identity(
         self,
@@ -5841,6 +6186,19 @@ class OpenHandsRuntime:
             content_type=response.headers.get("content-type", "application/octet-stream"),
             content=response.content,
         )
+
+    @staticmethod
+    def _stored_event_count(state: dict[str, Any] | None) -> int | None:
+        value = (state or {}).get("stored_event_count")
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise DomainError(
+                "RUNTIME_EVENT_COUNT_INVALID",
+                "OpenHands returned an invalid stored event count",
+                502,
+            )
+        return value
 
     @classmethod
     def _conversation_context_from_state(cls, state: dict[str, Any]) -> dict[str, int | str | None]:
@@ -6067,6 +6425,46 @@ class OpenHandsRuntime:
                 },
             )
 
+    def restore_condenser_credentials(
+        self, handle: RuntimeHandle, provider: RuntimeProvider
+    ) -> None:
+        base_url = self._base_url_for_handle(handle)
+        session_api_key = self._session_key_for_handle(handle)
+        info = self._request(
+            "GET", "/server_info", base_url=base_url, session_api_key=session_api_key
+        )
+        if "conversation_condenser_credentials_restore_v1" not in info.get("capabilities", []):
+            raise DomainError(
+                "RUNTIME_CONDENSER_RESTORE_UNSUPPORTED", "当前 Runtime 不支持摘要器认证恢复", 409
+            )
+        expected = self._llm_payload(provider, timeout_policy=handle.llm_timeout_policy)
+        result = self._request(
+            "POST",
+            f"/api/conversations/{handle.conversation_id}/switch_llm",
+            base_url=base_url,
+            session_api_key=session_api_key,
+            json={"llm": expected, "restore_missing_condenser_credentials": True},
+        )
+        state = self._conversation_state(handle)
+        agent_value = state.get("agent")
+        agent = cast(dict[str, Any], agent_value) if isinstance(agent_value, dict) else {}
+        condenser_value = agent.get("condenser")
+        condenser = (
+            cast(dict[str, Any], condenser_value) if isinstance(condenser_value, dict) else {}
+        )
+        llm_value = condenser.get("llm")
+        actual = cast(dict[str, Any], llm_value) if isinstance(llm_value, dict) else {}
+        if not (
+            result.get("condenser_credentials_present") is True
+            and actual.get("model") == expected["model"]
+            and str(actual.get("base_url") or "").rstrip("/")
+            == str(expected["base_url"]).rstrip("/")
+            and self._llm_diagnostic_matches(expected, actual)["reasoning"]
+        ):
+            raise DomainError(
+                "RUNTIME_CONDENSER_RESTORE_FAILED", "OpenHands 未确认摘要器认证恢复", 409
+            )
+
     def load_plugin(self, handle: RuntimeHandle, plugin_ref: str) -> None:
         """Use OpenHands' formal conversation-level dynamic Plugin loader."""
 
@@ -6091,12 +6489,15 @@ class OpenHandsRuntime:
         server = servers.get(server_name) if isinstance(servers, dict) else None
         if not isinstance(server, dict):
             return False
-        headers = server.get("headers")
+        # ConversationInfo reconstructs the Agent from a redacted model dump.
+        # MCP secret-map validation then drops masked header values, so public
+        # state cannot prove whether Authorization is installed. Authentication
+        # is exercised by the native MCP probe; this read acknowledges only
+        # the exact non-secret configuration and its enabled state.
         return (
             server.get("url") == url
             and server.get("transport") == "streamable-http"
-            and isinstance(headers, dict)
-            and bool(headers.get("Authorization"))
+            and server.get("enabled") is not False
         )
 
     def interrupt(self, handle: RuntimeHandle) -> None:
@@ -6244,11 +6645,11 @@ class OpenHandsRuntime:
         session_api_key = self._session_key_for_handle(handle)
         state = self._conversation_state(handle)
         status = str(state.get("execution_status") or "").lower()
-        # Only IDLE/PAUSED are resumable. A worker may crash after a rejected
-        # batch has already resumed and completed but before FlowWeave commits
-        # its CAS; re-triggering FINISHED here would execute the turn twice.
-        # RUNNING and terminal states are reconciled by the normal poll path.
-        if status in {"idle", "paused"}:
+        # A FlowWeave recovery may continue the same formal Conversation after
+        # OpenHands ended a transient model call in ``error``. Never restart a
+        # finished turn: that could execute it twice. Running states remain
+        # owned by the normal event-reconciliation path.
+        if status in {"idle", "paused", "error"}:
             self._request(
                 "POST",
                 f"/api/conversations/{handle.conversation_id}/run",
@@ -6258,6 +6659,62 @@ class OpenHandsRuntime:
             )
         cursor = str(state.get("leaf_event_id") or handle.cursor or "") or None
         return RuntimeResult(status="RUNNING", cursor=cursor)
+
+    def run_pending_message(self, handle: RuntimeHandle, event_id: str) -> RuntimeResult:
+        """Resume only an acknowledged native user event on the current branch.
+
+        Persisted append and run are separate operations. Retrying this method
+        never appends a message and never deliberately resumes a native pause.
+        Formal parent ids fence navigation; message text is never inspected.
+        """
+        identity = self._formal_identity(event_id, field="id", required=True)
+        deadline = time.monotonic() + 8
+        state = self._conversation_state(handle, timeout=5)
+        cursor = self._formal_identity(
+            state.get("leaf_event_id"), field="leaf_event_id", required=False
+        )
+        leaf = cursor
+        found = False
+        for _ in range(200):
+            remaining = deadline - time.monotonic()
+            if cursor is None or remaining <= 0:
+                break
+            event = self._request(
+                "GET",
+                f"/api/conversations/{handle.conversation_id}/events/{cursor}",
+                base_url=self._base_url_for_handle(handle),
+                session_api_key=self._session_key_for_handle(handle),
+                timeout=min(remaining, 3),
+            )
+            if event.get("id") != cursor:
+                raise DomainError("RUNTIME_MESSAGE_IDENTITY_UNAVAILABLE", "Native event drift", 409)
+            if cursor == identity:
+                found = event.get("kind") == "MessageEvent" and event.get("source") == "user"
+                break
+            cursor = self._formal_identity(
+                event.get("parent_id"), field="parent_id", required=False
+            )
+        if not found:
+            raise DomainError(
+                "RUNTIME_MESSAGE_BRANCH_UNVERIFIED",
+                "The acknowledged user event is not in the bounded current native branch",
+                409,
+            )
+        status = str(state.get("execution_status") or "unknown").lower()
+        if status == "idle" and leaf == identity:
+            self._request(
+                "POST",
+                f"/api/conversations/{handle.conversation_id}/run",
+                base_url=self._base_url_for_handle(handle),
+                session_api_key=self._session_key_for_handle(handle),
+                json={},
+            )
+            return RuntimeResult(status="RUNNING", cursor=identity)
+        if status in {"running", "executing", "starting"}:
+            return RuntimeResult(status="RUNNING", cursor=identity)
+        if status in {"finished", "stuck", "error"} and leaf != identity:
+            return RuntimeResult(status="COMPLETED", cursor=identity)
+        return RuntimeResult(status="WAITING", cursor=identity)
 
     def condense(self, handle: RuntimeHandle) -> RuntimeResult:
         """Request native condensation; completion is observed via event cursor."""

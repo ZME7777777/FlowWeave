@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom';
 import { Check, Copy } from 'lucide-react';
 import './mermaid-diagram.css';
 
+let mermaidRenderSequence = 0;
+
 async function copyCodeToClipboard(value: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
     try {
@@ -72,12 +74,22 @@ export function MermaidDiagram({ source }: { source: string }) {
 
   useEffect(() => {
     let cancelled = false;
+    // Mermaid needs attached DOM for SVG measurement. Keep its temporary DOM
+    // outside layout and always dispose it, including queued/unmounted renders.
+    const container = document.createElement('div');
+    container.setAttribute('aria-hidden', 'true');
+    container.dataset.mermaidRenderContainer = '';
+    Object.assign(container.style, { position: 'fixed', left: '0', top: '0', width: '1200px', height: '0', overflow: 'hidden', visibility: 'hidden', pointerEvents: 'none' });
+    const renderId = `flowweave-mermaid-${diagramId}-${++mermaidRenderSequence}`;
+    document.body.append(container);
     setRendering(true);
     setError('');
     setSvg('');
     void import('mermaid').then(({ default: mermaid }) => {
+      if (cancelled) return;
       mermaid.initialize({
         startOnLoad: false,
+        suppressErrorRendering: true,
         securityLevel: 'strict',
         theme: 'base',
         themeVariables: {
@@ -90,14 +102,16 @@ export function MermaidDiagram({ source }: { source: string }) {
           fontFamily: 'DM Mono, ui-monospace, monospace',
         },
       });
-      return mermaid.render(`flowweave-mermaid-${diagramId}`, source);
+      return mermaid.render(renderId, source, container);
     }).then(result => {
-      if (!cancelled) setSvg(result.svg);
+      if (!cancelled && result) setSvg(result.svg);
     }).catch(reason => {
       if (!cancelled) setError(reason instanceof Error ? reason.message : '图表语法无法渲染');
     }).finally(() => {
+      container.remove();
       if (!cancelled) setRendering(false);
     });
+    // A queued render may still need this container; finally owns its removal.
     return () => { cancelled = true; };
   }, [diagramId, source]);
 

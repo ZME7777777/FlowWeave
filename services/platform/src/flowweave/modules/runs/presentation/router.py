@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -52,6 +52,7 @@ from flowweave.shared.schemas import (
 )
 
 router = APIRouter()
+artifact_content_router = APIRouter()
 
 
 def _key(value: str | None, action: str, identifier: str) -> str:
@@ -128,6 +129,23 @@ async def create_automatic_run_draft(
 async def nested_automatic_runs(parent_run_id: str, db: Db) -> list[dict[str, Any]]:
     return await run_sync(
         db, lambda session: service.list_nested_automatic_runs(session, parent_run_id)
+    )
+
+
+@router.get("/flow-runs/{parent_run_id}/records")
+async def record_directory(
+    parent_run_id: str,
+    db: Db,
+    kind: Literal["ALL", "MANUAL", "AUTOMATIC"] = "ALL",
+    cursor: str | None = Query(default=None, max_length=2048),
+    limit: int = Query(default=30, ge=1, le=100),
+    q: str = Query(default="", max_length=220),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.list_record_directory(
+            session, parent_run_id, kind=kind, cursor=cursor, limit=limit, q=q
+        ),
     )
 
 
@@ -690,12 +708,28 @@ async def delete_artifact(run_id: str, artifact_id: str, db: Db) -> Response:
     return Response(status_code=204)
 
 
-@router.get("/artifact-versions/{artifact_id}/content")
-async def artifact_content(artifact_id: str, db: Db, download: bool = False) -> Response:
-    reference = await run_sync(
-        db, lambda session: service.artifact_content_reference(session, artifact_id)
-    )
-    content, mime_type, filename = await asyncio.to_thread(service.read_artifact_content, reference)
+@artifact_content_router.get("/artifact-versions/{artifact_id}/content")
+async def artifact_content(
+    artifact_id: str, request: Request, db: Db, download: bool = False
+) -> Response:
+    header = request.headers.get("authorization", "")
+    if header:
+        from flowweave.modules.cases.application.materials import (
+            authorized_content_reference,
+            read_material_content,
+        )
+
+        prepared = await run_sync(
+            db, lambda session: authorized_content_reference(session, header, artifact_id)
+        )
+        content, mime_type, filename = await asyncio.to_thread(read_material_content, prepared)
+    else:
+        reference = await run_sync(
+            db, lambda session: service.artifact_content_reference(session, artifact_id)
+        )
+        content, mime_type, filename = await asyncio.to_thread(
+            service.read_artifact_content, reference
+        )
     disposition = "attachment" if download else "inline"
     return Response(
         content=content,
@@ -703,6 +737,7 @@ async def artifact_content(artifact_id: str, db: Db, download: bool = False) -> 
         headers={
             "Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(filename)}",
             "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
         },
     )
 

@@ -1,4 +1,41 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page, type Route } from '@playwright/test';
+
+
+// Legacy fixtures remain shared with editor/download/bulk-delete requests;
+// expose the new server page contract without letting the UI see the full list.
+async function mockRepository(page: Page, kind: 'capabilities' | 'capability-collections', handler: (route: Route) => Promise<unknown>) {
+  await page.route(`**/api/v1/${kind}`, handler);
+  const path = kind === 'capabilities' ? 'capability-directory' : 'capability-collection-directory';
+  await page.route(`**/api/v1/${path}?*`, async route => {
+    const adapted = new Proxy(route, { get(target, key) {
+      if (key === 'fulfill') return async (response: { body?: string; status?: number }) => {
+        const records = JSON.parse(response.body ?? '[]') as Array<Record<string, unknown>>;
+        const params = new URL(route.request().url()).searchParams;
+        let items: Array<Record<string, unknown>> = records;
+        const counts: Record<string, number> = {};
+        if (kind === 'capabilities') {
+          const groups = new Map<string, Array<Record<string, unknown>>>();
+          records.forEach(item => groups.set(String(item.lineage_id), [...(groups.get(String(item.lineage_id)) ?? []), item]));
+          items = [...groups].map(([id, versions]) => ({ id, latest: versions.find(item => item.is_latest) ?? versions[0], versions }));
+          items.forEach(item => { const type = String((item.latest as Record<string, unknown>).capability_type); counts[type] = (counts[type] ?? 0) + 1; });
+          items = items.filter(item => (item.latest as Record<string, unknown>).capability_type === params.get('capability_type'));
+        }
+        const value = (item: Record<string, unknown>, column: string) => {
+          const asset = (kind === 'capabilities' ? item.latest : item) as Record<string, unknown>;
+          return column === 'name' ? String(asset.capability_key ?? asset.name) : column === 'member_count' ? (asset.members as unknown[]).length : asset[column] as string | number;
+        };
+        const needle = (params.get('q') ?? '').toLowerCase();
+        items = items.filter(item => !needle || JSON.stringify(item).toLowerCase().includes(needle));
+        const sort = params.get('sort') ?? 'created_at'; const sign = params.get('direction') === 'asc' ? 1 : -1;
+        items.sort((a, b) => { const left = value(a, sort); const right = value(b, sort); return left < right ? -sign : left > right ? sign : String(a.id).localeCompare(String(b.id)); });
+        const number = Number(params.get('page') ?? 1); const size = Number(params.get('page_size') ?? 20);
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: items.slice((number - 1) * size, number * size), total: items.length, page: number, page_size: size, counts, collection_total: 0 }) });
+      };
+      const value = Reflect.get(target, key); return typeof value === 'function' ? value.bind(target) : value;
+    } });
+    await handler(adapted);
+  });
+}
 
 test.beforeEach(async ({ page }) => {
   await page.route('**/api/v1/auth/me', route => route.fulfill({
@@ -6,13 +43,14 @@ test.beforeEach(async ({ page }) => {
     contentType: 'application/json',
     body: JSON.stringify({ id: 'capability-user', username: 'capability-user', role: 'USER', is_super_admin: false }),
   }));
+  await page.route('**/api/v1/terminal-environments', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
 });
 
 test('Context module supports direct text, uploads, and ZIP bundles', async ({ page }) => {
-  await page.route('**/api/v1/capabilities', route => route.fulfill({
+  await mockRepository(page, 'capabilities', route => route.fulfill({
     status: 200, contentType: 'application/json', body: '[]',
   }));
-  await page.route('**/api/v1/capability-collections', route => route.fulfill({
+  await mockRepository(page, 'capability-collections', route => route.fulfill({
     status: 200, contentType: 'application/json', body: '[]',
   }));
 
@@ -36,8 +74,8 @@ test('Context module supports direct text, uploads, and ZIP bundles', async ({ p
 
 test('Context direct text is published through the existing validation flow', async ({ page }) => {
   let validationBody: Record<string, unknown> | undefined;
-  await page.route('**/api/v1/capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
-  await page.route('**/api/v1/capability-collections', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await mockRepository(page, 'capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await mockRepository(page, 'capability-collections', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
   await page.route('**/api/v1/capability-imports/validate', async route => {
     validationBody = route.request().postDataJSON() as Record<string, unknown>;
     await route.fulfill({
@@ -70,8 +108,8 @@ test('Context direct text is published through the existing validation flow', as
 test('Context Bundle is parsed before its editable directory is published', async ({ page }) => {
   let validateCount = 0;
   let confirmedManifest: Record<string, unknown> | undefined;
-  await page.route('**/api/v1/capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
-  await page.route('**/api/v1/capability-collections', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await mockRepository(page, 'capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await mockRepository(page, 'capability-collections', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
   await page.route('**/api/v1/capability-imports/validate', async route => {
     validateCount += 1;
     const manifest = route.request().postDataJSON().context_bundle_manifest as Record<string, unknown> | undefined;
@@ -127,9 +165,9 @@ test('published Context Bundle shows its frozen document directory before compil
     created_at: '2026-09-02T00:00:00Z', reference_count: 0, is_builtin: false, document: {},
     dependencies: {}, dependency_build_state: 'NOT_REQUIRED', dependency_build_error: null,
   };
-  await page.route('**/api/v1/capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([bundle]) }));
-  await page.route('**/api/v1/capability-collections', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
-  await page.route('**/api/v1/capabilities/bundle-version/context-source', route => route.fulfill({
+  await mockRepository(page, 'capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([bundle]) }));
+  await mockRepository(page, 'capability-collections', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await page.route('**/api/v1/capabilities/bundle-version/files', route => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({
@@ -141,7 +179,8 @@ test('published Context Bundle shows its frozen document directory before compil
           { path: 'guides/02.md', title: '最终说明', content_sha256: '2'.repeat(64) },
         ],
       },
-      content: '[资料包 · 关联资料包]\n\n## 文档：总览',
+      compiled_content: '[资料包 · 关联资料包]\n\n## 文档：总览',
+      files: [{ path: 'README.md', title: '总览', byte_size: 20 }, { path: 'guides/02.md', title: '最终说明', byte_size: 20 }],
     }),
   }));
 
@@ -150,28 +189,32 @@ test('published Context Bundle shows its frozen document directory before compil
   await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /Context/ }).click();
   const contextCard = page.getByRole('button', { name: '查看 Context 资料包' });
   await contextCard.click();
+  await expect(page.getByRole('checkbox', { name: '选择能力 资料包', exact: true })).not.toBeChecked();
   const dialog = page.getByRole('dialog', { name: '查看 Context 资料包' });
-  await expect(dialog.getByText('资料目录')).toBeVisible();
-  await expect(dialog.getByText('入口：README.md · 全部文档均已加载')).toBeVisible();
-  await expect(dialog.getByText('最终说明')).toBeVisible();
+  await expect(dialog.getByRole('treeitem', { name: '总内容', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(dialog.getByRole('treeitem', { name: 'README.md', exact: true })).toBeVisible();
+  await expect(dialog.getByRole('treeitem', { name: '02.md', exact: true })).toBeVisible();
   await expect(dialog.locator('pre')).toContainText('## 文档：总览');
 });
 
 test('capability repository exposes module-specific menus and actions', async ({ page }) => {
+  await mockRepository(page, 'capabilities', route => route.fulfill({ body: '[]' }));
+  await mockRepository(page, 'capability-collections', route => route.fulfill({ body: '[]' }));
   await page.goto('/');
   await page.getByRole('button', { name: '能力仓库' }).click();
 
   const modules = page.getByRole('navigation', { name: '能力模块' });
   const actions = page.locator('.capability-list-controls');
-  await expect(modules.getByRole('button')).toHaveCount(6);
-  await expect(modules.getByRole('button', { name: /Skill/ })).toHaveAttribute('aria-current', 'page');
-  await expect(actions.getByText('上传 Skill ZIP', { exact: true })).toBeVisible();
+  await expect(modules.getByRole('button')).toHaveCount(7);
+  await expect(modules.getByRole('button', { name: /^Skill\s+\d/ })).toHaveAttribute('aria-current', 'page');
+  await expect(actions.getByRole('button', { name: '导入 Skill', exact: true })).toBeVisible();
   await expect(actions.getByText('上传 Plugin ZIP', { exact: true })).toHaveCount(0);
-  await expect(page.locator('.skill-collection-section')).toBeVisible();
+  await modules.getByRole('button', { name: /Skill 组合/ }).click();
   const collectionEditor = page.locator('form.capability-collection-editor');
   const collectionDialog = collectionEditor.getByRole('heading', { name: '新建 Skill 组合' });
   // The header action is always present, including when the local fixture has
   // no collections, so it is the stable entry point for this test.
+  await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /Skill 组合/ }).click();
   await page.getByRole('button', { name: '新建 Skill 组合' }).click();
   await expect(collectionDialog).toBeVisible();
   // The persistent local E2E database may already contain immutable Skill
@@ -185,10 +228,11 @@ test('capability repository exposes module-specific menus and actions', async ({
   await expect(collectionDialog).toBeHidden();
 
   await modules.getByRole('button', { name: /Plugin/ }).click();
-  await expect(actions.getByText('上传 Plugin ZIP', { exact: true })).toBeVisible();
-  await expect(actions.getByRole('button', { name: 'OpenHands Marketplace' })).toBeVisible();
-  await expect(actions.getByRole('button', { name: 'Git Plugin' })).toBeVisible();
-  await expect(actions.getByText('上传 Skill ZIP', { exact: true })).toHaveCount(0);
+  await expect(actions.getByRole('button', { name: '导入 Plugin' })).toBeVisible();
+  await expect(actions.getByRole('button', { name: '插件市场', exact: true })).toBeVisible();
+  await expect(actions.getByRole('button', { name: '市场源管理', exact: true })).toHaveCount(0);
+  await expect(actions.getByRole('button')).toHaveCount(2);
+  await expect(actions.getByRole('button', { name: '导入 Skill', exact: true })).toHaveCount(0);
   await expect(page.locator('.skill-collection-section')).toHaveCount(0);
 
   const moduleActions = [
@@ -254,14 +298,14 @@ test('capability editors overlay the top navigation without clipping their headi
       dependency_build_error: null,
     },
   ];
-  await page.route('**/api/v1/capabilities', route => route.fulfill({
+  await mockRepository(page, 'capabilities', route => route.fulfill({
     status: 200, contentType: 'application/json', body: JSON.stringify(capabilities),
   }));
-  await page.route('**/api/v1/capability-collections', route => route.fulfill({
+  await mockRepository(page, 'capability-collections', route => route.fulfill({
     status: 200, contentType: 'application/json', body: '[]',
   }));
-  await page.route('**/api/v1/capabilities/skill-version/source', route => route.fulfill({
-    status: 200, contentType: 'application/json', body: JSON.stringify({ content: '# Layout skill' }),
+  await page.route('**/api/v1/capabilities/skill-version/files', route => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({ digest: 'a'.repeat(64), files: [{ path: 'SKILL.md', editable: true }], compiled_content: null }),
   }));
   await page.route('**/api/v1/capabilities/mcp-version/mcp-source', route => route.fulfill({
     status: 200,
@@ -277,7 +321,7 @@ test('capability editors overlay the top navigation without clipping their headi
   await page.getByRole('button', { name: '能力仓库' }).click();
 
   const verifyEditor = async (dialogName: string, headingName: string) => {
-    const backdrop = page.locator('.capability-editor-backdrop');
+    const backdrop = page.locator(dialogName.startsWith('编辑 Skill') ? '.capability-package-backdrop' : '.capability-editor-backdrop');
     const dialog = page.getByRole('dialog', { name: dialogName });
     const bounds = await dialog.evaluate(element => {
       const heading = element.querySelector('h2');
@@ -286,7 +330,7 @@ test('capability editors overlay the top navigation without clipping their headi
       return { dialogBounds, headingBounds };
     });
 
-    await expect(backdrop).toHaveCSS('z-index', '60');
+    await expect(backdrop).toHaveCSS('z-index', dialogName.startsWith('编辑 Skill') ? '150' : '60');
     expect(bounds.dialogBounds.top).toBeGreaterThanOrEqual(0);
     expect(bounds.headingBounds?.top).toBeGreaterThanOrEqual(bounds.dialogBounds.top);
     expect(bounds.headingBounds?.bottom).toBeLessThanOrEqual(bounds.dialogBounds.bottom);
@@ -299,7 +343,7 @@ test('capability editors overlay the top navigation without clipping their headi
   const skillMenu = page.getByRole('menu', { name: 'Skill layout-skill 操作菜单' });
   await expect(skillMenu).toBeVisible();
   await skillMenu.getByRole('menuitem', { name: '编辑' }).click();
-  await verifyEditor('编辑 Skill layout-skill', '编辑 layout-skill');
+  await verifyEditor('编辑 Skill layout-skill', 'layout-skill');
   await page.getByRole('dialog', { name: '编辑 Skill layout-skill' }).getByRole('button', { name: '关闭' }).click();
 
   await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /MCP/ }).click();
@@ -316,7 +360,7 @@ test('capability editors overlay the top navigation without clipping their headi
 
 test('Skill collection editor keeps its heading and actions visible while only skills scroll', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 640 });
-  const skills = Array.from({ length: 20 }, (_, index) => ({
+  const skills = Array.from({ length: 25 }, (_, index) => ({
     id: `skill-${index + 1}`,
     lineage_id: `skill-lineage-${index + 1}`,
     revision_number: 1,
@@ -337,15 +381,16 @@ test('Skill collection editor keeps its heading and actions visible while only s
     dependency_build_state: 'NOT_REQUIRED',
     dependency_build_error: null,
   }));
-  await page.route('**/api/v1/capabilities', route => route.fulfill({
+  await mockRepository(page, 'capabilities', route => route.fulfill({
     status: 200, contentType: 'application/json', body: JSON.stringify(skills),
   }));
-  await page.route('**/api/v1/capability-collections', route => route.fulfill({
+  await mockRepository(page, 'capability-collections', route => route.fulfill({
     status: 200, contentType: 'application/json', body: '[]',
   }));
 
   await page.goto('/');
   await page.getByRole('button', { name: '能力仓库' }).click();
+  await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /Skill 组合/ }).click();
   await page.getByRole('button', { name: '新建 Skill 组合' }).click();
 
   const editor = page.locator('form.capability-collection-editor');
@@ -371,61 +416,81 @@ test('Skill collection editor keeps its heading and actions visible while only s
   expect(bounds.memberList?.scrollHeight).toBeGreaterThan(bounds.memberList?.clientHeight ?? 0);
   await expect(memberList.locator('label').first()).toBeVisible();
   await expect(editor.getByRole('button', { name: '保存组合' })).toBeVisible();
+  await expect(editor.getByLabel('分类', { exact: true })).toHaveCount(0);
+  await expect(editor.locator('textarea')).toHaveCount(0);
+  for (const [width, height] of [[1440, 900], [1280, 640], [1024, 768]]) {
+    await page.setViewportSize({ width, height });
+    const fields = await editor.locator('.capability-collection-fields input').evaluateAll(inputs => inputs.map(input => input.getBoundingClientRect().toJSON()));
+    expect(fields).toHaveLength(2);
+    expect(Math.abs(fields[0].top - fields[1].top)).toBeLessThan(1);
+    const dialogBox = (await editor.boundingBox())!;
+    const listBox = (await members.boundingBox())!;
+    expect(listBox.height / dialogBox.height).toBeGreaterThan(0.65);
+    expect(await editor.evaluate(element => element.scrollHeight - element.clientHeight)).toBeLessThanOrEqual(1);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
+    await expect(editor.getByRole('button', { name: '保存组合' })).toBeInViewport();
+    await page.screenshot({ path: `../../.tmp/ops31/collection-editor-${width}-${height}.png` });
+  }
 });
 
-test('Skill collections use a compact paged grid', async ({ page }) => {
+test('Skill collections have their own paginated table, sort, and row actions', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 480 });
-  const collections = ['需求分析', '研发交付', '质量验证', '发布运营'].map((name, index) => ({
-    id: `collection-${index + 1}`,
-    name,
-    category: '研发',
-    description: `${name}组合说明`,
-    row_version: 1,
-    members: [],
-    created_at: '2026-09-02T00:00:00Z',
-    updated_at: '2026-09-02T00:00:00Z',
+  const collections = Array.from({ length: 23 }, (_, index) => ({
+    id: `collection-${String(index).padStart(2, '0')}`, name: `组合 ${String(index).padStart(2, '0')}`,
+    category: '研发', description: '批量选择真实 Skill 版本', row_version: 1, members: [],
+    created_at: '2026-09-02T00:00:00Z', updated_at: '2026-09-02T00:00:00Z',
   }));
-  await page.route('**/api/v1/capabilities', route => route.fulfill({
-    status: 200, contentType: 'application/json', body: '[]',
-  }));
-  await page.route('**/api/v1/capability-collections', route => route.fulfill({
-    status: 200, contentType: 'application/json', body: JSON.stringify(collections),
-  }));
+  await mockRepository(page, 'capabilities', route => route.fulfill({ body: '[]' }));
+  await mockRepository(page, 'capability-collections', route => route.fulfill({ body: JSON.stringify(collections) }));
+  await page.goto('/'); await page.getByRole('button', { name: '能力仓库' }).click();
+  await expect(page.getByRole('button', { name: '新建 Skill 组合' })).toHaveCount(0);
+  await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /Skill 组合/ }).click();
+  const rows = page.locator('.capability-table tbody tr');
+  await expect(rows).toHaveCount(20);
+  await page.getByRole('button', { name: '更多操作：Skill 组合 组合 00' }).click();
+  const menu = page.getByRole('menu');
+  await expect(menu.getByRole('menuitem', { name: '编辑' })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: '删除' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: '下一页' }).click();
+  await expect(rows).toHaveCount(3); await expect(rows.first()).toContainText('组合 20');
+  await expect(page.getByRole('button', { name: '上一页' })).toBeEnabled();
+  const request = page.waitForRequest(request => request.url().includes('/capability-collection-directory?') && request.url().includes('sort=name') && request.url().includes('page=1'));
+  await page.getByRole('columnheader', { name: '名称' }).getByRole('button').click();
+  await request; await expect(rows).toHaveCount(20);
+});
 
+test('platform-managed MCP stays governance-visible, read-only, and testable', async ({ page }) => {
+  const builtin = {
+    id: 'builtin-mcp-version', lineage_id: 'builtin-mcp-lineage', revision_number: 2, is_latest: true,
+    capability_type: 'MCP', capability_key: 'flowweave-reference-history', description: '平台按会话引用自动装配',
+    version: '2', filename: 'flowweave-history.json', content_hash: 'a'.repeat(64), byte_size: 221,
+    import_id: 'builtin-import', created_at: '2026-10-23T11:41:25Z', reference_count: 0, is_builtin: true,
+    document: {}, dependencies: {}, dependency_build_state: 'NOT_REQUIRED', dependency_build_error: null,
+  };
+  await mockRepository(page, 'capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([builtin]) }));
+  await page.unroute('**/api/v1/terminal-environments');
+  await page.route('**/api/v1/terminal-environments', route => route.fulfill({ json: [{ id: 'environment', name: '验证环境', description: '', row_version: 1, versions: [{ id: 'environment-v1', environment_id: 'environment', version_no: 1, description: '', state: 'READY', image_reference: 'runtime@sha256:test', image_digest: `sha256:${'1'.repeat(64)}`, base_image_reference: '', base_image_digest: '', runtime_capabilities: [], manifest: {}, run_reference_count: 0, reference_count: 0, created_at: '2026-10-01T00:00:00Z' }], active_sessions: [], created_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-01T00:00:00Z' }] }));
+  let probes = 0;
+  await page.route('**/api/v1/capabilities/builtin-mcp-version/mcp-probes', route => { probes += 1; return route.fulfill({ status: 201, json: { id: 'probe-1', capability_version_id: builtin.id, environment_version_id: 'environment-v1', validator: 'openhands-mcp-target-v1', status: 'PASSED', report: { connection_ok: true, tool_catalog: [{ name: 'read_referenced_conversation' }] }, created_at: '2026-10-30T00:00:00Z', completed_at: '2026-10-30T00:00:01Z' } }); });
   await page.goto('/');
   await page.getByRole('button', { name: '能力仓库' }).click();
-  const collectionSection = page.locator('.skill-collection-section');
-  const collectionList = collectionSection.locator('.capability-collection-list');
-  const collectionRows = collectionList.locator(':scope > article');
-  await expect(collectionRows).toHaveCount(3);
-  const widths = await collectionRows.first().evaluate(row => {
-    const list = row.parentElement;
-    return { row: row.getBoundingClientRect().width, list: list?.getBoundingClientRect().width ?? 0 };
-  });
-  expect(widths.row).toBeLessThan(widths.list);
-  const bounds = await collectionSection.evaluate(section => {
-    const pager = section.querySelector('.skill-collection-pagination');
-    const sectionBounds = section.getBoundingClientRect();
-    const pagerBounds = pager?.getBoundingClientRect();
-    return { sectionBottom: sectionBounds.bottom, pagerBottom: pagerBounds?.bottom ?? 0 };
-  });
-  expect(bounds.pagerBottom).toBeLessThanOrEqual(bounds.sectionBottom);
-  await expect(collectionSection.getByText('需求分析', { exact: true })).toBeVisible();
-  await expect(collectionSection.getByText('研发交付', { exact: true })).toBeVisible();
-  await expect(collectionSection.getByText('质量验证', { exact: true })).toBeVisible();
-  await expect(collectionSection.getByText('发布运营', { exact: true })).toHaveCount(0);
-  await collectionSection.getByRole('button', { name: '更多操作：Skill 组合 需求分析' }).click();
-  const collectionMenu = page.getByRole('menu', { name: 'Skill 组合 需求分析 操作菜单' });
-  await expect(collectionMenu.getByRole('menuitem', { name: '编辑' })).toBeVisible();
-  await expect(collectionMenu.getByRole('menuitem', { name: '删除' })).toBeVisible();
-  const collectionMenuBounds = await collectionMenu.boundingBox();
-  expect(collectionMenuBounds?.width).toBeGreaterThanOrEqual(156);
-  expect(collectionMenuBounds?.y).toBeGreaterThanOrEqual(0);
-  await collectionSection.getByRole('button', { name: '下一页' }).click();
-  await expect(collectionRows).toHaveCount(1);
-  await expect(collectionSection.getByText('发布运营', { exact: true })).toBeVisible();
-  await expect(collectionSection.getByRole('button', { name: '上一页' })).toBeEnabled();
+  await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /^MCP\s+1$/ }).click();
+  const row = page.locator('.capability-card').filter({ hasText: 'flowweave-reference-history' });
+  await expect(row).toBeVisible();
+  await expect(row.locator('input[type="checkbox"]')).toBeDisabled();
+  await expect(row.getByRole('button', { name: '编辑 MCP flowweave-reference-history' })).toHaveCount(0);
+  await row.getByRole('button', { name: 'MCP flowweave-reference-history' }).click();
+  const menu = page.getByRole('menu');
+  await expect(menu.getByRole('menuitem', { name: /测试连接 · 未测试/ })).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: '编辑' })).toHaveCount(0);
+  await menu.getByRole('menuitem', { name: /测试连接 · 未测试/ }).click();
+  await expect(page.getByRole('status')).toContainText('连接成功');
+  expect(probes).toBe(1);
+  await row.getByRole('button', { name: 'MCP flowweave-reference-history' }).click();
+  await expect(page.getByRole('menu').getByRole('menuitem', { name: /测试连接 · 已连接 · 1 个工具/ })).toBeVisible();
 });
+
 
 test('every capability module supports selecting and bulk deleting capability lineages', async ({ page }) => {
   const moduleTypes = ['SKILL', 'PLUGIN', 'MCP', 'HOOK', 'AGENT_DEFINITION', 'CONTEXT'] as const;
@@ -466,7 +531,7 @@ test('every capability module supports selecting and bulk deleting capability li
     is_builtin: true,
   });
 
-  await page.route('**/api/v1/capabilities', async route => {
+  await mockRepository(page, 'capabilities', async route => {
     if (route.request().method() === 'DELETE') {
       const payload = route.request().postDataJSON() as { ids: string[] };
       capabilities = capabilities.filter(item => !payload.ids.includes(item.id));
@@ -490,12 +555,43 @@ test('every capability module supports selecting and bulk deleting capability li
 
   for (const capabilityType of moduleTypes) {
     const label = labels[capabilityType];
-    await modules.getByRole('button', { name: new RegExp(label) }).click();
+    await modules.getByRole('button', { name: new RegExp(label === 'Skill' ? '^Skill\\s+\\d' : label) }).click();
     const bulkDelete = page.getByRole('button', { name: '批量删除 (0)' });
     await expect(bulkDelete).toBeDisabled();
     const checkboxes = page.getByRole('checkbox', { name: new RegExp(`选择能力 bulk-delete-${capabilityType.toLowerCase()}-`) });
     await expect(checkboxes).toHaveCount(2);
-    if (capabilityType === 'CONTEXT') await expect(page.getByRole('checkbox', { name: '选择能力 builtin-default-context' })).toBeDisabled();
+    const firstCheckbox = checkboxes.nth(0);
+    const row = page.locator('.capability-card').filter({ has: page.getByRole('checkbox', { name: await firstCheckbox.getAttribute('aria-label') ?? '', exact: true }) });
+    // Description, file, size, version, timestamp, references and status are all
+    // selection targets; native controls must still toggle exactly once.
+    for (const cell of [1, 2, 3, 4, 5, 6, 7]) {
+      const target = cell === 1 ? row.locator('td').nth(cell).locator('small') : row.locator('td').nth(cell);
+      await target.click();
+      await expect(checkboxes.nth(0)).toBeChecked();
+      await expect(page.getByRole('button', { name: '批量删除 (1)' })).toBeEnabled();
+      await target.click();
+      await expect(checkboxes.nth(0)).not.toBeChecked();
+    }
+    await checkboxes.nth(0).click();
+    await expect(checkboxes.nth(0)).toBeChecked();
+    await row.getByRole('button', { name: /^更多操作：/ }).click();
+    await expect(page.getByRole('menu')).toBeVisible();
+    await expect(checkboxes.nth(0)).toBeChecked();
+    await page.keyboard.press('Escape');
+    await checkboxes.nth(0).click();
+    await expect(checkboxes.nth(0)).not.toBeChecked();
+    await checkboxes.nth(0).focus();
+    await page.keyboard.press('Space');
+    await expect(checkboxes.nth(0)).toBeChecked();
+    await page.keyboard.press('Space');
+    await expect(checkboxes.nth(0)).not.toBeChecked();
+    if (capabilityType === 'CONTEXT') {
+      const builtin = page.getByRole('checkbox', { name: '选择能力 builtin-default-context' });
+      await expect(builtin).toBeDisabled();
+      await page.locator('.capability-card').filter({ has: builtin }).locator('.capability-file-cell').click();
+      await expect(builtin).not.toBeChecked();
+      await expect(page.getByRole('button', { name: '批量删除 (0)' })).toBeDisabled();
+    }
     await page.getByRole('button', { name: '全选当前模块' }).click();
     await expect(checkboxes.nth(0)).toBeChecked();
     await expect(checkboxes.nth(1)).toBeChecked();
@@ -503,7 +599,7 @@ test('every capability module supports selecting and bulk deleting capability li
     await page.getByRole('button', { name: '批量删除 (2)' }).click();
     const confirm = page.getByRole('alertdialog');
     await expect(confirm).toContainText('删除所选的 2 项能力');
-    await expect(confirm).toContainText('全部历史版本');
+    await expect(confirm).toContainText('已有会话或运行引用的冻结快照会被保留');
     await confirm.getByRole('button', { name: '确认删除' }).click();
     await expect(checkboxes).toHaveCount(0);
     await expect(page.getByRole('status')).toContainText('已删除 2 条无关联能力记录');
@@ -512,15 +608,15 @@ test('every capability module supports selecting and bulk deleting capability li
 
 test('Skill list keeps pagination in view on short screens and offers a package download', async ({ page }) => {
   const now = new Date().toISOString();
-  const skills = Array.from({ length: 20 }, (_, index) => ({
+  const skills = Array.from({ length: 25 }, (_, index) => ({
     id: `skill-${index}`, lineage_id: `lineage-${index}`, revision_number: 1, is_latest: true,
     capability_type: 'SKILL', capability_key: `skill-${index}`, description: '测试 Skill', version: '',
     filename: `skill-${index}.zip`, content_hash: `hash-${index}`, digest: `digest-${index}`, byte_size: 1024,
     import_id: `import-${index}`, created_at: now, reference_count: 0, dependencies: {},
     dependency_build_state: 'NOT_REQUIRED', dependency_build_error: null, is_builtin: false, document: null,
   }));
-  await page.route('**/api/v1/capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(skills) }));
-  await page.route('**/api/v1/capability-collections', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await mockRepository(page, 'capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(skills) }));
+  await mockRepository(page, 'capability-collections', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
   await page.setViewportSize({ width: 1440, height: 600 });
   await page.goto('/');
   await page.getByRole('button', { name: '能力仓库' }).click();
@@ -530,13 +626,195 @@ test('Skill list keeps pagination in view on short screens and offers a package 
   const box = await pager.boundingBox();
   expect(box && box.y + box.height).toBeLessThanOrEqual(600);
   await expect(page.getByRole('button', { name: '下一页' })).toBeInViewport();
-  // The card grid absorbs the remaining height and scrolls instead of
+  // The table absorbs the remaining height and scrolls instead of
   // pushing the last row or the pager below the clipped page.
-  const grid = await page.locator('.capabilities-page .capability-card-grid').boundingBox();
+  const grid = await page.locator('.capabilities-page .capability-table-scroll').boundingBox();
   expect(grid && box && grid.y + grid.height).toBeLessThanOrEqual(box!.y + 1);
 
   const skillCard = page.locator('.capability-card').filter({ hasText: 'skill-0' });
   await skillCard.getByRole('button', { name: '更多操作：Skill skill-0' }).click();
   const download = page.getByRole('menu', { name: 'Skill skill-0 操作菜单' }).getByRole('menuitem', { name: '下载 Skill skill-0' });
   await expect(download).toHaveAttribute('href', /\/api\/v1\/capabilities\/skill-0\/package$/);
+});
+
+test('repository requests global sort and preserves selection across button pages', async ({ page }) => {
+  const skills = Array.from({ length: 25 }, (_, index) => ({
+    id: `paged-version-${index}`, lineage_id: `paged-lineage-${index}`, revision_number: 1, is_latest: true,
+    capability_type: 'SKILL', capability_key: `workspace-skill-${String(24 - index).padStart(2, '0')}`,
+    description: '提供可复用的工作方法、验收步骤与团队知识，使用时冻结实际能力版本。', version: '1.0.0',
+    filename: `workspace-skill-${index}.zip`, content_hash: 'a'.repeat(64), byte_size: 2048 + index * 512,
+    import_id: `import-${index}`, created_at: new Date(2026, 8, index + 1).toISOString(), reference_count: index % 3,
+    dependencies: {}, dependency_build_state: index % 2 ? 'READY' : 'NOT_REQUIRED', is_builtin: false, document: {},
+  }));
+  await mockRepository(page, 'capabilities', route => route.fulfill({ body: JSON.stringify(skills) }));
+  await mockRepository(page, 'capability-collections', route => route.fulfill({ body: '[]' }));
+  await page.goto('/'); await page.getByRole('button', { name: '能力仓库' }).click();
+  await expect(page.locator('.capability-table tbody tr')).toHaveCount(20);
+  await expect(page.locator('.capability-table tbody tr').first()).toContainText('workspace-skill-00');
+  const first = page.getByRole('checkbox', { name: '选择能力 workspace-skill-00' });
+  await first.check();
+  await page.getByRole('button', { name: '下一页' }).click();
+  await expect(page.locator('.capability-table tbody tr')).toHaveCount(5);
+  await expect(page.getByRole('button', { name: '批量删除 (1)' })).toBeEnabled();
+  const descending = page.waitForRequest(request => request.url().includes('/capability-directory?') && request.url().includes('sort=name') && request.url().includes('direction=desc') && request.url().includes('page=1'));
+  await page.getByRole('columnheader', { name: '名称' }).getByRole('button').click();
+  await page.getByRole('columnheader', { name: '名称' }).getByRole('button').click();
+  await descending;
+  await expect(page.locator('.capability-table tbody tr').first()).toContainText('workspace-skill-24');
+  await page.getByRole('button', { name: '全选当前模块' }).click();
+  await expect(page.getByRole('button', { name: '批量删除 (25)' })).toBeEnabled();
+  await page.getByRole('button', { name: '下一页' }).click();
+  await expect(page.getByRole('checkbox', { name: '选择能力 workspace-skill-00' })).toBeChecked();
+  await page.getByRole('button', { name: '取消全选' }).click();
+  await expect(page.getByRole('button', { name: '批量删除 (0)' })).toBeDisabled();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole('button', { name: '上一页' }).click();
+  await page.getByRole('columnheader', { name: '上传时间' }).getByRole('button').click();
+  await page.getByRole('columnheader', { name: '上传时间' }).getByRole('button').click();
+  await expect(page.locator('.capability-table tbody tr').first()).toContainText('workspace-skill-00');
+  const bounds = await page.locator('.capability-table-scroll').evaluate(element => ({
+    client: element.clientHeight, scroll: element.scrollHeight, page: document.documentElement.scrollHeight, viewport: window.innerHeight,
+  }));
+  expect(bounds.scroll).toBeGreaterThan(bounds.client);
+  expect(bounds.page).toBeLessThanOrEqual(bounds.viewport);
+  await page.screenshot({ path: '../../.tmp/ops25/capability-repository.png' });
+});
+
+test('capability action popover flips at the bottom edge and follows table scrolling', async ({ page }) => {
+  const collections = Array.from({ length: 20 }, (_, index) => ({ id: `edge-${index}`, name: `边界组合 ${index}`, category: '', description: '', row_version: 1, members: [], created_at: '2026-10-29T00:00:00Z', updated_at: '2026-10-29T00:00:00Z' }));
+  await mockRepository(page, 'capabilities', route => route.fulfill({ json: [] }));
+  await mockRepository(page, 'capability-collections', route => route.fulfill({ body: JSON.stringify(collections) }));
+  await page.setViewportSize({ width: 1200, height: 440 });
+  await page.goto('/');
+  await page.getByRole('button', { name: '能力仓库' }).click();
+  await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /Skill 组合/ }).click();
+  const trigger = page.getByRole('button', { name: '更多操作：Skill 组合 边界组合 0', exact: true });
+  await trigger.click();
+  const menu = page.getByRole('menu', { name: 'Skill 组合 边界组合 0 操作菜单', exact: true });
+  await expect(menu).toBeVisible();
+  const before = (await menu.boundingBox())!;
+  await page.locator('.capability-table-scroll').evaluate(element => { element.scrollTop = 40; });
+  await expect.poll(async () => (await menu.boundingBox())!.y).not.toBe(before.y);
+  const box = (await menu.boundingBox())!;
+  expect(box.x).toBeGreaterThanOrEqual(8);
+  expect(box.y).toBeGreaterThanOrEqual(8);
+  expect(box.x + box.width).toBeLessThanOrEqual(1192);
+  expect(box.y + box.height).toBeLessThanOrEqual(432);
+  await page.keyboard.press('Escape');
+  await expect(menu).toHaveCount(0);
+  // Exercise the same overflow component at the bottom of a scroll container.
+  const last = page.getByRole('button', { name: '更多操作：Skill 组合 边界组合 19', exact: true });
+  await last.scrollIntoViewIfNeeded();
+  await last.click();
+  const bottomMenu = page.getByRole('menu', { name: 'Skill 组合 边界组合 19 操作菜单', exact: true });
+  const bottomBox = (await bottomMenu.boundingBox())!;
+  expect(bottomBox.y + bottomBox.height).toBeLessThanOrEqual(432);
+  await bottomMenu.getByRole('menuitem', { name: '编辑', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '编辑 Skill 组合', exact: true })).toBeVisible();
+});
+
+test('MCP builtins are read-only and version details create a new draft from a historical source', async ({ page }) => {
+  const configs = {
+    first: { transport: 'stdio', command: 'python', args: ['scripts/server.py'], description: '历史配置' },
+    second: { transport: 'streamable-http', url: 'https://tools.example.test/mcp', description: '当前配置' },
+  };
+  const asset = (id: string, revision: number, config: Record<string, unknown>, builtin = false) => ({
+    id, lineage_id: builtin ? 'builtin-lineage' : 'tools-lineage', revision_number: revision, is_latest: revision === 2,
+    capability_type: 'MCP', capability_key: builtin ? 'flowweave-reference-history' : 'tools', description: String(config.description ?? ''),
+    version: '', filename: 'mcp.json', content_hash: id.repeat(64).slice(0, 64), byte_size: 128, import_id: 'test-import',
+    created_at: `2026-10-${20 + revision}T02:00:00Z`, reference_count: 0, is_builtin: builtin,
+    document: config, dependencies: {}, dependency_build_state: 'NOT_REQUIRED', dependency_build_error: null,
+  });
+  let records = [asset('mcp-v1', 1, configs.first), asset('mcp-v2', 2, configs.second), asset('builtin-v2', 2, { description: '会话历史查询' }, true)];
+  await page.route('**/api/v1/capabilities/*/mcp-authentication', route => route.fulfill({ json: {
+    capability_version_id: route.request().url().split('/').at(-2), strategy: 'none', credential_id: null,
+    credential_name: null, row_version: 0, editable: false, valid: true,
+  } }));
+  await mockRepository(page, 'capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(records) }));
+  await mockRepository(page, 'capability-collections', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  const writes: Array<{ id: string; content: string; mcp_scripts: Array<{ filename: string }> }> = [];
+  let failSave = true;
+  await page.route('**/api/v1/capabilities/*/mcp-source', async route => {
+    const id = new URL(route.request().url()).pathname.split('/').at(-2)!;
+    if (route.request().method() === 'PUT') {
+      const body = route.request().postDataJSON() as { content: string; mcp_scripts: Array<{ filename: string }> };
+      writes.push({ id, ...body });
+      if (failSave) { failSave = false; return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'TEMPORARY', message: '暂时无法发布，请重试' } }) }); }
+      records = records.map(item => item.lineage_id === 'tools-lineage' ? { ...item, is_latest: false } : item);
+      const revised = { ...asset('mcp-v3', 3, JSON.parse(body.content).mcpServers.tools), is_latest: true };
+      records.push(revised);
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(revised) });
+    }
+    const entry = records.find(item => item.id === id)!;
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+      id, capability_key: 'tools', filename: 'mcp.json', content: JSON.stringify({ mcpServers: { tools: entry.document } }, null, 2),
+      mcp_scripts: id === 'mcp-v1' ? [{ server: 'tools', filename: 'server.py', content_base64: 'cHJpbnQoMSkK' }] : [],
+    }) });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: '能力仓库', exact: true }).click();
+  await page.getByRole('navigation', { name: '能力模块' }).getByRole('button', { name: /MCP/ }).click();
+  const builtin = page.locator('.capability-card').filter({ hasText: 'flowweave-reference-history' });
+  await expect(builtin.getByText('内置', { exact: true })).toBeVisible();
+  await expect(builtin.getByRole('checkbox')).toBeEnabled();
+  await expect(builtin.getByRole('button', { name: /更多操作/ })).toHaveCount(0);
+  await expect(builtin.getByRole('button', { name: '查看 MCP flowweave-reference-history', exact: true })).toBeEnabled();
+  await builtin.getByRole('cell').nth(2).click(); await expect(builtin.getByRole('checkbox')).toBeChecked();
+  await builtin.getByRole('checkbox').uncheck();
+  await page.getByRole('button', { name: '全选当前模块', exact: true }).click();
+  await expect(page.getByRole('button', { name: '批量删除 (2)', exact: true })).toBeDisabled();
+  await expect(builtin.getByRole('checkbox')).toBeChecked();
+  await builtin.getByRole('checkbox').uncheck();
+  await expect(page.getByRole('button', { name: '批量删除 (1)', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: '查看 MCP tools', exact: true }).click();
+  const detail = page.getByRole('dialog', { name: 'MCP tools 详情', exact: true });
+  await detail.getByRole('complementary', { name: 'MCP 版本历史' }).getByRole('button', { name: /v1/ }).click();
+  await detail.getByRole('button', { name: 'JSON', exact: true }).click();
+  await expect(detail.getByLabel('MCP 版本 JSON')).toContainText('scripts/server.py');
+  await detail.getByRole('button', { name: '脚本（1）', exact: true }).click();
+  await expect(detail.getByRole('cell', { name: 'server.py', exact: true })).toBeVisible();
+  for (const width of [1440, 760, 390]) {
+    await page.setViewportSize({ width, height: 720 });
+    await expect(detail.getByRole('button', { name: '基于 v1 编辑', exact: true })).toBeInViewport();
+    expect(await detail.evaluate(element => element.scrollHeight <= element.clientHeight + 1)).toBe(true);
+    await page.screenshot({ path: test.info().outputPath(`mcp-version-${width}.png`) });
+  }
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await detail.getByRole('button', { name: '基于 v1 编辑', exact: true }).click();
+  const editor = page.getByRole('dialog', { name: '编辑 MCP', exact: true });
+  await expect(editor.getByRole('button', { name: '发布新版本', exact: true })).toBeDisabled();
+  await expect(editor.getByLabel('CLI 命令', { exact: true })).toHaveValue('python');
+  await expect(editor.getByLabel('Server 名称', { exact: true })).toBeDisabled();
+  expect(await editor.locator('.mcp-script-panel').evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThan(90);
+  await editor.getByRole('button', { name: '设为入口', exact: true }).scrollIntoViewIfNeeded();
+  await expect(editor.getByRole('button', { name: '设为入口', exact: true })).toBeInViewport();
+  await editor.getByLabel('MCP 说明', { exact: true }).fill('从历史版本重新调整');
+  await page.screenshot({ path: test.info().outputPath('mcp-editor.png') });
+  await editor.getByRole('button', { name: '发布新版本', exact: true }).click();
+  await expect(editor.getByRole('alert')).toContainText('暂时无法发布');
+  await expect(editor.getByLabel('MCP 说明', { exact: true })).toHaveValue('从历史版本重新调整');
+  await editor.getByRole('button', { name: '发布新版本', exact: true }).click();
+  await expect(editor).toHaveCount(0);
+  expect(writes.every(item => item.id === 'mcp-v2')).toBe(true);
+  expect(writes.at(-1)!.mcp_scripts[0].filename).toBe('server.py');
+  await expect(page.locator('.capability-card').filter({ hasText: 'tools' })).toContainText('v3 · 3 个版本');
+  await page.getByRole('button', { name: '查看 MCP tools', exact: true }).click();
+  await expect(detail.getByRole('complementary', { name: 'MCP 版本历史' }).getByRole('button')).toHaveCount(3);
+  await page.keyboard.press('Escape'); await expect(detail).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '查看 MCP tools', exact: true })).toBeFocused();
+  await page.getByRole('button', { name: '新建 MCP', exact: true }).click();
+  const creating = page.getByRole('dialog', { name: '新建 MCP', exact: true });
+  expect(await creating.locator('select').count()).toBe(0);
+  await creating.getByRole('button', { name: '关闭', exact: true }).focus();
+  await page.keyboard.press('Shift+Tab');
+  await expect(creating.getByRole('button', { name: '校验并保存', exact: true })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(creating.getByRole('button', { name: '关闭', exact: true })).toBeFocused();
+  const protocol = creating.getByRole('button', { name: '远程协议', exact: true });
+  await protocol.press('ArrowDown'); await page.keyboard.press('End'); await page.keyboard.press('Enter');
+  await expect(protocol).toContainText('SSE');
+  await protocol.click(); await page.keyboard.press('Escape'); await expect(protocol).toBeFocused();
+  await protocol.click(); await creating.getByRole('heading').click();
+  await expect(page.getByRole('listbox', { name: '远程协议' })).toHaveCount(0);
+  await page.keyboard.press('Escape'); await expect(creating).toHaveCount(0);
 });

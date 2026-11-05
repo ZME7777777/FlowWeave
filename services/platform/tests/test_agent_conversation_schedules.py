@@ -1,8 +1,11 @@
 from datetime import timedelta
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-from sqlalchemy import select
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import select, text
 
 from flowweave.bootstrap.worker import _DELIVERY_TASK_TYPES
 from flowweave.modules.agent_sessions.application import schedules
@@ -13,10 +16,12 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
 )
 from flowweave.modules.agent_workspaces.application import work_directories
 from flowweave.modules.agent_workspaces.application.service import ensure_default_agent_workspace
+from flowweave.modules.credentials.application.service import save_credential
 from flowweave.modules.tasks.infrastructure.models import BackgroundTask
 from flowweave.modules.users.application.security import FLOWWEAVE_USER_ID, tenant_user
 from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError
+from flowweave.shared.schemas import WebsiteCredentialWrite
 from flowweave.shared.settings import settings_context
 
 
@@ -96,6 +101,17 @@ def test_automation_work_directory_is_hidden_from_conversation_workspace_list(
 
         assert created["work_directory_id"] is not None
         assert work_directories.list_work_directories(db, workspace.id)["items"] == []
+        managed = work_directories.list_management_workspaces(db, workspace.id)["items"]
+        assert managed == [
+            {
+                **work_directories.get_work_directory(
+                    db, workspace.id, str(created["work_directory_id"])
+                ),
+                "display_name": "每日检查",
+                "workspace_kind": "AGENT_SCHEDULE",
+                "source_id": created["id"],
+            }
+        ]
 
 
 def test_agent_conversation_schedule_delivery_is_claimed_by_worker() -> None:
@@ -156,11 +172,199 @@ def test_agent_conversation_schedule_delivery_creates_a_distinct_native_conversa
                 "credential_ids": (),
                 "conversation_id": run_binding_id,
                 "idempotency_key": f"schedule:{created['id']}:{occurrence.id}",
+                "interactive": False,
             }
         ]
         assert occurrence.binding_id != created["work_directory_id"]
         assert occurrence.state == "STARTED"
         assert occurrence.message_cursor == "scheduled-user-event"
+
+
+
+
+def test_failed_schedule_occurrence_without_conversation_can_be_deleted(
+    settings, db_session_factory
+):
+    with db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        created = schedules.create_schedule(
+            db,
+            workspace.id,
+            name="失败记录清理",
+            prompt="生成报告。",
+            cron_expression="0 9 * * *",
+            workspace_mode="AUTOMATION",
+            work_directory_id=None,
+            conversation_mode="NEW",
+            model_provider_id="provider-1",
+            model_name="model-1",
+            reasoning_effort=None,
+            capability_version_ids=(),
+            credential_ids=(),
+        )
+        occurrence = AgentConversationScheduleOccurrence(
+            schedule_id=created["id"],
+            binding_id="failed-bootstrap-reservation",
+            state="FAILED",
+            error_detail="AGENT_GIT_CONFIG_UNAVAILABLE: 无法确认工作区 Git 配置",
+        )
+        db.add(occurrence)
+        db.flush()
+        occurrence_id = occurrence.id
+
+        schedules.delete_failed_occurrence(db, workspace.id, created["id"], occurrence_id)
+
+        assert db.get(AgentConversationScheduleOccurrence, occurrence_id) is None
+
+
+def test_failed_schedule_occurrence_with_conversation_is_not_deleted(settings, db_session_factory):
+    from uuid import uuid4
+
+    with db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        created = schedules.create_schedule(
+            db,
+            workspace.id,
+            name="已有会话的失败记录",
+            prompt="生成报告。",
+            cron_expression="0 9 * * *",
+            workspace_mode="AUTOMATION",
+            work_directory_id=None,
+            conversation_mode="NEW",
+            model_provider_id="provider-1",
+            model_name="model-1",
+            reasoning_effort=None,
+            capability_version_ids=(),
+            credential_ids=(),
+        )
+        binding = AgentConversationBinding(
+            workspace_id=workspace.id,
+            runtime_session_id=str(uuid4()),
+            host_id=workspace.id,
+            conversation_scope_id=workspace.id,
+            openhands_conversation_id=str(uuid4()),
+            create_idempotency_key=str(uuid4()),
+            lifecycle="ACTIVE",
+        )
+        db.add(binding)
+        db.flush()
+        occurrence = AgentConversationScheduleOccurrence(
+            schedule_id=created["id"], binding_id=binding.id, state="FAILED"
+        )
+        db.add(occurrence)
+        db.flush()
+
+        with pytest.raises(DomainError, match="已有可管理会话"):
+            schedules.delete_failed_occurrence(db, workspace.id, created["id"], occurrence.id)
+
+        assert db.get(AgentConversationScheduleOccurrence, occurrence.id) is not None
+
+
+@pytest.mark.parametrize("selection", ["unconfigured", "empty", "selected"])
+def test_schedule_credential_defaults_preserve_explicit_selections(
+    settings, db_session_factory, monkeypatch, selection
+):
+    created_runs: list[dict[str, object]] = []
+
+    def bootstrap_conversation(db, workspace_id: str, **kwargs):
+        del db
+        created_runs.append({"workspace_id": workspace_id, **kwargs})
+        return {"conversation": {"id": kwargs["conversation_id"]}, "cursor": "scheduled-user-event"}
+
+    monkeypatch.setattr(schedules.conversations, "bootstrap_conversation", bootstrap_conversation)
+    with db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        credential_id = save_credential(
+            db,
+            WebsiteCredentialWrite(
+                name="schedule-default",
+                target_host="example.test",
+                auth_type="TOKEN",
+                secret="test-token",
+            ),
+        )["id"]
+        created = schedules.create_schedule(
+            db,
+            workspace.id,
+            name="默认认证",
+            prompt="使用默认认证运行。",
+            cron_expression="0 9 * * *",
+            workspace_mode="AUTOMATION",
+            work_directory_id=None,
+            conversation_mode="NEW",
+            model_provider_id="provider-1",
+            model_name="model-1",
+            reasoning_effort=None,
+            capability_version_ids=(),
+            credential_ids=(credential_id,) if selection == "selected" else (),
+        )
+        schedule = db.get(AgentConversationSchedule, created["id"])
+        assert schedule is not None
+        schedule.credentials_configured = selection != "unconfigured"
+        expected = [] if selection == "empty" else [credential_id]
+        assert schedules._schedule_dict(db, schedule)["credential_ids"] == expected
+
+        schedules.trigger_schedule(db, workspace.id, schedule.id)
+        occurrence = db.scalar(
+            select(AgentConversationScheduleOccurrence).where(
+                AgentConversationScheduleOccurrence.schedule_id == schedule.id
+            )
+        )
+        assert occurrence is not None
+        schedules.deliver_occurrence(db, occurrence.id)
+
+        assert created_runs[0]["credential_ids"] == tuple(expected)
+
+
+def test_schedule_credentials_migrate_from_deployed_head(settings, db_session_factory):
+    with db_session_factory() as db:
+        workspace = ensure_default_agent_workspace(db)
+        credential_id = save_credential(
+            db,
+            WebsiteCredentialWrite(
+                name="migration-credential",
+                target_host="example.test",
+                auth_type="TOKEN",
+                secret="test-token",
+            ),
+        )["id"]
+        expected = {}
+        for index, credential_ids in enumerate(((), (credential_id,))):
+            created = schedules.create_schedule(
+                db, workspace.id, name=f"迁移保留 {index}", prompt="保留认证选择",
+                cron_expression="0 9 * * *", workspace_mode="AUTOMATION",
+                work_directory_id=None, conversation_mode="NEW",
+                model_provider_id="provider-1", model_name="model-1",
+                reasoning_effort=None, capability_version_ids=(), credential_ids=credential_ids,
+            )
+            expected[created["id"]] = list(credential_ids)
+        db.commit()
+
+    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
+    config.attributes["database_url"] = settings.database_url
+    try:
+        command.downgrade(config, "0177_merge_workspace_credentials")
+        command.downgrade(config, "0177_schedule_default_credentials_all-1")
+        command.upgrade(config, "0177_merge_workspace_credentials")
+        with db_session_factory() as db:
+            assert db.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
+                "0177_merge_workspace_credentials"
+            )
+        command.upgrade(config, "head")
+        command.upgrade(config, "head")
+        with db_session_factory() as db:
+            rows = list(db.scalars(select(AgentConversationSchedule)))
+            assert {row.id: row.credential_ids_json for row in rows} == expected
+            assert all(row.credentials_configured == bool(expected[row.id]) for row in rows)
+            assert db.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
+                "0178_merge_schedule_credentials"
+            )
+            assert all(db.execute(text(
+                "SELECT relrowsecurity, relforcerowsecurity FROM pg_class "
+                "WHERE relname = 'agent_conversation_schedules'"
+            )).one())
+    finally:
+        command.upgrade(config, "head")
 
 
 @pytest.mark.parametrize("initial_mode", ["NEW", "CONTINUE"])
@@ -332,3 +536,167 @@ def test_scheduled_files_download_in_bound_scope_without_exposing_other_automati
         )
         with pytest.raises(DomainError):
             workspace_files.download(db, workspace.id, runtime_path, work_directory_id=other["id"])
+
+
+def _seed_history(db, count=47):
+    from uuid import uuid4
+
+    workspace = ensure_default_agent_workspace(db)
+    schedule = AgentConversationSchedule(
+        workspace_id=workspace.id, name="分页历史", prompt="检查业务", cron_expression="0 9 * * *"
+    )
+    db.add(schedule)
+    db.flush()
+    timestamp = now()
+    items = []
+    for index in range(count):
+        item = AgentConversationScheduleOccurrence(
+            schedule_id=schedule.id,
+            binding_id=str(uuid4()),
+            state="STARTED" if index % 2 else "PENDING",
+            trigger_kind="MANUAL" if index % 3 else "SCHEDULED",
+            created_at=timestamp - timedelta(seconds=index // 3),
+        )
+        db.add(item)
+        items.append(item)
+    db.flush()
+    expected = [
+        item.binding_id
+        for item in sorted(items, key=lambda item: (item.created_at, item.binding_id), reverse=True)
+    ]
+    db.commit()
+    return workspace.id, schedule.id, expected
+
+
+def test_schedule_conversation_history_pages_all_unique_bindings(client, db_session_factory):
+    from sqlalchemy import event
+
+    with db_session_factory() as db:
+        workspace, schedule, expected = _seed_history(db)
+    url = (
+        f"/api/v1/agent-workspaces/{workspace}/conversation-schedules/{schedule}/run-conversations"
+    )
+    statements = []
+    engine = db_session_factory.kw["bind"]
+
+    def capture(_conn, _cursor, sql, _parameters, _context, _many):
+        if sql.lstrip().upper().startswith("SELECT"):
+            statements.append(sql)
+
+    from flowweave.modules.agent_sessions.application.schedule_history import list_run_conversations
+
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        with db_session_factory() as db:
+            direct = list_run_conversations(db, workspace, schedule, limit=7)
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    response = client.get(url, params={"limit": 7})
+    assert response.status_code == 200, response.text
+    page = response.json()
+    assert direct == page
+    assert page["total"] == 47 and len(page["items"]) == 7
+    assert sum("FROM agent_conversation_bindings" in sql for sql in statements) == 1
+    assert not any(
+        "runtime_generations" in sql or "agent_conversation_events" in sql for sql in statements
+    )
+    seen = [item["binding_id"] for item in page["items"]]
+    with db_session_factory() as db:
+        db.add(
+            AgentConversationScheduleOccurrence(
+                schedule_id=schedule, binding_id="new-head", state="PENDING", created_at=now()
+            )
+        )
+        db.commit()
+    while page["next_cursor"]:
+        response = client.get(url, params={"limit": 7, "cursor": page["next_cursor"]})
+        assert response.status_code == 200, response.text
+        page = response.json()
+        seen.extend(item["binding_id"] for item in page["items"])
+    assert seen == expected and len(seen) == len(set(seen))
+
+
+def test_schedule_conversation_history_deduplicates_and_keeps_readable_delivery(
+    client, db_session_factory
+):
+    from uuid import uuid4
+
+    with db_session_factory() as db:
+        workspace, schedule, bindings = _seed_history(db, 1)
+        first = db.scalar(
+            select(AgentConversationScheduleOccurrence).where(
+                AgentConversationScheduleOccurrence.schedule_id == schedule
+            )
+        )
+        first.state = "STARTED"
+        binding = AgentConversationBinding(
+            id=bindings[0],
+            workspace_id=workspace,
+            runtime_session_id=str(uuid4()),
+            host_id=workspace,
+            conversation_scope_id=str(uuid4()),
+            openhands_conversation_id=str(uuid4()),
+            display_title="持续会话",
+            lifecycle="ACTIVE",
+            create_idempotency_key=str(uuid4()),
+        )
+        db.add(binding)
+        timestamp = now()
+        for index in range(45):
+            db.add(
+                AgentConversationScheduleOccurrence(
+                    schedule_id=schedule,
+                    binding_id=bindings[0],
+                    state="PENDING" if index % 2 else "FAILED",
+                    error_detail="投递失败",
+                    created_at=timestamp + timedelta(seconds=index),
+                )
+            )
+        db.commit()
+    url = (
+        f"/api/v1/agent-workspaces/{workspace}/conversation-schedules/{schedule}/run-conversations"
+    )
+    response = client.get(url, params={"limit": 1})
+    assert response.status_code == 200, response.text
+    page = response.json()
+    assert page["total"] == 1 and page["next_cursor"] is None
+    assert len(page["items"]) == 1 and page["items"][0]["state"] == "STARTED"
+    assert page["items"][0]["conversation_title"] == "持续会话"
+    assert page["items"][0]["latest_run_at"] > page["items"][0]["created_at"]
+
+
+def test_schedule_conversation_history_cursor_scope_and_user_isolation(
+    client, user_client, db_session_factory
+):
+    with db_session_factory() as db:
+        workspace, schedule, _ = _seed_history(db, 3)
+        _, other, _ = _seed_history(db, 2)
+    root = f"/api/v1/agent-workspaces/{workspace}/conversation-schedules"
+    url = f"{root}/{schedule}/run-conversations"
+    page = client.get(url, params={"limit": 1}).json()
+    cursor = page["next_cursor"]
+    assert cursor
+    assert (
+        client.get(f"{root}/{other}/run-conversations", params={"cursor": cursor}).status_code
+        == 400
+    )
+    assert client.get(url, params={"cursor": "invalid"}).status_code == 400
+    assert client.get(url, params={"limit": 101}).status_code == 422
+    assert (
+        client.get(url.replace(workspace, "other-workspace"), params={"cursor": cursor}).status_code
+        == 404
+    )
+    assert user_client.get(url).status_code in (403, 404)
+    with db_session_factory() as db:
+        empty = AgentConversationSchedule(
+            workspace_id=workspace, name="空任务", prompt="检查", cron_expression="0 * * * *"
+        )
+        db.add(empty)
+        db.flush()
+        empty_id = empty.id
+        db.commit()
+    assert client.get(f"{root}/{empty_id}/run-conversations").json() == {
+        "items": [],
+        "total": 0,
+        "next_cursor": None,
+    }

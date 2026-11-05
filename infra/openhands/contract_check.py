@@ -159,9 +159,11 @@ from openhands.sdk.tool.builtins.invoke_skill import (
 from openhands.sdk.tool.registry import list_usable_tools, resolve_tool
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.tool.tool import DeclaredResources, ToolExecutor
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.command import sanitized_env
 from openhands.sdk.utils.path import get_user_persistence_dir
 from openhands.sdk.utils.redact import redact_api_key_literals, redact_text_secrets
+from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.file_editor.editor import FileEditor
 from openhands.tools.file_editor.exceptions import FileValidationError
 from openhands.tools.preset.default import AgentDefinition
@@ -173,9 +175,9 @@ from openhands.tools.terminal.terminal.tmux_terminal import _new_owned_session
 
 EXPECTED_VERSION = "1.58.2"
 EXPECTED_UPSTREAM_BASE = "ce5716a3c0a955a85bb0cc4dcfaa94d5fefcda50"
-EXPECTED_SOURCE_COMMIT = "b9f976b2ca05b947ee28eb34ebe590ff0409307f"
+EXPECTED_SOURCE_COMMIT = "805bb3fe0a57cdc3e383e26019fa216a6892e608"
 EXPECTED_SOURCE_ARCHIVE_SHA256 = (
-    "4f53a19445c7c5cfabe022414dd33942fc3c086b0be5b60fd87e9fa0ccc5899f"
+    "eaf4322c182d2ea80202840b43834cb72697371e479eca91aaf03dc458adb208"
 )
 PACKAGES = (
     "openhands-agent-server",
@@ -433,7 +435,7 @@ def _assert_merged_main_capability_contract() -> None:
     assert 'Message(role="user"' in condenser_source
 
     tmux_source = getsource(_new_owned_session)
-    assert "_socket_creation_lock(socket_dir)" in tmux_source
+    assert "_socket_creation_lock(" in tmux_source
     assert "TMUX_SOCKET_NAME" in tmux_source
     assert "mark_socket_owner(server)" in tmux_source
 
@@ -471,20 +473,22 @@ def _assert_tmux_terminal_isolation_contract() -> None:
 
     session_source = getsource(_new_owned_session)
     assert 'socket_name = f"{TMUX_SOCKET_NAME}-{uuid.uuid4().hex}"' in session_source
-    assert "with _socket_creation_lock(socket_dir)" in session_source
+    assert "with _socket_creation_lock(" in session_source
     assert "mark_socket_owner(server)" in session_source
 
     cleanup_source = getsource(_cleanup_stale_tmux_sessions)
-    assert "with _socket_creation_lock()" in cleanup_source
+    assert "with _socket_creation_lock(" in cleanup_source
     assert "_reclaim_stale_tmux_sockets(socket_dir)" in cleanup_source
 
     reclaim_source = getsource(_reclaim_stale_tmux_sockets)
+    assert "_isolated_socket_names(socket_dir)" in reclaim_source
     assert "_socket_owner_pid(server)" in reclaim_source
     assert "_is_pid_alive(owner_pid)" in reclaim_source
     assert "Leaving tmux socket" in reclaim_source
 
     tmpdir_source = getsource(_ensure_server_tmux_tmpdir)
     assert "_default_server_tmux_tmpdir()" in tmpdir_source
+    assert "_fits_tmux_socket(" in tmpdir_source
     assert 'os.environ["TMUX_TMPDIR"] = str(tmux_tmpdir)' in tmpdir_source
 
 
@@ -792,6 +796,157 @@ def _assert_profile_provider_secret_and_condenser_behavior() -> None:
     assert subscription_condenser.llm.stream is True
 
 
+async def _assert_fork_condensation_credentials() -> None:
+    with TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        primary = LLM(
+            model="openai/gpt-4o-mini",
+            api_key=SecretStr("fork-source-probe-key"),
+            usage_id="fork-primary",
+            stream=True,
+        )
+        agent = Agent(
+            llm=primary,
+            tools=[],
+            condenser=LLMSummarizingCondenser(
+                llm=primary.model_copy(update={"usage_id": "condenser"}),
+                max_size=100,
+                keep_first=1,
+            ),
+        )
+        async with ConversationService(
+            conversations_dir=root / "conversations",
+            runtime_cipher_resolver=lambda conversation_id: Cipher(
+                f"fork-probe-storage-{conversation_id}"
+            ),
+        ) as service:
+            info, _ = await service.start_conversation(
+                StartConversationRequest(
+                    agent=agent,
+                    workspace=LocalWorkspace(working_dir=str(root / "workspace")),
+                    autotitle=False,
+                )
+            )
+            source = await service.get_event_service(info.id)
+            assert source is not None
+            for index in range(16):
+                await source.send_message(
+                    Message(role="user", content=[TextContent(text=f"Fact {index}")])
+                )
+            source_ids = {event.id for event in source.get_conversation().state.events}
+            source_info = await service.get_conversation(info.id)
+            assert source_info is not None
+            assert source_info.stored_event_count == len(source_ids)
+            fork = await service.fork_conversation(info.id)
+            assert fork is not None
+            assert fork.stored_event_count == len(source_ids)
+            await service._evict_idle_conversations(0.0)
+            fork_service = await service.get_event_service(fork.id)
+            assert fork_service is not None
+            conversation = fork_service.get_conversation()
+            assert isinstance(conversation.agent.condenser, LLMSummarizingCondenser)
+            assert conversation.agent.condenser.llm.api_key == primary.api_key
+            switched = primary.model_copy(
+                update={
+                    "api_key": SecretStr("fork-switched-probe-key"),
+                    "usage_id": "fork-switched",
+                }
+            )
+            conversation.switch_llm(switched)
+
+            def summarize(llm: LLM, **_kwargs: object) -> SimpleNamespace:
+                assert llm.api_key == switched.api_key
+                assert llm.stream is False
+                return SimpleNamespace(
+                    id="fork-summary-response",
+                    message=Message(
+                        role="assistant", content=[TextContent(text="Fork summary")]
+                    ),
+                )
+
+            with patch.object(LLM, "generate", summarize):
+                assert await service.condense(fork.id)
+            await service._evict_idle_conversations(0.0)
+            restored = await service.get_event_service(fork.id)
+            assert restored is not None
+            events = list(restored.get_conversation().state.events)
+            assert source_ids <= {event.id for event in events}
+            assert any(
+                isinstance(event, Condensation) and event.summary == "Fork summary"
+                for event in events
+            )
+
+
+async def _assert_condenser_credentials_restoration() -> None:
+    with TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        primary = LLM(
+            model="openai/gpt-4o-mini",
+            api_key=SecretStr("restore-probe-key"),
+            usage_id="restore-primary",
+            stream=True,
+        )
+        agent = Agent(
+            llm=primary,
+            tools=[],
+            condenser=LLMSummarizingCondenser(
+                llm=primary.model_copy(
+                    update={"api_key": None, "usage_id": "condenser"}
+                ),
+                max_size=100,
+                keep_first=1,
+            ),
+        )
+        async with ConversationService(
+            conversations_dir=root / "conversations",
+            cipher=Cipher("restore-storage-key"),
+        ) as service:
+            info, _ = await service.start_conversation(
+                StartConversationRequest(
+                    agent=agent,
+                    workspace=LocalWorkspace(working_dir=str(root / "workspace")),
+                    autotitle=False,
+                )
+            )
+            owner = await service.get_event_service(info.id)
+            assert owner is not None
+            for index in range(16):
+                await owner.send_message(
+                    Message(role="user", content=[TextContent(text=f"Fact {index}")])
+                )
+            original_ids = {event.id for event in owner.get_conversation().state.events}
+            await service._evict_idle_conversations(0.0)
+            owner = await service.get_event_service(info.id)
+            assert owner is not None
+            await owner.restore_condenser_credentials(primary)
+            await service._evict_idle_conversations(0.0)
+            owner = await service.get_event_service(info.id)
+            assert owner is not None
+            conversation = owner.get_conversation()
+            assert isinstance(conversation.agent.condenser, LLMSummarizingCondenser)
+            assert conversation.agent.condenser.llm.api_key == primary.api_key
+            assert conversation.agent.llm.api_key == primary.api_key
+
+            def summarize(llm: LLM, **_kwargs: object) -> SimpleNamespace:
+                assert llm.api_key == primary.api_key
+                assert llm.stream is False
+                return SimpleNamespace(
+                    id="restore-summary",
+                    message=Message(
+                        role="assistant", content=[TextContent(text="Restored summary")]
+                    ),
+                )
+
+            with patch.object(LLM, "generate", summarize):
+                assert await service.condense(info.id)
+            events = list(conversation.state.events)
+            assert original_ids <= {event.id for event in events}
+            assert any(
+                isinstance(event, Condensation) and event.summary == "Restored summary"
+                for event in events
+            )
+
+
 def _assert_mcp_oauth_and_subscription_preflight_contract() -> None:
     """Keep the upstream OAuth-refresh and subscription pre-flight fixes live."""
 
@@ -1037,6 +1192,7 @@ def main() -> None:
         EventService._get_view_context_sync
     )
     server_info = ServerInfo(uptime=0, idle_time=0)
+    assert "conversation_stored_event_count_v1" in server_info.capabilities
     assert server_info.version == EXPECTED_VERSION
     assert server_info.sdk_version == EXPECTED_VERSION
     assert server_info.tools_version == EXPECTED_VERSION
@@ -1049,6 +1205,7 @@ def main() -> None:
     assert len(server_info.capabilities) == len(set(server_info.capabilities))
     assert "conversation_runtime_routes_v1" in server_info.capabilities
     assert "conversation_dynamic_context_v1" in server_info.capabilities
+    assert "conversation_condenser_credentials_restore_v1" in server_info.capabilities
     _assert_credential_dynamic_context_contract()
     _assert_memory_launch_contract()
     _assert_governed_child_contract()
@@ -1074,6 +1231,8 @@ def main() -> None:
     _assert_condensation_system_prompt_contract()
     _assert_subagent_mcp_inheritance_contract()
     _assert_profile_provider_secret_and_condenser_behavior()
+    asyncio.run(_assert_fork_condensation_credentials())
+    asyncio.run(_assert_condenser_credentials_restoration())
     _assert_mcp_oauth_and_subscription_preflight_contract()
     _assert_runtime_capability_build_contract()
     _assert_quota_fallback_contract()
@@ -2006,6 +2165,9 @@ def main() -> None:
                 "provider_connection_read_at_use": True,
                 "nested_secret_serializer_probe": True,
                 "subscription_condenser_dispatch": True,
+                "fork_condensation_credentials_survive_reload_and_switch": True,
+                "condenser_credentials_restored_after_reload": True,
+                "stored_event_count_survives_reload_and_fork": True,
                 "mcp_oauth_refreshable_fastmcp": True,
                 "subscription_preflight_credentials_restored": True,
                 "runtime_capability_build_arg_validated": True,

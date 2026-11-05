@@ -1,6 +1,7 @@
 import { expect, test, type Route } from '@playwright/test';
 
 async function respond(route: Route, body: unknown, status = 200) {
+  if (status === 404 && route.request().method() === 'GET' && new URL(route.request().url()).pathname.endsWith('/deletion-jobs')) { body = { items: [] }; status = 200; }
   await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 }
 
@@ -14,7 +15,7 @@ test('conversation management keeps the selected workspace and pagination in fix
     unread: false,
     created_at: now,
     updated_at: now,
-    last_message_at: index === 20 ? new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString() : now,
+    last_message_at: index >= 19 ? new Date(Date.now() - (index === 20 ? 31 : 10) * 24 * 60 * 60 * 1000).toISOString() : now,
   }));
 
   await page.route('**/api/v1/**', async route => {
@@ -25,7 +26,6 @@ test('conversation management keeps the selected workspace and pagination in fix
     });
     if (path.endsWith('/agent-workspaces/default')) return respond(route, workspace);
     if (path.endsWith('/agent-workspaces/workspace-default/work-directories')) return respond(route, { root: { id: 'root', display_name: '根工作区' }, items: [] });
-    if (path.endsWith('/conversation-management/delete')) return respond(route, { deleted_ids: [], pending_ids: ['conversation-21'], skipped: [] });
     if (path.endsWith('/agent-workspaces/workspace-default/conversation-management')) return respond(route, { items, truncated: false });
     if (path.endsWith('/node-directories') || path.endsWith('/node-assets')) return respond(route, []);
     return respond(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
@@ -63,9 +63,590 @@ test('conversation management keeps the selected workspace and pagination in fix
   await expect(page.getByText('共 21 项，第 2 / 2 页')).toBeVisible();
   await expect(page.locator('.conversation-management-table tbody tr')).toHaveCount(1);
   await expect(page.getByText('会话 21', { exact: true })).toBeVisible();
-  await page.getByRole('checkbox', { name: '选择会话 会话 21', exact: true }).check();
-  await page.getByRole('button', { name: '删除已选会话' }).click();
-  await page.getByRole('button', { name: '确认永久删除' }).click();
-  await expect(page.getByRole('status')).toContainText('已提交 1 个父子会话清理任务');
+  await page.getByRole('button', { name: '最后活动时间', exact: true }).click();
+  await expect(page.getByRole('option', { name: '90 天前', exact: true })).toHaveCount(0);
+  await page.getByRole('option', { name: '7 天前', exact: true }).click();
+  await expect(page.locator('.conversation-management-table tbody tr')).toHaveCount(2);
+  await expect(page.getByText('会话 20', { exact: true })).toBeVisible();
+  await expect(page.getByText('已选 0 / 2 个会话', { exact: true })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: '列表分页' })).toHaveCount(0);
+  await page.getByRole('button', { name: '最后活动时间', exact: true }).click();
+  await page.getByRole('option', { name: '30 天前', exact: true }).click();
+  await expect(page.locator('.conversation-management-table tbody tr')).toHaveCount(1);
   await expect(page.getByText('会话 21', { exact: true })).toBeVisible();
+});
+
+async function deletionSetup(page: import('@playwright/test').Page, count: number, failSubmission = false) {
+  const now = new Date().toISOString();
+  let items = Array.from({ length: count }, (_, index) => ({ id: `batch-conversation-${index + 1}`, display_title: `批量会话 ${index + 1}`, pinned: false, unread: false, created_at: now, updated_at: now, last_message_at: now }));
+  const requests: Array<{ ids: string[]; directory: string | null; key: string | undefined }> = [];
+  const jobs: import('../src/types').AgentConversationDeletionJob[] = [];
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request(); const url = new URL(request.url()); const path = url.pathname;
+    if (path.endsWith('/auth/me')) return respond(route, { id: 'batch-manager', username: 'batch-manager', role: 'USER', is_super_admin: false, can_use_agent_sessions: true });
+    if (path.endsWith('/agent-workspaces/default')) return respond(route, { id: 'workspace-default', display_name: '默认工作区', desired_state: 'RUNNING', updated_at: now });
+    if (path.endsWith('/work-directories')) return respond(route, { root: { id: 'root', display_name: '根工作区' }, items: [{ id: 'directory-project', display_name: '测试项目' }] });
+    if (path.endsWith('/deletion-jobs')) {
+      if (request.method() === 'GET') return respond(route, { items: jobs });
+      const ids = request.postDataJSON().binding_ids as string[];
+      requests.push({ ids, directory: url.searchParams.get('work_directory_id'), key: request.headers()['idempotency-key'] });
+      if (failSubmission && requests.length === 1) return respond(route, { error: { code: 'SERVICE_UNAVAILABLE', message: '提交暂时失败，请重试' } }, 503);
+      const job: import('../src/types').AgentConversationDeletionJob = { id: `job-${jobs.length + 1}`, workspace_id: 'workspace-default', work_directory_id: 'directory-project', workspace_label: '测试项目', state: 'PENDING', total: ids.length, processed: 0, binding_ids: ids, deleted_ids: [], skipped: [], remaining_ids: ids, created_at: now, updated_at: now };
+      jobs.unshift(job);
+      return respond(route, job, 202);
+    }
+    if (path.endsWith('/conversation-management')) return respond(route, { items: url.searchParams.get('work_directory_id') === 'directory-project' ? items : [], truncated: count === 500 });
+    if (path.endsWith('/node-directories') || path.endsWith('/node-assets')) return respond(route, []);
+    return respond(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'AI 工作台' }).click();
+  await page.getByRole('button', { name: '会话管理', exact: true }).click();
+  await page.getByRole('button', { name: '测试项目', exact: true }).click();
+  await expect(page.getByText(`已选 0 / ${count} 个会话`, { exact: true })).toBeVisible();
+  await page.getByRole('checkbox', { name: '选择当前筛选结果中的全部会话' }).check();
+  await page.getByRole('button', { name: '删除已选会话', exact: true }).click();
+  return { requests, jobs, progress: (processed: number, state: import('../src/types').AgentConversationDeletionJob['state'], skippedIds: string[] = []) => {
+    const job = jobs[0];
+    const done = job.binding_ids.slice(0, processed);
+    job.state = state; job.processed = processed; job.deleted_ids = done.filter(id => !skippedIds.includes(id));
+    job.skipped = done.filter(id => skippedIds.includes(id)).map(id => ({ id, code: 'AGENT_CONVERSATION_RUNNING' }));
+    job.remaining_ids = job.binding_ids.slice(processed);
+    items = items.filter(item => !job.deleted_ids.includes(item.id));
+  } };
+}
+
+test('large deletion runs in the server background while browsing and refreshing remain usable', async ({ page }) => {
+  const state = await deletionSetup(page, 317);
+  const dialog = page.getByRole('dialog', { name: '确认删除会话' });
+  await dialog.getByRole('button', { name: '确认永久删除', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole('status')).toContainText('后台删除中');
+  await expect(page.getByRole('status')).toContainText('0/317');
+  expect(state.requests).toHaveLength(1);
+  expect(state.requests[0].ids).toHaveLength(317);
+  await expect(page.getByRole('button', { name: '根工作区', exact: true })).toBeEnabled();
+  await expect(page.getByLabel('搜索会话')).toBeEnabled();
+  await expect(page.getByRole('checkbox', { name: '选择会话 批量会话 1', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: '根工作区', exact: true }).click();
+  state.progress(100, 'RUNNING', ['batch-conversation-1']);
+  await expect(page.getByRole('status')).toContainText('100/317');
+  await page.reload();
+  await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
+  await page.getByRole('button', { name: '会话管理', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('100/317');
+  expect(state.requests).toHaveLength(1);
+  await page.setViewportSize({ width: 1024, height: 650 });
+  expect(await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1)).toBe(true);
+  await page.screenshot({ path: '../../.tmp/ops76/background-deletion.png' });
+  state.progress(317, 'SUCCEEDED', ['batch-conversation-1', 'batch-conversation-317']);
+  await expect(page.getByRole('status')).toContainText('后台删除完成');
+  await expect(page.getByRole('status')).toContainText('已删除 315 · 跳过 2');
+  await page.getByRole('button', { name: '测试项目', exact: true }).click();
+  await expect(page.getByText('已选 0 / 2 个会话', { exact: true })).toBeVisible();
+  await expect(page.getByRole('checkbox', { name: '选择会话 批量会话 1', exact: true })).toBeEnabled();
+});
+
+test('submission failures preserve selection and retry the same idempotency key', async ({ page }) => {
+  const state = await deletionSetup(page, 115, true);
+  const dialog = page.getByRole('dialog', { name: '确认删除会话' });
+  await dialog.getByRole('button', { name: '确认永久删除', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toContainText('提交暂时失败');
+  await expect(page.getByText('已选 115 / 115 个会话', { exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: '确认永久删除', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(state.requests).toHaveLength(2);
+  expect(state.requests[0].key).toBeTruthy();
+  expect(state.requests[0].key).toBe(state.requests[1].key);
+  expect(state.requests.every(request => request.directory === 'directory-project')).toBe(true);
+});
+
+test('failed background task retries only its remaining IDs without blocking navigation', async ({ page }) => {
+  const state = await deletionSetup(page, 500);
+  await page.getByRole('dialog').getByRole('button', { name: '确认永久删除', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  state.progress(100, 'DEAD');
+  await expect(page.getByRole('status')).toContainText('剩余 400 项未处理');
+  await page.getByRole('button', { name: '根工作区', exact: true }).click();
+  await page.getByRole('button', { name: '重试未完成', exact: true }).click();
+  await expect.poll(() => state.requests.length).toBe(2);
+  expect(state.requests[1].ids).toEqual(state.requests[0].ids.slice(100));
+  expect(state.requests[1].directory).toBe('directory-project');
+  expect(state.requests[1].key).not.toBe(state.requests[0].key);
+  state.progress(400, 'SUCCEEDED');
+  await expect(page.getByRole('status')).toContainText('后台删除完成');
+  await page.getByRole('button', { name: '测试项目', exact: true }).click();
+  await expect(page.getByText('没有符合当前条件的会话', { exact: true })).toBeVisible();
+});
+
+test('background completion on the final page returns to a valid page', async ({ page }) => {
+  const state = await deletionSetup(page, 21);
+  await page.getByRole('dialog').getByRole('button', { name: '取消', exact: true }).click();
+  await page.getByRole('checkbox', { name: '选择当前筛选结果中的全部会话' }).uncheck();
+  await page.getByRole('button', { name: '下一页', exact: true }).click();
+  await page.getByRole('checkbox', { name: '选择会话 批量会话 21', exact: true }).check();
+  await page.getByRole('button', { name: '删除已选会话', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: '确认永久删除', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  state.progress(1, 'SUCCEEDED');
+  await expect(page.locator('.conversation-management-table tbody tr')).toHaveCount(20);
+  expect(state.requests.map(request => request.ids)).toEqual([['batch-conversation-21']]);
+});
+
+test('compact management emphasizes records and keeps archive filters and row actions independent', async ({ page }) => {
+  const now = '2026-10-28T02:00:00Z';
+  const old = '2026-07-01T02:00:00Z';
+  const active = Array.from({ length: 25 }, (_, index) => ({
+    id: `compact-${index}`, display_title: `项目复盘 ${index + 1}：核对阶段目标与下一步工作安排`,
+    pinned: false, unread: false, archived_at: null, created_at: old, updated_at: now, last_message_at: now,
+  }));
+  const archived = [{ ...active[0], id: 'archived-1', display_title: '已归档的项目复盘', archived_at: now, last_message_at: old },
+    { ...active[1], id: 'pinned-1', display_title: '置顶复盘', archived_at: now, pinned: true, last_message_at: old },
+    { ...active[2], id: 'unread-1', display_title: '未读复盘', archived_at: now, unread: true, last_message_at: old }];
+  let restoreCount = 0;
+  let reads = 0;
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request(); const url = new URL(request.url()); const path = url.pathname;
+    if (path.endsWith('/auth/me')) return respond(route, { id: 'compact-manager', username: 'manager', role: 'USER', can_use_agent_sessions: true });
+    if (path.endsWith('/agent-workspaces/default')) return respond(route, { id: 'compact-workspace', display_name: '工作区', desired_state: 'RUNNING', updated_at: now });
+    if (path.endsWith('/work-directories')) return respond(route, { root: { id: 'root', display_name: '根工作区' }, items: Array.from({ length: 30 }, (_, index) => ({ id: `directory-${index}`, display_name: `项目工作区 ${index + 1}` })) });
+    if (path.endsWith('/restore') && request.method() === 'POST') { restoreCount += 1; return respond(route, { ...archived[0], archived_at: null }); }
+    if (path.endsWith('/conversation-management')) { reads += 1; return respond(route, { items: url.searchParams.has('archived') ? url.searchParams.get('archived') === 'true' ? archived : active : [...active, ...archived], truncated: false }); }
+    if (path.endsWith('/node-directories') || path.endsWith('/node-assets')) return respond(route, []);
+    return respond(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'AI 工作台' }).click();
+  await page.getByRole('button', { name: '会话管理', exact: true }).click();
+  const rows = page.locator('.conversation-management-table tbody tr');
+  await expect(rows).toHaveCount(20);
+  await rows.first().getByText(active[0].display_title).click();
+  await expect(rows.first().getByRole('checkbox')).toBeChecked();
+  await expect(rows.first()).toHaveClass('selected');
+  await rows.first().getByRole('checkbox').uncheck();
+  await rows.first().getByRole('checkbox').press('Space');
+  await expect(rows.first().getByRole('checkbox')).toBeChecked();
+  await page.getByRole('button', { name: '下一页', exact: true }).click();
+  await expect(page.getByText('已选 1 / 26 个会话', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '上一页', exact: true }).click();
+  for (const width of [1920, 1440, 1024]) {
+    await page.setViewportSize({ width, height: 600 });
+    await expect.poll(() => page.locator('.conversation-management-page').evaluate(element => element.getBoundingClientRect().bottom)).toBeLessThanOrEqual(601);
+    const bounds = await page.locator('.conversation-management-page').evaluate(element => {
+      const table = element.querySelector('.conversation-management-table-wrap')!;
+      const first = element.querySelector('tbody tr')!;
+      const heading = element.querySelector('.conversation-management-header')!;
+      const workspace = element.querySelector('.conversation-management-workspace-list')!;
+      return { start: element.getBoundingClientRect().top, table: table.getBoundingClientRect().top,
+        row: first.getBoundingClientRect().height, heading: heading.getBoundingClientRect().height,
+        scroll: table.scrollHeight, client: table.clientHeight, workspaceScroll: workspace.scrollHeight,
+        workspaceClient: workspace.clientHeight, page: document.documentElement.scrollHeight, viewport: innerHeight };
+    });
+    expect(bounds.heading).toBeLessThanOrEqual(48);
+    expect(bounds.table - bounds.start).toBeLessThanOrEqual(width === 1024 ? 140 : 100);
+    expect(bounds.row).toBeLessThanOrEqual(46);
+    expect(bounds.scroll).toBeGreaterThan(bounds.client);
+    expect(bounds.workspaceScroll).toBeGreaterThan(bounds.workspaceClient);
+    expect(bounds.page).toBeLessThanOrEqual(bounds.viewport);
+    await expect(page.getByRole('button', { name: '下一页', exact: true })).toBeInViewport();
+    const scroller = page.locator('.conversation-management-table-wrap');
+    await scroller.hover(); await page.mouse.wheel(0, 400);
+    await expect.poll(() => scroller.evaluate(node => node.scrollTop)).toBeGreaterThan(0);
+    await expect(page.getByRole('columnheader', { name: '会话名称', exact: true })).toBeInViewport();
+    await page.getByRole('button', { name: '下一页', exact: true }).click();
+    await expect(rows).toHaveCount(6);
+    await expect.poll(() => scroller.evaluate(node => node.scrollTop)).toBe(0);
+    await page.getByRole('button', { name: '上一页', exact: true }).click();
+    await expect(rows).toHaveCount(20);
+    await page.screenshot({ path: test.info().outputPath(`conversation-management-${width}.png`) });
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole('button', { name: '会话状态', exact: true }).click();
+  await page.getByRole('option', { name: '已归档', exact: true }).click();
+  await expect(rows).toHaveCount(1);
+  await expect(page.getByText('已选 0 / 1 个会话', { exact: true })).toBeVisible();
+  await page.getByRole('checkbox', { name: '包含置顶' }).check();
+  await page.getByRole('checkbox', { name: '包含未读' }).check();
+  await expect(rows).toHaveCount(3);
+  await page.getByRole('button', { name: '最后活动时间', exact: true }).click();
+  await page.getByRole('option', { name: '30 天前' }).click();
+  await expect(rows).toHaveCount(3);
+  await page.getByRole('button', { name: '最后活动时间', exact: true }).click();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('listbox', { name: '最后活动时间' })).toHaveCount(0);
+  await page.getByRole('button', { name: '最后活动时间', exact: true }).click();
+  await page.getByRole('heading', { name: '会话管理', exact: true }).click();
+  await expect(page.getByRole('listbox', { name: '最后活动时间' })).toHaveCount(0);
+  await page.getByRole('textbox', { name: '搜索会话', exact: true }).fill('已归档的');
+  await expect(rows).toHaveCount(1);
+  await page.getByRole('button', { name: '恢复会话 已归档的项目复盘', exact: true }).click();
+  await expect.poll(() => restoreCount).toBe(1);
+  await expect(rows.first().getByRole('checkbox')).not.toBeChecked();
+  await page.getByRole('button', { name: '重置', exact: true }).click();
+  await expect(page.getByRole('button', { name: '会话状态', exact: true })).toContainText('全部');
+  await expect(rows).toHaveCount(20);
+  const before = reads;
+  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  await expect.poll(() => reads).toBeGreaterThan(before);
+});
+
+
+test('archived directory restores require confirmation and restoring one child refreshes its parent', async ({ page }) => {
+  const now = '2026-10-29T02:00:00Z';
+  let directoryArchived = true;
+  let directoryRestores = 0;
+  let conversationRestores = 0;
+  let failRestore = false;
+  const archivedIds = new Set(['child-1', 'child-2']);
+  const items = ['child-1', 'child-2'].map((id, index) => ({ id, display_title: `归档会话 ${index + 1}`, pinned: false, unread: false, archived_at: now, created_at: now, updated_at: now, last_message_at: now }));
+  await page.route('**/api/v1/**', async route => {
+    const request = route.request(); const url = new URL(request.url()); const path = url.pathname;
+    if (path.endsWith('/auth/me')) return respond(route, { id: 'archive-manager', username: 'manager', role: 'USER', can_use_agent_sessions: true });
+    if (path.endsWith('/agent-workspaces/default')) return respond(route, { id: 'archive-workspace', display_name: '工作区', desired_state: 'RUNNING', updated_at: now });
+    if (path.endsWith('/work-directories')) return respond(route, { root: { display_name: '根工作区' }, items: [{ id: 'archived-directory', display_name: '归档项目', state: directoryArchived ? 'ARCHIVED' : 'ACTIVE', current_version: { id: 'archive-version', working_directory: '/runtime/workspace/project/archive-project' } }] });
+    if (path.endsWith('/work-directories/archived-directory/restore')) {
+      directoryRestores += 1;
+      if (failRestore) return respond(route, { error: { code: 'RESTORE_FAILED', message: '暂时无法恢复工作区' } }, 503);
+      directoryArchived = false; archivedIds.clear();
+      return respond(route, { id: 'archived-directory', display_name: '归档项目', state: 'ACTIVE' });
+    }
+    if (path.endsWith('/conversations/child-1/restore')) {
+      conversationRestores += 1; directoryArchived = false; archivedIds.delete('child-1');
+      return respond(route, { ...items[0], archived_at: null });
+    }
+    if (path.endsWith('/conversation-management')) return respond(route, { items: url.searchParams.get('work_directory_id') === 'archived-directory' ? items.filter(item => archivedIds.has(item.id) === (url.searchParams.get('archived') === 'true')).map(item => ({ ...item, archived_at: archivedIds.has(item.id) ? now : null })) : [], truncated: false });
+    if (path.endsWith('/node-directories') || path.endsWith('/node-assets')) return respond(route, []);
+    return respond(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
+  await page.getByRole('button', { name: '会话管理', exact: true }).click();
+  await page.getByRole('button', { name: '会话状态', exact: true }).click();
+  await page.getByRole('option', { name: '已归档', exact: true }).click();
+  const sidebar = page.getByRole('complementary', { name: 'Agent 工作区' });
+  await expect(page.getByRole('button', { name: '恢复工作区 归档项目', exact: true })).toHaveCount(0);
+  const directory = sidebar.getByRole('button', { name: '归档项目', exact: true });
+  await expect(directory).toHaveAccessibleDescription('已归档工作区');
+  await expect(sidebar).not.toContainText('已归档');
+  await directory.click();
+  const actions = page.getByRole('group', { name: '工作区与会话操作' });
+  await expect(actions.getByRole('button', { name: '恢复工作区 归档项目', exact: true })).toBeVisible();
+  await expect(sidebar.getByRole('button', { name: /恢复工作区/ })).toHaveCount(0);
+  const restoreBounds = await actions.getByRole('button', { name: '恢复工作区 归档项目', exact: true }).boundingBox();
+  const deleteBounds = await actions.getByRole('button', { name: '删除已选会话', exact: true }).boundingBox();
+  expect(Math.abs(restoreBounds!.y - deleteBounds!.y)).toBeLessThan(2);
+  expect(restoreBounds!.x + restoreBounds!.width).toBeLessThan(deleteBounds!.x);
+  await page.screenshot({ path: test.info().outputPath('archived-workspace-actions.png') });
+  const rows = page.locator('.conversation-management-table tbody tr');
+  await expect(rows).toHaveCount(2);
+  await expect(rows.locator('.conversation-management-status').getByText('已归档', { exact: true })).toHaveCount(2);
+  expect(await page.locator('.conversation-management-page select').count()).toBe(0);
+  await page.getByRole('button', { name: '恢复工作区 归档项目', exact: true }).click();
+  let dialog = page.getByRole('alertdialog', { name: '恢复工作区“归档项目”？' });
+  await expect(dialog).toContainText('所有已归档会话');
+  expect(directoryRestores).toBe(0);
+  await dialog.getByRole('button', { name: '取消', exact: true }).click();
+  expect(directoryRestores).toBe(0);
+  await page.getByRole('button', { name: '恢复会话 归档会话 1', exact: true }).click();
+  await expect.poll(() => conversationRestores).toBe(1);
+  await expect(page.getByRole('button', { name: '归档项目', exact: true })).toBeVisible();
+  await expect(rows).toHaveCount(1);
+  await expect(rows).toContainText('归档会话 2');
+  // A later batch archive restores the directory action; cancellation and
+  // request failure must never hide the archived container or its records.
+  directoryArchived = true; archivedIds.add('child-1');
+  await page.reload();
+  await page.getByRole('button', { name: '会话管理', exact: true }).click();
+  await page.getByRole('button', { name: '会话状态', exact: true }).click();
+  await page.getByRole('option', { name: '已归档', exact: true }).click();
+  await page.getByRole('button', { name: '归档项目', exact: true }).click();
+  failRestore = true;
+  await page.getByRole('button', { name: '恢复工作区 归档项目', exact: true }).click();
+  dialog = page.getByRole('alertdialog', { name: '恢复工作区“归档项目”？' });
+  await dialog.getByRole('button', { name: '确认恢复', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('暂时无法恢复工作区');
+  await expect(page.getByRole('button', { name: '归档项目', exact: true })).toBeVisible();
+  failRestore = false;
+  await page.getByRole('button', { name: '恢复工作区 归档项目', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: '确认恢复', exact: true }).click();
+  await expect.poll(() => directoryRestores).toBe(2);
+  await expect(rows).toHaveCount(0);
+  const filter = page.getByRole('button', { name: '会话状态', exact: true });
+  await expect(filter).toBeEnabled();
+  await filter.press('ArrowDown');
+  await page.keyboard.press('Home'); await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter');
+  await expect(filter).toContainText('未归档');
+  await expect(rows).toHaveCount(2);
+  await filter.click(); await page.keyboard.press('Escape');
+  await expect(page.getByRole('listbox', { name: '会话状态', exact: true })).toHaveCount(0);
+  await expect(filter).toBeFocused();
+  await page.screenshot({ path: test.info().outputPath('restored-directory.png') });
+});
+
+test('archive filter defaults to all, filters both states, and resets across workspaces', async ({ page }) => {
+  const now = new Date().toISOString();
+  const queries: Array<string | null> = [];
+  const items = [
+    { id: 'active', display_title: '正常会话', archived_at: null },
+    { id: 'archived', display_title: '归档会话', archived_at: now },
+  ].map(item => ({ ...item, pinned: false, unread: false, created_at: now, updated_at: now, last_message_at: now }));
+  await page.route('**/api/v1/**', async route => {
+    const url = new URL(route.request().url()); const path = url.pathname;
+    if (path.endsWith('/auth/me')) return respond(route, { id: 'filter-manager', username: 'manager', role: 'USER', can_use_agent_sessions: true });
+    if (path.endsWith('/agent-workspaces/default')) return respond(route, { id: 'filter-workspace', display_name: '工作区', desired_state: 'RUNNING', updated_at: now });
+    if (path.endsWith('/work-directories')) return respond(route, { root: { display_name: '根工作区' }, items: [
+      { id: 'active-directory', display_name: '正常项目', state: 'ACTIVE' },
+      { id: 'archived-directory', display_name: '归档项目', state: 'ARCHIVED' },
+    ] });
+    if (path.endsWith('/conversation-management')) {
+      const archived = url.searchParams.get('archived'); queries.push(archived);
+      const scoped = url.searchParams.get('work_directory_id') === 'archived-directory' ? items.slice(1) : items;
+      return respond(route, { items: scoped.filter(item => archived === null || Boolean(item.archived_at) === (archived === 'true')), truncated: false });
+    }
+    if (path.endsWith('/node-directories') || path.endsWith('/node-assets')) return respond(route, []);
+    return respond(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
+  await page.getByRole('button', { name: '会话管理', exact: true }).click();
+  const filter = page.getByRole('button', { name: '会话状态', exact: true });
+  const rows = page.locator('.conversation-management-table tbody tr');
+  await expect(filter).toContainText('全部');
+  await expect(rows).toHaveCount(2);
+  expect(queries.at(-1)).toBeNull();
+  await page.getByRole('button', { name: '正常项目', exact: true }).click();
+  await expect(filter).toContainText('全部');
+  await expect(rows).toHaveCount(2);
+  await filter.click();
+  await page.getByRole('option', { name: '未归档', exact: true }).click();
+  await expect(rows).toHaveCount(1);
+  await expect(rows).toContainText('正常会话');
+  expect(queries.at(-1)).toBe('false');
+  await filter.click();
+  await page.getByRole('option', { name: '已归档', exact: true }).click();
+  await expect(rows).toHaveCount(1);
+  await expect(rows).toContainText('归档会话');
+  expect(queries.at(-1)).toBe('true');
+  await page.getByRole('button', { name: '重置', exact: true }).click();
+  await expect(filter).toContainText('全部');
+  await expect(rows).toHaveCount(2);
+  await page.getByRole('button', { name: '归档项目', exact: true }).click();
+  await expect(filter).toContainText('全部');
+  await expect(rows).toHaveCount(1);
+  expect(queries.at(-1)).toBeNull();
+  await filter.click();
+  await page.getByRole('option', { name: '已归档', exact: true }).click();
+  await page.getByRole('button', { name: '根工作区', exact: true }).click();
+  await expect(filter).toContainText('已归档');
+  await expect(rows).toHaveCount(1);
+  await filter.press('ArrowDown');
+  await page.keyboard.press('Home'); await page.keyboard.press('Enter');
+  await expect(filter).toContainText('全部');
+  await expect(rows).toHaveCount(2);
+});
+
+for (const failSecondBatch of [false, true]) {
+  test(`selected conversations archive in bounded batches while their workspace stays active (${failSecondBatch ? 'retry' : 'complete'})`, async ({ page }) => {
+    const now = new Date().toISOString();
+    let items = Array.from({ length: 43 }, (_, index) => ({ id: `archive-${index + 1}`, display_title: `批量归档会话 ${index + 1}`, pinned: false, unread: false, archived_at: index === 42 ? now : null, created_at: now, updated_at: now, last_message_at: now }));
+    const requests: string[][] = []; let workspaceWrites = 0; let running = true;
+    let releaseFirst: (() => void) | undefined;
+    await page.route('**/api/v1/**', async route => {
+      const url = new URL(route.request().url()); const path = url.pathname;
+      if (path.endsWith('/auth/me')) return respond(route, { id: 'bulk-archive-user', username: 'manager', role: 'USER', can_use_agent_sessions: true });
+      if (path.endsWith('/agent-workspaces/default')) return respond(route, { id: 'bulk-archive-workspace', display_name: '工作区', desired_state: 'RUNNING', updated_at: now });
+      if (path.includes('/work-directories/') && route.request().method() !== 'GET') { workspaceWrites += 1; return respond(route, {}); }
+      if (path.endsWith('/work-directories')) return respond(route, { root: { display_name: '根工作区' }, items: [{ id: 'project-directory', display_name: '保留的工作区', state: 'ACTIVE' }] });
+      if (path.endsWith('/conversation-management/archive')) {
+        expect(url.searchParams.get('work_directory_id')).toBe('project-directory');
+        const ids = route.request().postDataJSON().binding_ids as string[]; requests.push(ids);
+        expect(ids.length).toBeLessThanOrEqual(20);
+        if (requests.length === 1) await new Promise<void>(resolve => { releaseFirst = resolve; });
+        if (failSecondBatch && requests.length === 2) return respond(route, { error: { code: 'TEMPORARY', message: '本批网络失败' } }, 503);
+        const successful = ids.filter(id => !running || id !== 'archive-22');
+        items = items.map(item => successful.includes(item.id) ? { ...item, archived_at: now } : item);
+        return respond(route, { archived: successful.map(id => ({ id, archived_at: now })), skipped: ids.filter(id => !successful.includes(id)).map(id => ({ id, code: 'AGENT_CONVERSATION_RUNNING' })) });
+      }
+      if (path.endsWith('/conversation-management')) return respond(route, { items: url.searchParams.get('work_directory_id') !== 'project-directory' ? [] : items.filter(item => !url.searchParams.has('archived') || Boolean(item.archived_at) === (url.searchParams.get('archived') === 'true')), truncated: false });
+      if (path.endsWith('/node-directories') || path.endsWith('/node-assets')) return respond(route, []);
+      return respond(route, {}, 404);
+    });
+    await page.goto('/'); await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
+    await page.getByRole('button', { name: '会话管理', exact: true }).click();
+    await page.getByRole('button', { name: '保留的工作区', exact: true }).click();
+    const all = page.getByRole('checkbox', { name: '选择当前筛选结果中的全部会话' });
+    await all.check(); await page.getByRole('button', { name: '下一页', exact: true }).click();
+    await expect(page.getByText('已选 43 / 43 个会话', { exact: true })).toBeVisible();
+    const archive = page.getByRole('button', { name: '归档已选会话', exact: true });
+    await archive.click();
+    let confirmation = page.getByRole('alertdialog', { name: '归档 42 个会话？', exact: true });
+    await expect(confirmation).toContainText('工作区保持不变');
+    await confirmation.getByRole('button', { name: '取消', exact: true }).click(); expect(requests).toHaveLength(0);
+    await archive.click(); await confirmation.getByRole('button', { name: '确认归档', exact: true }).click();
+    await expect.poll(() => Boolean(releaseFirst)).toBe(true);
+    await expect(page.getByRole('button', { name: '删除已选会话', exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: '根工作区', exact: true })).toBeDisabled();
+    await expect(page.getByRole('textbox', { name: '搜索会话', exact: true })).toBeDisabled();
+    await expect(page.getByRole('status')).toContainText('0 / 42'); releaseFirst!();
+    if (failSecondBatch) {
+      await expect(page.getByRole('alert')).toContainText('已归档 20 个');
+      expect(requests).toHaveLength(2);
+      await archive.click(); confirmation = page.getByRole('alertdialog', { name: '归档 22 个会话？', exact: true });
+      await confirmation.getByRole('button', { name: '确认归档', exact: true }).click();
+      await expect(page.getByRole('status')).toContainText('已归档 21 个会话');
+      expect(requests.slice(2).flat().some(id => requests[0].includes(id))).toBe(false);
+    } else {
+      await expect(page.getByRole('status')).toContainText('已归档 41 个会话');
+      expect(requests.map(ids => ids.length)).toEqual([20, 20, 2]);
+    }
+    expect(workspaceWrites).toBe(0);
+    await expect(page.getByRole('complementary', { name: 'Agent 工作区' }).getByRole('button', { name: '保留的工作区', exact: true })).not.toHaveAccessibleDescription('已归档工作区');
+    await page.getByRole('button', { name: '会话状态', exact: true }).click();
+    await page.getByRole('option', { name: '未归档', exact: true }).click();
+    await expect(page.locator('.conversation-management-table tbody tr')).toHaveCount(1);
+    await expect(page.getByRole('checkbox', { name: '选择会话 批量归档会话 22', exact: true })).toBeChecked();
+    await expect(page.getByRole('navigation', { name: '列表分页' })).toHaveCount(0);
+    await page.screenshot({ path: test.info().outputPath('bulk-archive-complete.png') });
+    running = false;
+    await archive.click(); await page.getByRole('alertdialog').getByRole('button', { name: '确认归档', exact: true }).click();
+    await expect(page.locator('.conversation-management-table tbody tr')).toHaveCount(0);
+    await expect(archive).toBeDisabled();
+    await page.getByRole('button', { name: '会话状态', exact: true }).click();
+    await page.getByRole('option', { name: '已归档', exact: true }).click();
+    await expect(page.getByText('共 43 项，第 1 / 3 页', { exact: true })).toBeVisible();
+    await all.check(); await expect(archive).toBeDisabled();
+  });
+}
+
+async function archivedDeletionSetup(page: import('@playwright/test').Page, failFirst = false) {
+  let removed = false;
+  let requests = 0;
+  const now = new Date().toISOString();
+  await page.route('**/api/v1/**', async route => {
+    const url = new URL(route.request().url()); const path = url.pathname;
+    if (path.endsWith('/auth/me')) return respond(route, { id: 'directory-manager', username: 'manager', role: 'USER', can_use_agent_sessions: true });
+    if (path.endsWith('/agent-workspaces/default')) return respond(route, { id: 'directory-workspace', desired_state: 'RUNNING', updated_at: now });
+    if (path.endsWith('/work-directories')) return respond(route, { root: { display_name: '根工作区' }, items: removed ? [] : [{ id: 'archived-project', display_name: '已归档项目', state: 'ARCHIVED' }] });
+    if (path.endsWith('/work-directories/archived-project') && route.request().method() === 'DELETE') {
+      requests += 1;
+      if (failFirst && requests === 1) return respond(route, { error: { code: 'AGENT_WORK_DIRECTORY_SHARED_PATH', message: '目录仍被其他工作区使用，无法连同文件删除' } }, 409);
+      removed = true;
+      return route.fulfill({ status: 204 });
+    }
+    if (path.endsWith('/conversation-management')) return respond(route, { items: !removed && url.searchParams.get('work_directory_id') === 'archived-project' ? Array.from({ length: 21 }, (_, index) => ({ id: `archived-${index}`, display_title: `归档会话 ${index}`, pinned: false, unread: false, archived_at: now, created_at: now, updated_at: now })) : [], truncated: false });
+    if (path.endsWith('/node-directories') || path.endsWith('/node-assets')) return respond(route, []);
+    return respond(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
+  await page.getByRole('button', { name: '会话管理', exact: true }).click();
+  await page.getByRole('button', { name: '已归档项目', exact: true }).click();
+  await expect(page.locator('.conversation-management-table tbody tr')).toHaveCount(20);
+  return { count: () => requests };
+}
+
+test('archived workspace deletion reuses the directory endpoint and clears its whole paginated list', async ({ page }) => {
+  const state = await archivedDeletionSetup(page);
+  const actions = page.getByRole('group', { name: '工作区与会话操作' });
+  await expect(actions.getByRole('button', { name: '恢复工作区 已归档项目', exact: true })).toBeVisible();
+  await actions.getByRole('button', { name: '删除工作区 已归档项目', exact: true }).click();
+  const confirmation = page.getByRole('alertdialog');
+  await expect(confirmation).toContainText('所有版本目录中的文件');
+  await expect(confirmation).toContainText('上传附件');
+  await confirmation.getByRole('button', { name: '取消', exact: true }).click();
+  expect(state.count()).toBe(0);
+  await expect(page.getByRole('button', { name: '已归档项目', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '下一页', exact: true }).click();
+  await expect(page.locator('.conversation-management-table tbody tr')).toHaveCount(1);
+  await page.getByRole('checkbox', { name: '选择会话 归档会话 20', exact: true }).check();
+  await actions.getByRole('button', { name: '删除工作区 已归档项目', exact: true }).click();
+  await confirmation.getByRole('button', { name: '确认删除工作区', exact: true }).click();
+  await expect.poll(state.count).toBe(1);
+  await expect(page.getByRole('button', { name: '已归档项目', exact: true })).toHaveCount(0);
+  await expect(page.locator('.conversation-management-directory-name')).toHaveText('根工作区');
+  await expect(actions.getByRole('button', { name: /^删除工作区 / })).toHaveCount(0);
+  await expect(page.getByRole('navigation', { name: '列表分页' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '删除已选会话', exact: true })).toBeDisabled();
+});
+
+test('failed workspace deletion keeps its selection and allows retry', async ({ page }) => {
+  const state = await archivedDeletionSetup(page, true);
+  await page.getByRole('button', { name: '下一页', exact: true }).click();
+  await page.getByRole('button', { name: '删除工作区 已归档项目', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: '确认删除工作区', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('目录仍被其他工作区使用');
+  await expect(page.locator('.conversation-management-directory-name')).toHaveText('已归档项目');
+  await expect(page.getByText('共 21 项，第 2 / 2 页')).toBeVisible();
+  await page.getByRole('button', { name: '删除工作区 已归档项目', exact: true }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: '确认删除工作区', exact: true }).click();
+  await expect.poll(state.count).toBe(2);
+  await expect(page.locator('.conversation-management-directory-name')).toHaveText('根工作区');
+});
+
+test('archived workspace actions stay together on a short viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 650 });
+  await archivedDeletionSetup(page);
+  const actions = page.getByRole('group', { name: '工作区与会话操作' });
+  await expect(actions.getByRole('button', { name: '删除工作区 已归档项目', exact: true })).toBeInViewport();
+  await expect(actions.getByRole('button', { name: '恢复工作区 已归档项目', exact: true })).toBeInViewport();
+  expect(await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1)).toBe(true);
+  await page.screenshot({ path: '../../.tmp/ops74/archived-workspace-delete.png' });
+});
+
+
+test('management shows event counts and cumulative tokens with unknown values last in both sort directions', async ({ page }) => {
+  const now = new Date().toISOString();
+  const items = Array.from({ length: 25 }, (_, index) => ({
+    id: `size-${index}`, display_title: `规模会话 ${index}`, pinned: false, unread: false,
+    archived_at: index === 24 ? now : null, created_at: now, updated_at: now,
+    stored_event_count: index === 0 ? null : index === 1 ? 0 : index === 24 ? 12000 : index,
+    total_tokens: index === 0 ? null : index === 1 ? 0 : index === 24 ? 86245124 : index * 1000,
+  }));
+  const paths: string[] = [];
+  await page.route('**/api/v1/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    paths.push(path);
+    if (path.endsWith('/auth/me')) return respond(route, { id: 'size-user', username: 'size-user', role: 'USER', can_use_agent_sessions: true });
+    if (path.endsWith('/agent-workspaces/default')) return respond(route, { id: 'size-workspace', display_name: '默认工作区', desired_state: 'RUNNING', updated_at: now });
+    if (path.endsWith('/work-directories')) return respond(route, { root: { display_name: '根工作区' }, items: [] });
+    if (path.endsWith('/conversation-management')) return respond(route, { items, truncated: false });
+    if (path.endsWith('/deletion-jobs')) return respond(route, { items: [] });
+    return respond(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
+  await page.getByRole('button', { name: '会话管理', exact: true }).click();
+  const table = page.locator('.conversation-management-table');
+  const rows = table.locator('tbody tr');
+  await expect(rows).toHaveCount(20);
+  await expect(rows.first().getByLabel('事件数待统计')).toHaveText('—');
+  await expect(rows.nth(1).locator('td').nth(2)).toHaveText('0');
+  await page.getByRole('button', { name: '下一页', exact: true }).click();
+  await expect(rows).toHaveCount(5);
+  await page.getByRole('button', { name: '按事件数排序', exact: true }).click();
+  await expect(page.getByText('共 25 项，第 1 / 2 页')).toBeVisible();
+  await expect(rows.first()).toContainText('规模会话 24');
+  await expect(rows.first().locator('td').nth(2)).toHaveText('12,000');
+  await expect(rows.first().locator('td').nth(3)).toHaveText('86,245,124');
+  await expect(table.locator('th[aria-sort="descending"]')).toContainText('事件数');
+  await rows.first().locator('td').nth(2).click();
+  await expect(page.getByRole('checkbox', { name: '选择会话 规模会话 24', exact: true })).toBeChecked();
+  await page.getByRole('button', { name: '按事件数排序', exact: true }).click();
+  await expect(rows.first()).toContainText('规模会话 1');
+  await page.getByRole('button', { name: '下一页', exact: true }).click();
+  await expect(rows.last()).toContainText('规模会话 0');
+  await expect(rows.last().getByLabel('事件数待统计')).toBeVisible();
+  await page.getByRole('button', { name: '按累计 Token排序', exact: true }).click();
+  await expect(rows.first()).toContainText('规模会话 24');
+  await page.getByRole('button', { name: '下一页', exact: true }).click();
+  await expect(rows.last()).toContainText('规模会话 0');
+  await page.getByRole('button', { name: '按累计 Token排序', exact: true }).click();
+  await expect(rows.first()).toContainText('规模会话 1');
+  await expect(page.getByText('已选 1 / 25 个会话', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '重置', exact: true }).click();
+  await expect(rows.first()).toContainText('规模会话 0');
+  expect(paths.some(path => /\/(events|hydration|context|history)$/.test(path))).toBe(false);
+  await page.setViewportSize({ width: 1024, height: 800 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: '../../.tmp/conversation-size/management-1024.png' });
 });

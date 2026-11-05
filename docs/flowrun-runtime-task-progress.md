@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`CHILD CONVERSATIONS COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`NONE`
+> 下一可执行切片：`OPS-84`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 > 子会话设计：`docs/agent-child-conversations-design.md`
@@ -1166,6 +1166,563 @@ shared 子会话没有 linked Worktree 或 worktrees 注册，目录没有切换
 generation 父工具拒绝策略、V4 Workspace 冻结镜像，以及非活动子队列待选中并正式 hydration
 后恢复的边界继续遵守原设计。全部子会话切片现已闭环，当前与下一切片均为 NONE，代码保留
 在 `codex/child-conversations`，合并和发布交由用户决策。
+
+### FIX-GIT-BRANCH 分支切换与远端推送状态核验 — DONE
+
+2026-11-05。Git 侧栏的当前分支复用 LaunchOptionMenu 和 ViewportPopover，
+提供本地分支及远程跟踪分支选择。远程项创建同名本地跟踪分支，已有同名
+本地分支时提示选择本地项。菜单支持键盘、Escape 和外部点击，切换错误
+就地展示并可关闭。当前会话运行、压缩或不可写时禁用切换。
+
+Workspace 和 FlowNode 两种宿主均提供严格的分支目录与切换接口，沿用
+各自用户、binding、工作目录和 Attempt 授权。写操作要求整个仓库位于
+授权文件范围内，携带 expected_head 和 expected_ref，并通过 Git 目录锁
+串行化平台切换请求。保留 Git 原生文件冲突、工作树占用和索引锁保护，
+禁止覆盖忽略文件，关闭 checkout hook。重试已完成的切换可幂等收口。
+
+同步和切换通过 OpenHands 正式 /api/bash/execute_bash_command 下发固定
+脚本，继承 Runtime 的 Git 配置和认证上下文。当前 source lock 对应的
+805bb3fe0 原生路由已取证。同步当前上游 remote 的所有远程分支后，再
+核对本地状态；刷新期间 branch／HEAD／upstream 发生变化则状态待确认。
+Runtime、认证或网络不可用时仍可读取提交历史，推送标记保持待确认。
+原先直接将本地旧上游引用差异显示为“待推送”的问题在此切片修复。
+
+Git Query 按宿主和会话范围隔离。正式核验结果同步至侧栏、文件树和
+概览缓存，未经核验的领先数字不展示。切换后刷新分支、历史、本地改动
+及文件目录，清理文件选择和工作树 Diff 快照，递增目录读取 epoch，
+阻止旧请求重新插入已切换分支的文件。会话切换后的迟到回调不更新新宿主。
+
+验证通过20项定向后端检查，覆盖真实 Git、中文分支、跟踪关系、非覆盖
+切换、忽略／未跟踪文件冲突、同名分支、锁、CAS、Runtime 配置、旧引用
+误标、刷新竞态、原生路由封装及两种宿主接口转发。8项 Chromium 回归
+通过，含分支选择、错误、文件树刷新、远端重试与原全屏滚动行为，截图
+检查通过。Web typecheck、新组件／菜单／API／测试 ESLint、受影响新增
+Python Ruff 与 diff 检查通过。既有工作台 Plug 未使用及 bootstrap 依赖
+问题、三项旧 Python 模块的20处既有行长提示已与 HEAD 对照，无新增诊断。
+唯一 Alembic head 为0200_message_model_changes，任务无 CURRENT。
+代码待 Platform／Web 发布，线上实际远端认证状态仍以发布后核验为准。
+
+### FIX-WORKSPACE-RETURN 文件全屏返回会话的阅读位置 — DONE
+
+2026-11-05。修复工具全屏隐藏会话后切回、或退出全屏进入分栏时，
+会话宽度变化导致已在底部的长回复停在中途。仅观察会话视口的显隐和
+宽度变化，按原有 followLatest 与用户阅读意图恢复底部或历史位置；
+隐藏视口不写入零尺寸滚动快照、不触发历史分页。内容高度、计时文案
+和过程动画不作为此次滚动触发源。
+
+新增底部／历史两项定向浏览器用例，覆盖文件全屏、会话 Tab 返回和退出
+全屏后的分栏恢复。既有全屏布局用例在读取几何尺寸前等待动画完成，
+避免把过渡中的宽度作为断言基准。两项 Git 历史纯函数测试更新为实际
+仓库根路径，修正旧夹具在授权仓库定位阶段提前失败的问题。
+
+经正式只读远端预检及平台会话定位，在对应活跃 Runtime 容器核验两项
+Git 状态。hq-calculator-option 的 daily 相对本地 origin/daily 领先6项，
+含当天2项及历史4项 merge；hq-service-usoptioncalcore 领先8项，含当天
+2项及历史6项 merge。两项工作树干净，均非浅克隆。实时 ls-remote 因
+非交互命令缺少 Git 用户名认证失败，未能判定远端最新分支指针；本地
+跟踪引用与当前服务器状态的差异仍待取得有效认证后核对。
+
+验证通过8项定向浏览器回归（底部／历史、全屏、手动滚动及正式过程事件
+追加）和3项 Git 历史／同步纯函数检查。Web typecheck、定向 ESLint
+（排除原文件已有的两项 react-refresh 导出警告）、diff 检查通过。
+额外尝试的旧 product-flow 顶层会话用例因导航仍匹配“Agent 会话”而超时，
+未到达 Git 断言；未宣称完整 E2E 通过。唯一 Alembic head 为
+0200_message_model_changes，任务无 CURRENT。修复待 Web 发布，无后续实现切片。
+
+### FIX-CASE-NAV 场景会话隐藏后的导航抢占 — DONE
+
+2026-11-05 复现从场景协调会话切换至 AI 工作台后，地址被改回场景会话、
+页面却显示节点中心的问题。RetainedPages 保留后台场景页挂载，其共享会话
+工作台仍读取全局 URL。切换后旧宿主无法从 /agent 解析自身 binding，自动
+选中首条场景会话并执行导航，而 App 的 view 仍为 agent-workbench，最终触发
+节点中心兜底。自动选中与无效会话路由恢复现均要求当前宿主页面处于前台。
+
+新增两项定向浏览器用例，覆盖会话目录已加载与离开后请求才返回。修改前
+两项均重现地址／页面错位，修改后两项通过，并检查经过轮询周期后地址、
+顶部选择和可见工作台一致。Web typecheck、新增测试 ESLint、diff 检查通过，
+唯一 Alembic head 为 0197_case_pause_reason，任务无 CURRENT。
+
+额外十二项既有浏览器回归三项通过、九项失败。全部九项已在独立的
+bd3160fa 未修改源码服务器对照复现，涉及场景文案／启动按钮断言、会话
+回复读取、隐藏 DOM 定位及流程列表旧夹具。工作台 ESLint 的未使用 Plug
+与 bootstrap 依赖提示亦在 HEAD 原源码复现。本片完成导航抢占修复，页面
+导航由本次两项隔离 API 专项验证，正式发布验收见下。
+
+#### FIX-CASE-NAV Web 发布验收
+
+2026-11-05 正式 Web 预检、commit-bound 最小上下文和发布收尾通过，发布
+0f55feb63a15fd6cee494659747a048e657c1f59。源码归档 SHA-256 为
+cec9946c663dfb4e4c6c0e46db8dbe9e2d4199df10d659e156682fbe8a8efce4，
+linux/amd64 Web 镜像 ID 为
+sha256:7d80506129791e319fefea6655408840294992661832a5fc27c0831338c2392a。
+保留旧 Web 回滚镜像及服务日志，定向 recreate Web 后 revision 与 HTTP
+健康通过。服务器配置哈希及其余 47 个容器的镜像和启动时间复核通过。
+
+公网首页、Agent 深链、根登录页和 API 鉴权边界通过，HTML、入口 JS／CSS
+与会话工作台 JS／CSS 共五项资源的 SHA-256 与实际运行镜像一致。全新
+Chromium 的平台登录页、Agent 深链与根登录页通过，应用 JavaScript 错误
+为零，两个 API 请求均带部署前缀。以实际运行镜像静态资源及隔离 API
+夹具执行本片两项交互回归通过，71 个 API 请求均带部署前缀。
+
+remote-release-finish 完成四项过期受管上下文及一个精确 Web 历史 tag
+回收，保留 24 小时上下文、实际引用和每仓库一个回滚镜像。收尾后 Web
+revision／健康、API／stream-api 健康与 readiness、服务器配置及 47 个保护
+容器再次复核通过。交互验收使用隔离夹具，真实业务资源未参与写入。
+
+### OPS-87-CS 会话管理事件数与累计 Token — DONE
+
+依赖 OPS-86 DONE。用户明确选择同时展示完整历史事件数与累计 Token，并支持
+按统计值排序。OpenHands 正式 ConversationInfo 暴露事件日志计数，复用后台
+用量同步写入用户隔离投影，管理列表一次批量读取。验证旧数据未知态、零值、
+归档／工作区／用户隔离、排序与分页。未知统计显示 —，零值保留，
+升降序均将未知置后，筛选后先排序再分页。后台计数以原生累积日志为准，
+使用条件 UPDATE 防止迟到快照回退，不读取或保存完整历史正文。
+
+SDK 固定来源 366cd8ecf0f833705f6b92957621905af5b85d8a 已合入 baseline。
+四包仍为 1.54.0，新增 conversation_stored_event_count_v1；新快照持久化计数，
+旧快照只由原生 EventLog 文件名索引补齐，保留压缩与分支历史。源码归档
+SHA-256 为 af2a07ff01b94117fd5bf2e43dbf3acc47ef9f2a9b203cdb3c096e033c42c8f6。
+固定源码 65 项及合并 baseline 67 项定向测试通过，SDK 变更文件 hooks、
+TypeScript lint／build／coverage／format 检查通过。baseline 动态属性全量
+hook 命中既有 build/lib 生成目录，改对本片两个 SDK 源文件检查通过。
+
+独立 PostgreSQL 实跑完整迁移链及 7 项定向测试通过，覆盖归档与用户隔离、
+零值／未知、跨连接迟到快照、0194 downgrade／upgrade 保留原记录及源码锁。
+Alembic 唯一 head 为 0194_conversation_event_count。会话管理 Playwright
+14 项通过，Web typecheck、受影响 ESLint、production build 与 diff 检查
+通过。窄屏布局检查通过。正式发布验收如下。
+
+#### OPS-87-CS 正式发布验收
+
+2026-11-04 正式 runtime 预检与 Web／platform commit-bound 最小上下文通过。
+发布提交 b07b8e680fab8cd845f09f6fdb9f39b4919e84e8，包含实现提交 f1e0b36d
+及探针来源常量修正。首次镜像构建由来源一致性断言拒绝旧探针常量，
+修正后重新从已提交版本构建，完整契约及独立 network=none 探针通过，
+含事件数在 fork／恢复后的契约验证。
+
+实际 linux/amd64 镜像如下。
+
+- Runtime sha256:6939d9a0afe593f5cf4eb945e4d8f22fe38c833d0d89221982d801c23c12647f
+- Platform sha256:555165b4bdb28174803d08ff95f59b9b8744991d6b8bea2b9b10f24a08e45817
+- Web sha256:d81d74506c7cb07b57b2362de98a1c7ce7caa2ce2c280f12ec03758ca0cf501f
+
+迁移退出码 0，唯一 head 为 0194_conversation_event_count；API、stream-api、
+Worker 和 Web 同步更新并通过健康验证。Runtime 原生活动门禁为空闲，
+服务器侧保留原状态备份与回滚镜像，通过正式 replacement 恢复至 generation 54。
+实际运行 digest、四包 1.54.0、server_info.build_git_sha、provenance、归档 SHA
+及 conversation_stored_event_count_v1 一致。326 个原生会话 ID 与持久挂载
+保留，原会话恢复后正式计数 411。33 个保护容器的镜像和启动时间、配置
+哈希核验通过。
+
+通过用户认证的正式只读接口核验两个新字段，当前根组 102 条记录中
+100 条已有累计 Token。实际读取样本回填 113 个事件及 3979914 累计 Token，
+后台同步亦已回填其他会话；其余未知统计继续由后台渐进补齐。
+
+公开首页、Agent 深链、根登录页、鉴权边界及四个静态资源哈希验证通过。
+本机直连公开静态代理返回 502，改用 SSH 只读取得运行镜像的同版资源，
+并以已验证的公开资源哈希确认一致。隔离模拟用户／API 的已发布前端
+浏览器专项通过，覆盖两列升降序、未知置后、跨页排序、选择不串扰、重置、
+1024 布局、全部 API 使用部署前缀与无 JavaScript 错误。远端 Chromium CLI
+直连 smoke 超时，已停止本片自建探针容器；该额外检查不记为通过。
+
+Web 与 platform 的 remote-release-finish 成功，上下文回收候选均为零，
+精确回收三个旧镜像的历史 tags，保留 24 小时受管上下文、实际引用和每仓库
+一个回滚镜像。收尾后再次验证版本、健康、资源哈希、generation、来源、
+原会话读取、配置与保护容器通过。
+
+本片在隔离分支 codex/conversation-size 实施与发布。收尾时主分支已并发
+提交 7801771b 的大模型配置 OPS-87，因此本片跟踪标识补为 OPS-87-CS；
+既有提交与发布资产中的 OPS-87 指向本会话统计切片。后续合并时，原本未提交的
+模型 Provider 用量查询迁移已改为 0195_model_provider_usage_query，并衔接于
+线上已应用的 0194_conversation_event_count 之后，以保持唯一 Alembic head。
+会话统计代码与验收记录现已合并至 feat/refactor。
+
+### OPS-87 大模型配置单行列表与详情信息布局 — DONE
+
+2026-11-04 按用户请求完成。服务列表将名称与连接状态收为单行，保留名称打开
+详情、行空白区域勾选、搜索与分页。测试连接、Codex 登录／断开、编辑和删除
+统一置于详情右上角，测试反馈在详情顶部按服务独立呈现。
+
+连接配置与上游预算并排展示，补充认证方式、调用协议和创建／更新时间。
+模型表展示启停数量、推理档位、默认推理档位及上下文窗口，缺失模型元数据
+明确显示未提供；沿用现有 API 数据与按需预算查询。窄屏调整为纵向概览，
+模型表在自身容器内滚动。
+
+Web typecheck、受影响 TS／E2E ESLint、diff 检查通过。模型布局及设置管理
+定向 Playwright 共 8 项通过，含 1920／1440／1024 宽度单行布局、右上角操作、
+服务切换反馈隔离、预算查询、模型配置、Codex 登录／断开与批量删除。
+该切片验收时 Alembic head 为 `0193_case_copy_stepwise_execution`，无迁移变更。
+验收使用受控 API 响应与本地 Chromium 页面。
+
+### FR-706 最终回复后的新消息直接发送 — DONE
+
+依赖 OPS-86 DONE。未完成轮次恢复只检查最新用户轮次，正式结束判断统一
+使用最新正式用户轮次，避免本地 activeTurnEventId 指向旧分支时重新开启
+运行状态。新消息 POST 到正式用户事件可读之间继续由原提交交接门控管理。
+
+新增四项受控 Chromium 回归覆盖 Workspace／Flow Node 的首屏和运行中
+REST 恢复。原实现先于“最终回复后暂停按钮消失”的断言复现失败；修复后
+四项均验证新消息实际 POST、队列为空、单一用户气泡和提交交接运行态。
+另十项相关既有回归通过，覆盖运行中排队、调整方向、message_complete、
+最终回复不可降级、Goal 循环和异常／暂停交接。
+
+扩展检查有四项既有失败，在未修改的 HEAD e6e182ec 隔离 Web 上均于相同
+断言复现。其中两项为旧会话返回后的正式回复可见性，两项为子任务摘要
+旧文案断言。Web typecheck、新增测试 ESLint、diff 检查和 CURRENT 唯一性
+通过；唯一 Alembic head 保持 0193_case_copy_stepwise_execution。
+本片实现验收为本地前端与受控 API 行为，正式 Web 发布验收如下。
+
+#### FR-706 Web 发布验收
+
+2026-11-04 按用户授权完成正式 Web 预检、commit-bound 最小上下文构建、
+定向服务更新与受管发布收尾。发布提交为
+36df3b290166ccd43cce740d1b918be0b2f6d5f6，源码归档 SHA-256 为
+e439250c2fb04a48c35a54c8bdfdb60ec82c21b6cfc9def3da27543ff7e9443d。
+实际 linux/amd64 Web image ID 为
+sha256:153860b6968692767e19fe5fbca9d6eafaad25575cd2234fdb1f739cc2a20b5f。
+
+服务器侧保留旧 Web 镜像回滚 tag 与服务／构建日志，仅定向 recreate Web。
+实际镜像 revision、Web HTTP、API／stream-api health 与 readiness、Worker
+和 Provider 健康通过；47 个保护容器的镜像及启动时间、服务器配置哈希
+核验通过。公网首页与 Agent 深链返回相同 HTML，入口 JS／CSS 和工作台
+模块 SHA-256 与运行镜像一致，前缀 API 未认证入口为 401，根登录页可读。
+
+通过本机只读静态资源代理加载实际已发布资源，受控 API 的五项浏览器回归
+通过，覆盖两类宿主的首屏／REST 恢复与 message_complete 后再次发送。
+另两项全新浏览器上下文验证首页／会话深链登录入口、前缀 API 请求和
+无 JavaScript 错误。浏览器行为验收使用隔离模拟身份与响应。
+
+remote-release-finish 成功，受管上下文回收候选为零，精确回收一个旧
+Web 历史 rollback tag，保留 24 小时上下文与每仓库一个回滚镜像。收尾后
+再次核验正式版本、资源哈希、服务健康、47 个保护容器和配置哈希通过。
+
+### OPS-86 长会话历史渲染与事件索引优化 — DONE
+
+依赖 FR-705 DONE。2026-11-04 按用户请求优化持续上拉直至全部展开的长会话。
+每个 transcript 共用一个 IntersectionObserver，按实测高度卸载视口外轮次正文，
+保留浅层占位及正式事件身份；最新轮次、编辑／搜索／引用目标和活动文本选择
+保留挂载。高度与原生详情展开状态按稳定 renderKey 保存，随 binding 的阅读
+快照恢复；已完成过程详情首次展开前延迟渲染。共享正式 parent 链的归属索引，
+缓存祖先解析，移除每轮重复全历史扫描及普通分支的无效祖先遍历；事件排序
+改用迭代遍历，保留原有顺序与环保护。
+
+受控 Chromium 完整展开 180 轮、540 个事件及 11 页历史，视口附近仅挂载
+8—9 轮正文，节点数约 729—797；同一数据的未修改版本有 13141 个节点。
+验证搜索跳转与高亮、历史阅读位置、展开状态、会话往返、1024／1440 布局；
+12000 个深链事件的排序及环保护通过。另覆盖运行中正式文本增长、历史
+退让与父链桥接、乱序事件、消息双身份及 Workspace 增量 hydration。
+共 30 项不同定向检查通过，最后 7 项发布回归通过。
+
+扩展检查有 10 项既有失败，均在 HEAD 9bac1c2f 的隔离未修改 Web 上同位置
+复现，未改断言或计为通过。其中 1 项查找旧导航名称，7 项为 Flow Node 的
+全局重复元素严格断言，2 项为旧会话返回后的正式回复断言。
+Web typecheck、新模块／事件排序／测试 ESLint、production build、diff 检查
+通过。两个既有大组件原有 3 条 ESLint 诊断与 baseline 对比一致，构建仍有
+既有 topbar CSS 语法及大 chunk 提示。唯一 Alembic head 保持
+0193_case_copy_stepwise_execution。Web 发布验收如下。
+
+#### OPS-86 Web 发布验收
+
+2026-11-04 正式 Web 预检、commit-bound 受管最小上下文与收尾通过。
+发布提交 `4981e7d8649c1f7fc3377d03c41fbd93eb03e7c8`，源归档 SHA-256 为
+`05db914dd9fe57e7c5f461952df18764de14b10dffb1267eb98195b81c792ddd`。
+实际 linux/amd64 Web image ID 为
+`sha256:7595a8e8ea8539de20af8daaf639688ee8fbbbc65e1d504d4e3ea4ceef22d817`。
+保存旧镜像回滚 tag 和服务日志，定向 recreate Web；实际 revision、HTTP、
+API／stream-api health 与 readiness 通过，37 个保护容器的镜像和启动时间、
+服务器配置哈希核验通过。
+
+公网 HTML 与 Agent 深层路由一致，两个入口资源及工作台模块的 SHA-256
+与运行镜像一致，模块含本次窗口化实现，两项 API 鉴权边界为 401。
+三个全新 Chromium 登录／深层路由／根登录页检查通过。
+
+经本机只读静态资源代理加载实际已发布 Web，以独立模拟账号及受控 API
+重跑完整长会话专项，全部 180 轮历史展开后挂载 8 轮正文、729 个页面节点。
+搜索、高亮、历史阅读锚点、工作过程展开／恢复、会话往返、1024 布局均通过，
+无页面 JavaScript 错误；39 项 API 请求使用部署前缀，根 API 请求为 0。
+该结果验证已发布前端与浏览器交互，真实用户历史和模型未参与负载验收。
+
+remote-release-finish 已回收两个过期且无引用的受管上下文及一个精确旧 Web
+历史 tag，保留 24 小时上下文、实际引用和每仓库一个回滚镜像。收尾后再次
+核验版本、健康、资源哈希、服务器配置和 37 个保护容器通过。无后续实现切片。
+
+### FR-704 Fork 后摘要模型凭据持久化与实际压缩回归 — DONE
+
+依赖 FR-585、OPS-12 DONE。固定线上源码 `73e3cd8e` 的故障为原生 Fork
+创建临时 LocalConversation 时遗漏 cipher，模型凭据落盘被脱敏；重新加载后
+主模型切换恢复自身凭据，而摘要器与主模型的 stream／stream_idle_timeout
+差异阻止摘要模型跟随更新。实现已在同一固定源码上完成最小修复：本地
+Fork 继承原 cipher，Agent Server 显式传入目标会话 cipher；默认摘要模型
+跟随切换时忽略两项传输差异，并重新校验摘要器以正确应用流式要求。
+独立摘要模型的模型与认证配置继续参与身份比较。
+
+不可变修复提交为 `9bf1678d86ca51b334c51f3f97677585e5b1064e`，已通过
+`842fefa` 合入 SDK baseline；本次 source lock 固定该纯修复提交，避免携带
+baseline 中其他后续变更。四包保持 `1.54.0`。源码归档 SHA-256 为
+`4481e401c09c23b88402807b99d46bbda8f7e998524d858ee1d35deb5c3a0ab9`。
+同步更新 Dockerfile 构建身份、平台固定身份、provenance 和架构断言。
+
+固定修复源码的 SDK／原生服务定向回归共 60 项通过。新增真实 TCP HTTP
+回归覆盖事件边界 Fork、持久状态重载、模型切换、原生 condense、正式
+Condensation 事件、再次重载、历史保留及继续回复；服务级共用 cipher 与
+每会话独立 cipher 两种方式均通过。相同 HTTP 回归在旧固定源码上于
+condense 复现失败。baseline 合入后的 54 项定向回归通过。
+模型响应使用确定性替身，此结果不代表线上真实模型验收。
+
+不可变归档校验／提取、五项无数据库 source supply／架构检查、Python
+语法检查、目标 Ruff、SDK pre-commit、diff 检查通过。baseline 的动态
+属性扫描改用全部 Git 跟踪 SDK 源文件，以排除原有 build/lib 副本的扫描
+干扰，其余 pre-commit 检查通过。新增镜像探针在固定源码下独立执行通过，
+要求 Fork 重载和切换后确实生成摘要且正式历史保留。完整固定镜像构建、
+镜像内完整契约和实际独立 Agent Runtime 同步由 OPS-85 验收。
+当前 Alembic 唯一 head 保持 `0193_case_copy_stepwise_execution`。
+
+### OPS-85 Fork 压缩修复 Runtime 发布与线上验收 — DONE
+
+依赖 FR-704 DONE。用户明确要求开始发布切片，并验证已有受损会话是否恢复。
+2026-11-04 以提交 `ffd567cc04dfe809afcd4245c09ad734ed545178` 通过正式
+runtime 预检，从 commit 归档的最小输入构建 linux/amd64 Runtime 镜像。
+构建内完整契约及独立、无网络、无业务挂载的镜像契约均通过，包含 Fork
+凭据重载、模型切换和实际生成原生摘要的探针。实际 Runtime image ID 为
+`sha256:8042dd4cbb1e367fd4cf61003174d7cf67fa1871c542bece76567a213614c459`。
+四包均为 `1.54.0`，实际 `/server_info.build_git_sha`、provenance 和 source
+lock 一致固定 `9bf1678d86ca51b334c51f3f97677585e5b1064e`。
+
+用户同时询问后续终端环境能否采用新 Runtime。本片同步构建平台镜像
+`sha256:64872c1633cd422e406269ee8a504b0eed9887bc49c71a69bf4bcbbf954f5ef5`，
+由受管 platform 最小上下文构建并冻结完整 revision。API、stream-api、Worker
+和 Runtime Provider 全部同步至同一提交及源码身份。终端创建 seed、OpenHands
+原生 Runtime builder 和独立 Agent Runtime 的实际配置均解析到上述 Runtime
+digest，终端入口验收覆盖配置与构建身份。后续发布的新环境版本按此固定
+源码执行正式打包，既有环境版本及 FlowRun 仍由各自冻结快照决定。
+
+首次活跃会话门禁发现运行项，等待结束后再次检查全部受影响 Runtime，确认
+无 running／starting／executing／stopping 才继续。服务器侧完成受保护的
+原生状态备份与回滚镜像保留，Compose／env 哈希验收通过。正式 migration
+退出码为 0，唯一 head 为 `0193_case_copy_stepwise_execution`。受影响常驻
+服务定向更新后健康检查通过，再通过平台正式 replacement 将独立 Agent
+Runtime generation 51 更新为 52，恢复 ACTIVE／可写。322 个原生持久化
+目录、既有 Binding 的原 native ID 和全部持久挂载验收通过，33 个保护
+容器的镜像及启动时间核验通过。
+
+线上新建 Fork 使用真实模型完成压缩，已读取正式 CONDENSATION_REQUESTED
+和 CONDENSATION_COMPLETED 事件。原生当前 View 从 49 个事件降至 24 个，
+可信 token 指标从 100926 降至 67211；源会话正式事件保留。压缩后发送
+独立验收消息，收到正式 assistant 最终回复并恢复 COMPLETED。原受损 Fork
+也经正式接口重试，Worker 任务最终为 DEAD，受保护 Runtime 日志继续报告
+`Summarization LLM call failed`／`Missing credentials`，其摘要器 api_key
+仍为空，而主模型凭据和父会话摘要器凭据仍有加密值。该已有会话尚未恢复
+压缩，后续由 FR-705 处理认证恢复。
+
+受管 `remote-release-finish` 完成，随后 API／stream-api 的 health、readiness、
+Worker、Provider、Runtime 实际身份及配置哈希再次验收通过。保留服务器侧
+受保护状态备份、失败日志、24 小时内受管上下文和受管回滚镜像。临时资料
+仅保存在忽略目录及服务器受保护发布上下文。本片只补记实际发布与验证结果，
+文档 diff 及 CURRENT 唯一性检查通过。
+
+### FR-705 已有受损 Fork 摘要模型认证的正式恢复 — DONE
+
+依赖 OPS-85 DONE。2026-11-04 完成原受损 Binding
+`b3a07bbd-eb2b-4f24-ab80-76d71528e3f4` 的认证恢复、真实压缩和继续对话验收。
+原生 `switch_llm` 正式接口增加显式、可发现的缺失摘要器认证恢复选项。
+LocalConversation 在原生状态锁内核对摘要模型完整配置，仅允许 API Key
+缺失时补齐，保留摘要策略和既有用量，拒绝配置不匹配及运行中恢复。
+EventService 在线程生命周期边界执行恢复，响应返回安全的认证存在标记。
+平台公开恢复动作只解析当前用户 Binding 的供应商与模型，不接受调用方
+提供的认证或模型配置，并拒绝活动压缩任务及忙碌会话。
+
+纯修复源码固定为 `4c563c0f96700b6b331c4a70cd244b287749e980`，经
+`8a7cafb69` 合入 SDK baseline；`46ba1f9` 适配 baseline 后续测试夹具。
+Runtime 归档 SHA-256 为
+`08039bd770dcaf6b5fbb289a862577b0eb1776d49106177575643c03ae5138ff`，
+四包保持 `1.54.0`。固定修复源码定向回归 59 项、合入后的 baseline 定向
+回归 63 项、平台适配器回归 4 项、源码供应链／架构检查 6 项通过。
+新增真实 TCP HTTP 回归覆盖恢复拒绝、重复恢复、持久重载、实际摘要生成、
+原历史保留及继续回复。镜像探针覆盖缺失认证恢复后持久重载和实际生成摘要。
+SDK 定向 pre-commit 通过；baseline 原有 build/lib 副本干扰动态属性扫描，
+改以全部 Git 跟踪 SDK Python 文件验证通过。平台 adapter 类型检查仍有
+42 条既有诊断，与改动前逐条消息一致，无新增诊断；四条既有行长问题
+保持原范围，受影响文件其余 Ruff、Python 语法及 diff 检查通过。
+
+发布输入绑定 FlowWeave 提交 `c9d9627ddbd65df2ad4c042c06bad8f34b1f7cbd`。
+正式 runtime 预检、受管 platform 最小上下文、linux/amd64 镜像构建、构建内
+及独立无网络完整镜像契约均通过。Runtime 实际 image ID 为
+`sha256:130a14ec283d8faf704b8d1a155f82afa659f2218a4a36cedbc9cad99e6dc33c`，
+平台 image ID 为
+`sha256:86bf0e5f90f5b27640ff708c23e19906bcbb9c1bab049c195b90026309dc6f16`。
+API、stream-api、Worker、Provider 全部使用同一发布提交；终端 seed、原生
+Runtime builder 和独立 Agent 镜像引用均解析为本次 Runtime digest。
+
+全部受影响 Runtime 的正式活动分页门禁无运行项后，服务器侧完成 323 个
+原生会话目录备份和回滚镜像保留；迁移退出码 0，唯一 Alembic head 为
+`0193_case_copy_stepwise_execution`。通过平台正式 replacement 单次受理，
+独立 Agent Runtime generation 52 更新为 53，恢复 ACTIVE／可写。
+实际容器 digest、四包版本、build_git_sha、provenance 和恢复 capability
+与 source lock 一致；原 Binding、原 native ID、工作区、持久挂载及全部
+323 个会话目录保留，33 个保护容器的镜像和启动时间核验通过。
+
+在原 Binding 通过平台正式恢复动作补齐认证，随后正式压缩任务
+`996ce01a-9087-40e2-9ad5-0f118ae1fef3` 为 SUCCEEDED。读取到正式请求事件
+`a2f75afa-178b-4bc4-bda7-038850391420` 和完成事件
+`5f9a3c44-e0bd-4bb8-9c06-27fc2e53bbf1`。真实模型生成摘要后，当前 View
+从 318 个事件降至 159 个，可信 token 从 409661 降至 193095。
+压缩后读取到的原有 320 个正式事件逐项一致。
+
+继续在同一原会话发送一条仅文字验收消息，正式用户事件为
+`167c3e66-2c9d-4a92-a18b-6f854f20de12`，assistant 最终回复事件为
+`b5a86d21-06d3-416e-8320-b67426aa625c`，正文为“FR-705 原会话恢复验证通过”。
+正式结果为 COMPLETED，最终 hydration 为 ready／finished，当前 View 为
+161 个事件、193160 tokens。最终分页包含 324 个正式事件；原事件 ID 与
+正文保持，仅上一条最终回复的展示投影 final_reply 随新轮次正常更新。
+服务器侧对照备份核验 377 个原生正式事件文件，全部内容哈希一致。
+摘要器 Key 已加密持久化；恢复操作本身保留主模型和摘要配置。正常续聊入口
+按既有逻辑更新 primary usage_id 和摘要器 stream_idle_timeout，模型、
+供应商、摘要策略及工作区身份核验一致。
+
+受管 remote-release-finish 完成，收尾后 API／stream-api health 与 readiness、
+Worker、Provider、Runtime 实际身份及服务器配置哈希再次验收通过。
+保留受保护备份和回滚镜像，临时证据只在忽略目录及服务器受保护发布上下文。
+CURRENT 唯一性核验通过；本片完成后停止，下一可执行切片为 OPS-84。
+
+### OPS-12 独立 Agent Runtime baseline 同步升级 — DONE
+
+用户明确授权将独立 Agent Runtime 同步到受治理 baseline，并要求后续每次 baseline
+更新都同步升级该 Runtime。目标使用当前已提交 source lock：`73e3cd8e`／四包 `1.54.0`，
+不将浮动 baseline 后续开发直接作为本次发布输入。只读诊断确认旧 generation 50
+运行 `d3a9a1f9`／`1.49.5`，缺少 `conversation_dynamic_context_v1`，因此平台在写入
+新增认证前以 `AGENT_CREDENTIAL_CONTEXT_UNSUPPORTED` 拒绝同步。
+
+AGENTS 与部署文档已加入 baseline 发布必须同步独立 Agent Runtime 的规则：镜像构建
+不是收尾，必须经活跃门禁、正式 replacement 和实际容器身份／原会话恢复验收；
+仍有运行会话时明确保留未完成状态。同步纠正 AGENTS 中过期的上游锚点与四包版本。
+已有 FlowRun 的冻结镜像与 Environment Version 不因此改写。
+
+实际升级完成于 2026-10-27。发布输入绑定已提交 FlowWeave
+`40dad3e9f120b3fbb07fe77f9eca1a9a575a9dd5`，正式 runtime 远端预检通过。
+服务器已备有与当前 source lock 一致的 linux/amd64 镜像，本片复用该不可变镜像，
+未声称重新构建。实际 image ID 为
+`sha256:280d92c5711e442eb77a65002ffb5e52571089f907e74a5678134e975125ca80`；
+provenance、四包 `1.54.0`、`/server_info.build_git_sha` 均与锁定
+`73e3cd8e4d74ff30c9ed794baf72d977800509d7` 一致，源码归档 SHA-256 为
+`5fcd3fc5e628572a7e223c954e8fd792b78d768f1d8eba9419a4d88d6490308a`。
+镜像内 contract_check.py SHA-256 与本提交输入相同；隔离、无网络、无业务挂载
+的完整固定镜像契约通过，包含 late-secret 注入后动态认证目录进入模型上下文、
+Secret 不出现在目录正文、正式历史事件不改写和命令环境按需解析 Secret 的探针。
+
+首次门禁存在运行项，未切换；用户随后明确暂停会话并要求直接部署。备份前与
+切换前再次确认全部 619 条 OpenHands 原生会话均无 running／starting／executing／
+stopping。服务器侧保留权限受限的原生持久状态备份和旧镜像 rollback tag；备份
+SHA-256 为 `fb9035d52e84a7fb4188bb839457fae31f7171e6acc5f6a146ebb8371337f968`，
+不复制业务状态或私有配置进入仓库。通过正式平台 Runtime replacement 单次受理，
+generation 50 升为 51，恢复 ACTIVE／可写；未直接操作数据库 generation。
+
+升级后实际容器 digest 与验证镜像一致，四包／源码身份／归档 provenance 核对通过，
+`conversation_dynamic_context_v1` 已存在。617 个 binding 的用户、Runtime Session、
+原 conversation ID 和工作目录身份摘要不变；619 条原生会话及状态计数保留。
+原目标会话的正式 event id 可读取；平台返回的 79 个原正式事件逐项相同，cursor
+不变。全部持久挂载的来源、目的及读写属性不变。其余 37 个运行容器的 image
+和 StartedAt 不变，api／stream-api 的 health／readiness 通过，Alembic 唯一 head
+仍为 `0176_agent_temporary_services`。未更新服务器 Compose／env、Provider 或平台
+镜像，没有向业务会话发送、继续或重放消息，也未修改用户实际认证的同步选择。
+新增认证路径以实际镜像的 capability 与隔离完整契约验证，未冒称真实业务认证操作。
+文档 diff／CURRENT 唯一性检查通过；当前与下一可执行切片均为 NONE。
+
+### FR-703 内置浏览器大模块响应与错误可读性 — DONE
+
+依赖：FR-630 DONE。实际预览入口和 CasesPage 返回 200，但其依赖的工作台模块
+被 2 MiB 代理上限拒绝，返回 AGENT_BROWSER_RESPONSE_TOO_LARGE；错误响应缺少
+CORS 头，浏览器最终只报告动态模块加载失败。本片已将单响应预算调整至有界的
+16 MiB，同步子进程读取、Base64 传输和解码检查；为已授权预览的错误响应保留
+隔离与 CORS 响应头。保持所有权校验、只读 loopback、超时与连接并发限制。
+真实 HTTP 回归验证 3 MiB、恰好 16 MiB、超限拒绝和后续连接可用；正式 API
+验证 413／502／503 响应保留 CORS、禁缓存和 sandbox 隔离，普通平台 API 不获得
+预览 CORS 权限。传输／预览／用户隔离定向套件 19 项通过，错误边界用例在闭包
+静态检查修正后单独复测通过，不累加用例数。真实 Vite 的大于 2 MiB 懒加载模块
+经正式代理管线在 Chromium 隔离 iframe 渲染成功；该 1 项 E2E 使用本地 HTTP
+与受控 Docker exec 替身，不代表生产原会话已恢复。Web typecheck、受影响 E2E
+ESLint、Ruff、目标传输／预览模块 Pyright、diff 与切片状态检查通过。唯一
+Alembic head 为 0176_agent_temporary_services，本片无迁移或 OpenHands 修改。
+不发布或替换 Runtime；线上生效仍需独立预检、Runtime 范围发布和活跃会话门禁。
+当前与下一可执行切片均为 NONE。
+
+### OPS-08 一天构建保留与单版本回滚维护 — DONE
+
+依赖：OPS-07 DONE。按用户明确授权，平台／Web 各保留当前与一个不同版本回滚镜像，
+构建资产超过 24 小时且无实际引用／近期写入时回收；将已核验历史源码／导出包和
+显式开启的 24 小时 dangling BuildKit 缓存纳入原定时任务。业务数据、环境镜像、
+HOME、卷、工作区和备份保留。实施、定向验证后以固定提交更新同一目标并实际执行，
+复核所有容器、持久资产、配置与健康状态。当前无后续重构切片。
+
+本地 28 项定向测试、Python 3.9 目标 Ruff、Bash 语法及 diff 检查通过。线上新策略
+只读预览为 21 个受管目录、16 个历史构建资产、93 个平台／Web 镜像与约 16.2 GiB
+过期缓存。已记录容器、挂载、卷、备份与配置不变量；准备固定提交安装和实际验收。
+
+首轮固定提交 `3e0e571` 已安装执行成功：删除 21 个受管目录、16 个旧构建资产和
+93 个历史平台／Web 镜像；Docker 报告回收 1426 个缓存记录、21201723824 字节。
+文件系统净增加约 10.8 GiB 可用空间，不能将缓存层报告重复累加为实际释放量。
+48 个容器的 ID／image／StartedAt、卷、Compose／env、备份元数据与业务数据根
+身份一致，health／readiness／Web HTTP 通过。复核补齐旧源码的一至两层解包目录
+和显式历史 releases 子目录；只含空白 .gitkeep 的源码占位目录可识别为非业务
+数据，真实工作区文件仍拒绝。扩展后本地 31 项测试与 Ruff 通过。
+
+最终固定脚本提交 `e95220d59070a3837329417f80acc9e31171d6e1` 已安装，四份
+线上脚本／unit SHA-256 与该提交逐项一致，配置目标与正式预检一致且启用缓存维护。
+补充实际删除 13 份旧构建资产，回收 7 个缓存记录、42680812 字节。两轮累计删除
+21 个受管目录、29 个历史构建资产、93 个历史镜像，Docker 报告回收 1433 个缓存记录、
+21244404636 字节；镜像／缓存共享层不可与目录或文件系统释放量重复相加。
+从本次维护前到最终复核，文件系统可用空间由约 45.6 GiB 增至 58.1 GiB，净增
+约 12.5 GiB；已用约 140.8 GiB。31 项本地专项、Python 3.9 源码解析、Ruff、Bash
+语法、diff 与任务状态检查通过；Alembic 唯一 head 仍为 0174_agent_workspace_user_defaults。
+
+最终只读审计：过期受管上下文、历史构建资产和镜像候选均为零；保留七份未满一天的
+受管上下文。另有约 277 KiB 缓存记录仍由 Docker 原生 dangling GC 的依赖边界保留，
+不通过文件删除强制绕过。平台／Web 的额外镜像若仍有容器或其他仓库 tag 引用继续保护，
+只对独立可回收历史版本执行单回滚策略，未清理 Environment／Runtime 镜像。
+
+48 个容器 ID／image／StartedAt、卷、Compose／env、备份元数据与业务数据根身份在
+整个维护前后相同，API／stream-api health/readiness 与 Web HTTP 通过；挂载条目按
+稳定顺序归一后在首轮完成至最终复核一致。首次摘要未归一挂载列表顺序，不能将其
+原始散列差异误作挂载变更。没有重建生产容器或删除业务持久数据。
+任务 Result=success、ExecMainStatus=0，timer enabled／active，下一次北京时间
+2026-10-27 03:34:24，之后每天 03:30 起随机延后十分钟。安装保留上一固定版本及
+配置备份；未创建新的并行定时任务。当前与下一可执行切片均为 NONE。
+
+
+### FR-702 远程收起侧栏与草稿默认配置合并发布 — DONE
+
+依赖：FR-701 DONE。按用户明确授权拉取远程 feat/refactor 至 `d878a44a`，
+保留本地 `3e77df74` 及其祖先。远程两个提交均只修改 Web；实现自动合并，
+浏览器测试发生一处文本冲突，保留本地侧栏／草稿／配置保存用例和远程新增的
+默认能力／认证继承用例。同步更新旧草稿导航测试：主页切换侧栏，恢复草稿应
+点击显式恢复入口，不再假定主页按钮自动离开既有会话。
+
+合并验证：Web typecheck、受影响 TSX／测试 ESLint、diff 检查通过。九个不同
+Chromium 定向用例通过，覆盖配置保存与继承、草稿恢复、侧栏保持、悬浮信息卡、
+工具区域伸缩和浏览器启动页；旧草稿用例首次因过期导航预期失败，更新后单独
+复测通过。使用受控 API／WebSocket，不记为真实模型业务验收。Alembic 唯一
+head 仍为 `0174_agent_workspace_user_defaults`。服务器实际平台版本已含本地
+平台代码，差异仅为 Web，按用户授权继续完成同一切片的 web 发布与验收。
+当前与下一可执行切片均为 NONE。
+
+正式发布（2026-10-26）：合并／部署代码版本为
+`ec93ce058f5cc0a474f41e5be868a4238fa91997`，原本地和远程 HEAD 均为其祖先。
+web 正式预检与 commit-bound 最小上下文 prepare 通过，归档 SHA-256 为
+`47d8cf98406e0422543835955fc19e3106df32da1239c407e3990e57c73fe397`；
+实际 linux/amd64 Web 镜像为
+`sha256:50fc8436effb5ac15fa4a9891c210d9798271403629b14a7ff11e52c585edcc3`，
+已核实 OCI revision。保留旧镜像 rollback tag 和服务日志后仅 recreate Web；
+Web HTTP、API／stream-api health/readiness 通过，服务器配置和其余 47 个
+容器 image／StartedAt 不变；无迁移、Provider 重启或既有 Runtime replacement。
+
+实际部署镜像导出的静态资源以受控 API／WebSocket 重跑上述九项 Chromium
+回归，全部通过；浏览器实际加载的 45 个 JS／CSS 文件 SHA-256 与运行容器
+一致。此九项与本地用例重叠，不累加，也不记为真实模型执行验收。服务器侧
+全新 Chromium 验证公开前缀登录、Agent 深层路由和根登录页，Network 验证
+API 请求使用部署前缀、没有根路径 API；两项公开认证 API 均为 401。
+remote-release-finish 的版本、健康及容量收尾通过，本次无过期受管上下文或
+精确 rollback 镜像待回收，保留各 scope 最近三份成功上下文及引用版本。
+收尾后再次复核健康、代码身份、配置及其他容器不变；未操作业务会话、卷、
+Workspace 或共享 BuildKit。补记提交仅记录验收，不改变实际部署代码身份。
 
 ### FR-701 远程侧栏与草稿修复合并发布 — DONE
 
@@ -12925,3 +13482,4009 @@ platform／web remote-release-finish 均通过版本、健康及容量收尾，�
 镜像保留流程。未清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后的复核再次
 确认四服务健康、版本一致和其他容器不变；当前与下一可执行切片均为 NONE。
 本地补充提交仅包含上述回归测试与本验收记录；部署事实仍绑定代码提交 0771943c。
+
+
+### OPS-09 远程工作目录配置与布局改动合并发布 — DONE
+
+用户在当前会话明确授权拉取远程代码、解决冲突并直接部署受管服务器。
+远程 feat/refactor 新增两个提交，目标为 `2367e0fe`；保留本地 `47fe268c`
+及其全部祖先。合并处理工作台、会话配置服务与浏览器测试三处冲突：根工作区
+认证默认项继续按用户隔离，命名工作区使用自身配置，并显式校验目录 owner。
+追加 `0175_merge_workspace_session_defaults` 合并两个 0174 分支，不改写已有
+revision。保留本地 hydration、侧栏与草稿修复，并接入远程布局动画。
+
+验证：真实独立 PostgreSQL 的配置／RLS／迁移与 bootstrap 定向七项通过，
+包括既有用户配置和目录行升级后的保留、非法跨用户读取／写入拒绝，以及
+根／命名目录配置冻结。扩展后端套件 22 项中七项通过、十五项失败；同一选择在
+合并前代码为二十项中五项通过、十五项失败，失败名称集合完全相同，零新增
+失败，不能记为全套通过。既存失败主要为旧目录路径预期与缺失用户主体夹具。
+Web typecheck、受影响 ESLint、服务代码与新增测试 Ruff、diff 检查通过；
+工作目录配置、侧栏草稿、目录恢复、文件树、浮卡动画和布局切换共七项不同
+Chromium 定向用例通过。额外旧产品长用例遇到过期导航／权限夹具，未作为
+本次成功验收证据。浏览器使用受控 API／WebSocket，不代表真实模型执行。
+
+部署范围为 platform 和 web；正式预检已通过，提交后继续使用相同 commit 的
+受管最小上下文构建、迁移和同步更新 api／stream-api／worker／web，并完成
+健康、版本、路由与容量收尾。实际发布结果另行追加，不提前声称已上线。
+当前与下一可执行重构切片均为 NONE。
+
+OPS-09 正式发布补记（2026-10-26）：合并／发布代码版本为
+`1f0bc53fe388147c59e89e9f26d881cc15d1c88a`；原本地 `47fe268c` 与远程
+`2367e0fe` 均为其祖先，未推送。正式 platform／web 预检与受管最小上下文
+prepare 通过，归档 SHA-256 分别为
+`2dfd49cecfbe00cea0b477c040934908351fca8a1a01264a8e39afbb9d488a39`、
+`4e4280186b6559ada37e65c31c2bc0828d3eeb7c0c9757b0c8766e0c65ccc61b`。
+实际 linux/amd64 平台／Web 镜像分别为
+`sha256:e048c2577b6d59d82e05e1fbac0f439662036011cf85c5d1dd69655bfb0d2b74`、
+`sha256:3b972587d22227acf9eeb361b72dcca376bbb7ae9ece7a13b3a0f692dd2056c9`，
+均通过 OCI revision 核对。
+
+保留原日志与精确 rollback tags 后，正式 migration 成功，数据库唯一 head 为
+`0175_merge_workspace_session_defaults`。api／stream-api／worker／web 已同步
+运行该代码版本，health／readiness／Web HTTP 均通过；配置文件摘要一致，其他
+43 个容器的 image 和 StartedAt 未变，包括 Runtime Provider 与既有 Runtime。
+线上只读确认新增目录配置列、用户配置表与目录表的强制 RLS 均存在。
+公网前缀登录页、Agent 深层路由、根登录页经服务器实际 Chromium 验证通过，
+前缀 API 认证边界为 401；全新浏览器网络日志确认请求使用部署前缀，无根路径
+API 请求。公网 HTML 与入口 JS／CSS 摘要匹配运行镜像。
+
+导出实际 Web 镜像资源，以受控 API／WebSocket 重跑上述七项不同 Chromium
+用例均通过；其中分组布局用例首次在动画期间读取原始坐标后点击，命中位置
+随布局移动而失效，改为等待元素稳定的 Locator.click 后复测通过。仅修改
+测试时序，没有修改或替换已发布应用资源。实际加载的 45 个 JS／CSS 文件
+SHA-256 与运行 Web 镜像一致。这些受控回归不等于真实模型业务执行验收，
+没有向业务会话发送、暂停或继续消息。
+
+platform／web remote-release-finish 均通过版本、健康及容量收尾。无过期受管
+上下文候选，精确回收两个不再受引用保护的平台／Web 历史镜像版本，保留当前
+镜像、各 scope 一个回滚镜像及所有容器引用。未清理共享 BuildKit、卷、Workspace
+或数据库备份。收尾后再次确认四服务版本与健康、配置摘要和其他容器不变。
+当前与下一可执行重构切片均为 NONE。
+
+
+### OPS-10 远程临时服务与本地浏览器修复集成发布 — DONE
+
+用户明确授权拉取远程代码并直接部署受管服务器，随后追加纳入已提交的本地改动。
+远程四个提交快进至 `1cb6d96a`，无文本冲突；本地 `3cd40831` 的 FR-703
+大模块预览传输修复一并纳入。隔离工作树完成集成，保留原工作树的并行修改。
+补齐临时服务 Provider 接口的 API／Worker 白名单，保持资源归属与 scope 校验；
+修正新增测试缺少的正式 Settings 夹具。工具 grid 根据 drawer 实际宽度收缩，避免
+父级读取仅定义在子级的变量而锁为 400px；保留远程过渡动画与浮卡宽度约束。
+场景与子智能体测试按当前产品文案／布局更新，预览开发夹具移除显式 any。
+
+发布前验证：新增授权／归属／认证及进程参数六项通过，FR-703 传输／隔离二十二项
+通过；真实独立 PostgreSQL 由正式测试 fixture 从空库迁移到唯一
+`0176_agent_temporary_services`。扩展后端初跑 146 passed、15 failed，其中两项
+为已修正的新测试夹具；其余十三项在拉取前 `4c33f149` 逐项复现，失败集合相同，
+不声称全套通过。Web typecheck、受影响 ESLint／Ruff、diff 检查通过；场景创建、
+多子智能体浮卡、浏览器入口、Git 启动、工具挤压／边界与隐藏、延迟模块定向回归
+八项不同用例通过。临时服务停止 UI 与实际 Vite 大模块代理另两项通过，共十项不同用例。浏览器使用受控
+API／WebSocket，不等于真实模型执行业务验收。
+
+正式 Runtime／Web 预检通过，初次原生 activity 门禁核对两个 Runtime 共 654 个
+会话，无 running／starting／executing／stopping。发布必须在服务替换前再次门禁，
+使用最终已提交版本重新 prepare 最小上下文，构建平台／Web 镜像，先 migration，
+再同步更新 Provider／api／stream-api／worker／web；健康、版本、路由和受管容量
+收尾结果在实际完成后补记。本片不构建或替换既有 OpenHands Runtime generation。
+当前与下一可执行重构切片均为 NONE。
+
+
+OPS-10 正式发布补记（2026-10-26）：最终发布代码为
+`c895060ede2c8da8561b32a2c7aeee33042b2e5b`，包含远程 `1cb6d96a` 与本地
+`3cd40831` 的全部祖先。主分支已快进纳入本次集成提交，未推送。
+最终 Runtime／platform／Web 预检与 commit-bound 最小上下文 prepare 通过；
+平台／Web 源归档 SHA-256 分别为
+`7497219f82a942b1f99c6b19a683b1bb642b7bd5b801165915491145c4bb457b`、
+`decf18454198ac7cca72f42f704cd95fae83f4a4630ac82e1ed68d87897c2ff5`。
+实际 linux/amd64 平台／Web 镜像分别为
+`sha256:5cb26b80e0f4c7acae632861cbad3979f4e54d7ad7fdec6fcd9b16c87cb51c2b`、
+`sha256:97ed2a60b57e4288ce577c79bc5100684ff79ff4be58427cc607e47d3d596ac1`，
+均通过 OCI revision 核对。实际固定 Runtime 隔离容器探针验证监听扫描、错误 PID
+身份拒绝和精确进程停止；不挂载业务目录、不调用模型、不触碰业务进程。
+
+切换前再次通过两个 Runtime、654 个正式原生会话的 activity 门禁，无运行项。
+正式 migration 成功，唯一数据库 head 为 `0176_agent_temporary_services`；只读
+复核新增临时服务表的 FORCE RLS 与 owner USING／WITH CHECK 策略通过。
+Provider／api／stream-api／worker／web 同步运行最终 revision，健康、readiness
+及 Web HTTP 均通过；服务器 Compose／env 摘要一致，其他 42 个容器的 image
+与 StartedAt 一致，包括既有 OpenHands Runtime generation。
+
+公网前缀登录、Agent 深层路由和根登录入口经服务器实际 Chromium 验证通过，
+公网 API 认证边界均为 401。全新浏览器 Network 验证认证请求使用部署前缀，
+没有根路径 API 请求；公网 HTML 和入口 JS／CSS 摘要匹配运行镜像。
+导出实际 Web 镜像资源后，以受控 API／WebSocket 重跑九项不同定向回归全部
+通过，覆盖场景新布局、浮卡裁切、工具宽度与拖拽、浏览器入口与延迟模块、临时
+服务停止；加载的 45 个 JS／CSS SHA-256 全部与运行镜像一致。另一个真实 Vite
+大模块用例在本地正式代理管线通过；这些验收不等于真实模型业务执行。
+没有向业务会话发送、暂停、继续或重放消息。
+
+platform／Web remote-release-finish 均通过健康、版本与容量门禁，回收两份
+超过 24 小时且未引用的受管上下文，以及三个可回收平台／Web 历史 image ID 的
+精确 tags；保留当前、每仓库一个不同版本回滚和所有容器引用。不清理共享
+BuildKit、卷、Workspace 或数据库备份。收尾后再次复核五服务版本／健康、
+配置与其他容器不变。当前与下一可执行重构切片均为 NONE；本补记提交不改变
+实际部署代码身份。
+
+
+### OPS-11 远程会话搜索与管理员临时服务合并发布 — DONE
+
+用户在本会话明确授权拉取远程、解决冲突并直接部署受管服务器。
+集成远程 `6f488934` 与本地 `40ee3a73`；保留远程会话搜索、顶部错误提示和
+管理员临时服务管理，解决 Provider 测试冲突并保留已发布的 0176 原始迁移及
+退役表的用户隔离注册，不删除表或记录，不改写服务器已执行的迁移历史。
+临时服务查询只向管理员观察／控制身份开放，停止只向专用控制身份开放；
+普通 API／Worker 权限已移除。窄屏错误提示保留顶部居中并修正绝对定位下
+fit-content 的收缩导致的换行。
+
+发布前：Provider／进程所有权与权限矩阵十项通过，管理员请求凭据／scope、
+无密钥拒绝和过期清理边界四项通过；这十四项不重复累计。Web 与 Admin Web
+typecheck、受影响 ESLint／Ruff、语法与 diff 检查通过。六项不同 Chromium
+定向用例通过，覆盖会话搜索（含缓存历史）、错误提示与恢复、浏览器入口和
+工具布局；其中窄屏提示首次失败，修正后单独通过。受控 API／WebSocket
+验证不等于真实模型业务执行。源码 Alembic 唯一 head 为
+`0176_agent_temporary_services`。
+
+正式 Runtime／other 预检通过；首次只读原生活跃门禁检查两个 Runtime 的
+658 个会话，无运行项。发布范围包含 Provider、platform、Web、admin-api、
+admin-metrics 和 admin-web；仅在已验证服务器内备份后为三个相关服务补充
+专用控制密钥与既有 manager scope。后续使用同一已提交代码的最小归档构建，
+迁移及再次活跃门禁通过后定向更新，健康／版本／路由与容量结果实际完成后补记。
+不构建或替换既有 OpenHands Runtime generation。
+
+OPS-11 构建期补齐：旧运行中的 admin-metrics 在十分钟内已有十八次
+Connection.executemany AttributeError；正式 Psycopg 接口只在 Cursor 提供批量
+写入。改为 connection.cursor().executemany，并补充真实接口形状的写入／保留期
+清理／锁释放回归。此修复随最终代码提交重新冻结所有镜像，不复用旧 revision
+标签作为最终版本。扩展 Provider 套件 65 passed、4 failed；拉取前相同套件
+61 passed、4 failed，四个既有夹具失败名称完全一致，无新增失败。
+
+OPS-11 线上验收补齐：八服务切换及健康／版本检查通过，真实采集已成功写入
+样本；新增过期服务清理遇到已退出的历史 Runtime 容器时返回 Docker 502，
+导致当轮清理提前结束。修正资源选择为仅扫描明确 RUNNING 的 Agent Runtime，
+不启动、删除或修改历史容器；新增运行／退出／未启动／未知状态过滤回归。
+随后以新提交重新冻结镜像并完成最终发布，最终身份以正式补记为准。
+
+OPS-11 正式发布补记（2026-10-27）：最终部署代码为
+`717ae8762dae4612f8ed2d776093d2ce4d48d389`，包含拉取前 `40ee3a73` 与
+远程 `6f488934` 的全部祖先。集成提交为 `abe75e42`；发布前补齐采集 Cursor
+接口和已退出容器过滤，均已独立提交。Provider 定向权限／归属及进程参数
+十项、管理员凭据／scope／清理／写入六项通过；这些与扩展套件重叠，
+不累加为独立总数。扩展 Provider 套件的四项既有失败已在拉取前基线逐项
+复现，没有新增失败，不声称全套通过。Web／Admin Web typecheck、受影响
+ESLint／Ruff、语法、diff 与 CURRENT 唯一性检查通过。
+
+Runtime／other 正式预检与 platform／Web commit-bound 最小上下文 prepare
+通过。最终 platform／Web 归档 SHA-256 分别为
+`ba644e6c6106dbe52c661359b527974b79f393b039b11198ee3e105f90d85eee`、
+`c0b051689dd01e44b83a41a7ca2d3ab9391d5c742487d2bfd1643c7642533ace`；
+Admin 最小归档为
+`8349f29885a948f08e918ed2c09dba35b342f1a05e236ab72dcef20e26cf454f`，
+从同一 commit 生成并在服务器核对摘要，置于受管 platform 上下文内。
+最终五个 linux/amd64 镜像均核对 OCI revision；image ID 为：
+platform `sha256:a78f76bf6967648ab28f510ba7cb642e9579065f724752bc8baa2832dd8e7efc`，
+Web `sha256:e93f753908a4242b72813b093ec4ba28561ac82e203b4205be7b7d43159ae4a7`，
+admin-api `sha256:c4ae6fa8e7b12c191c84a0f3828a3403f219775908f1c26572409365950d75fd`，
+admin-metrics `sha256:ca3d329d2b6788219a52c46cb899fae5fa7df5320fea9cac89d9889d088fb8f0`，
+admin-web `sha256:e735e2bebfa272c3d04985975ddf4554f408f878171b2aafff98a43348884cdb`。
+
+最终实际平台镜像在隔离 PostgreSQL 完成完整空库到 0176、重复升级和退役表
+强制 RLS 验证；实际采集镜像连接同一隔离库，验证批量写入、过期测试样本
+保留期清理与 advisory lock 释放。测试数据库／网络均为本次唯一资源并已移除。
+固定 Runtime 隔离进程探针验证监听扫描、age_seconds、错误启动身份拒绝与
+精确停止；不挂载业务目录、不调用模型。
+
+原服务器 Compose／env 先保留时间戳备份并核对权限、owner；只为 Provider、
+admin-api、admin-metrics 加入专用控制密钥及后两者的既有 manager scope。
+密钥仅在服务器安全生成且未回显；完整 Compose 模型复核确认其他配置不变。
+后续验收修复未再更改配置，原备份保留于服务器，不复制进仓库或聊天。
+每次 Provider 切换前均通过两个 Runtime、658 个正式原生会话的 activity 门禁，
+没有 running／starting／executing／stopping 项。先正式 migration，再定向更新
+Provider／api／stream-api／worker／Web／admin-api／admin-metrics／admin-web。
+八服务最终 revision 一致、health／readiness 和 Web HTTP 正常，生产数据库
+唯一 head 仍为 `0176_agent_temporary_services`，原表和 owner FORCE RLS 保留。
+其他 39 个容器的 image 与 StartedAt 在最终复核时一致，包括既有 Runtime；
+未构建 OpenHands 镜像或替换 Runtime generation。
+
+线上只读检查两个运行 Runtime 的临时服务列表和正式进程年龄／启动身份，
+管理员观察／控制查询均成功；观察密钥停止为 403，未认证请求为 401。
+未向业务进程发送停止请求。采集已实际写入样本，最终新容器日志没有采集或
+临时服务清理错误，已退出历史容器被过滤且原容器保留。
+
+服务器实际 Chromium 验证公网前缀登录、Agent 深层路由和根登录页；管理入口
+及 API 认证边界通过。全新浏览器 Network 确认认证请求使用部署前缀，无根路径
+API 请求。Web 与管理 HTML／入口 JS／CSS 摘要匹配运行镜像。导出实际构建
+资源后，以受控 API／WebSocket 完成六项 Web 与一项 Admin Chromium 回归；
+其中搜索用例在构建资源中更早恢复小历史，原“历史尚未进 DOM”断言存在时序
+差异，调整受控验收副本后验证搜索计数、上下导航及正式 event id 定位；
+不把该运行记作未渲染缓存历史的验收。开发资源的原搜索用例另已通过。
+最终实际加载的 Web 45 项、管理 2 项 JS／CSS SHA-256 均匹配最终运行镜像。
+这些受控回归不等于真实模型执行业务，没有向业务会话发送、暂停或继续消息。
+
+platform／Web remote-release-finish 均通过健康、版本及容量门禁，回收四份
+超过 24 小时且未引用的受管上下文，执行精确平台／Web 历史 tag 保留流程；
+保留当前镜像、每仓库一个不同版本回滚和所有容器引用。最终只读审计无过期
+受管上下文候选。未清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后
+再次确认八服务版本／健康、管理员查询与采集日志，以及其他容器不变。
+本地 feat/refactor 将快进纳入本次集成与验收记录，未推送；本补记不改变
+实际部署代码身份。当前与下一可执行切片均为 NONE。
+
+
+### OPS-13 远程工作区默认认证与会话布局集成发布 — DONE
+
+用户明确授权拉取远程、解决冲突并直接部署受管服务器，随后确认 OPS-12 由其他
+聊天执行、要求保留其工作。本次在独立工作树集成远程 `0a843819` 与本地
+`40dad3e9` 的全部祖先，Git 无文本冲突；并纳入其他聊天已完成的 `60cf3e54`
+文档提交，不重复构建或替换其 Runtime generation。
+
+保留已发布的 `0176_agent_temporary_services` 原始迁移，以
+`0177_merge_workspace_credentials` 合并远程认证默认项分支。修复远程迁移直接
+比较 PostgreSQL JSON 的无效 SQL，补齐 ORM Boolean 导入，修复配置弹窗保存
+时忽略当前认证选择而写回旧默认值的问题；更新旧内联触发回归以匹配空格边界。
+远程会话搜索位置、来源摘要、菜单定位及默认全选认证行为全部纳入。
+
+发布前独立 PostgreSQL 六项测试通过，包含完整空库迁移、既有 0176 升级、
+重复升级、非空配置保留、根／命名工作区隔离与强制 RLS；Web typecheck、受影响
+ESLint／Ruff 和 diff 检查通过。浏览器入口、触发与草稿、根／命名工作区配置及
+正式事件历史搜索共五项不同 Chromium 定向回归通过，使用受控 API／WebSocket，
+不等于真实模型执行业务验收。额外旧产品长用例的结果另行补记。
+
+本次只发布 platform／Web：使用同一已提交 commit 的正式预检与最小上下文，
+先迁移，再同步更新 api／stream-api／worker／web。实际健康、版本、路由和
+容量收尾完成后补记，不提前声称已上线。当前与下一可执行切片均为 NONE。
+
+
+OPS-13 正式发布补记（2026-10-27）：发布代码为
+`ff84316e6ced34ae338f0c74942f751f78286858`，包含远程 `0a843819`、拉取前
+`40dad3e9` 及并行完成的 OPS-12 `60cf3e54` 全部祖先。代码集成为 `35cccb31`，
+其后合并 OPS-12 协作文档并冻结发布；没有覆盖其他聊天的工作。
+
+正式 platform／Web 预检和 commit-bound 最小上下文 prepare 均通过。
+源归档 SHA-256 分别为
+`f09a2ea918243369e454657f47905519e0332435a698862ab07df5407213a015`、
+`08a7b5a2e3c0cc2078a391aaa7a72db4ca5e4f0099bc7ac495e35e025a4ce099`。
+实际 linux/amd64 镜像 ID：platform 为
+`sha256:4bcddebaddfee8214d98cc44aa19d6dc290fd9235de458535621a73200c00ffa`，
+Web 为 `sha256:d123a93a412602c25cbc32b7bca16d65a8b7744664e7593cbfbca2817c14842d`。
+均核对 OCI revision；先保留旧服务日志及精确 rollback tags，再执行正式
+migration，并同步 recreate api／stream-api／worker／web。四服务运行相同
+revision，health／readiness／Web HTTP 通过，数据库唯一 head 为
+`0177_merge_workspace_credentials`。只读核对新增 credentials_configured 为
+非空 Boolean，根／命名配置及原临时服务表 FORCE RLS 保留。Compose／env
+文件摘要与其余 43 个容器的 image／StartedAt 一致，包括 OPS-12 已升级的
+Runtime generation；本片不重启 Provider、不构建或替换 Runtime。
+
+开发资源另补充来源摘要的一项专项，验证只显示首个来源且“查看全部”可找回
+全部文件与链接，通过；与之前五项组成六项不同定向 Chromium 用例。两个旧
+product-flow 长用例均停在已不存在的“Agent 会话”导航按钮，未执行到本次改动，
+不计为通过，不将其归为本次功能回归。
+
+导出实际运行 Web 镜像资源后，浏览器入口、触发与草稿、根／命名工作区配置、
+来源摘要五项原定向回归通过。历史搜索原用例在构建资源下更早把历史放入 DOM，
+原“尚未渲染”断言失败；仅在忽略目录创建受控验收副本，保留原应用资源和测试，
+验证三个搜索结果、上下导航及正式 event id 定位通过。该验收只证明已有历史搜索，
+不作为未渲染缓存历史的成功证据；开发资源的原用例已通过。所加载的 45 个
+JS／CSS SHA-256 均匹配实际运行镜像。这些受控 API／WebSocket 回归不等于
+真实模型业务执行，没有向业务会话发送、暂停、继续或重放消息。
+
+服务器实际 Chromium 验证公网前缀登录、Agent 深层路由及根登录入口通过；
+两项公网 API 认证边界为 401，公网 HTML 和入口 JS／CSS 与运行镜像一致。
+全新浏览器网络日志确认认证请求带部署前缀，根 API 请求数为零。
+
+platform／Web remote-release-finish 均通过健康、版本和容量门禁，无过期受管
+上下文候选；精确回收两个可回收的历史 image ID 对应 tags，保留当前镜像、
+每仓库一个不同版本回滚及所有容器引用。不清理共享 BuildKit、卷、Workspace
+或数据库备份。本补记及新增测试不改变实际发布代码身份；当前与下一可执行
+重构切片均为 NONE。
+
+
+### OPS-14 会话搜索归属悬浮信息卡 — DONE
+
+用户要求把会话搜索放到右侧悬浮信息卡上方，作为同一浮动区域内视觉独立的部分，
+显隐、响应式宽度、工具面板挤压和全屏行为与卡片保持一致，并直接部署。
+搜索由 WorkspaceDrawer 既有 summary 容器承载，不增加独立定位或偏好状态；
+搜索和概览为两个圆角面板，间隔 10px。移除发送框区域的搜索节点及额外顶部留白。
+搜索结果与上下导航在窄卡片内换行排列，切换 binding 时重置本地搜索状态。
+
+Web typecheck、受影响 ESLint 和 diff 检查通过。定向 Chromium 验证覆盖
+1920／1440／1024／390 宽度的对齐、间距、结果导航、无横向溢出、同步显隐，
+以及工具拖拽缩放、工具全屏隐藏与会话全屏恢复；另有既有显隐偏好四项、
+工作区详情加载门禁一项和正式历史搜索一项通过。全部使用受控 API／WebSocket，
+不代表真实模型执行业务。本片只发布 Web，实际版本、路由及收尾结果完成后补记。
+当前与下一可执行重构切片均为 NONE。
+
+
+OPS-14 正式发布补记（2026-10-27）：实际部署代码为
+`8474f49d25197992b5b5c6454a6521db956c6d97`。Web 正式预检与最小上下文 prepare
+通过，归档 SHA-256 为
+`9bf1bb4332145ba58375d95721e3899cf8ba7d192a275a652ae9358f44efdc4f`；
+实际 linux/amd64 Web image ID 为
+`sha256:00311b4b0263d0984aae6c5c0ca7dc8025dd1db2811623a60a4a4f6ccd728c5c`，
+OCI revision 核对通过。服务器保留原 Web 日志和 rollback tag 后仅 recreate Web，
+HTTP／健康通过；其余 46 个容器的 image／StartedAt 及 Compose／env 摘要不变，
+数据库 head 保持 `0177_merge_workspace_credentials`。未重启任何 API、Worker、
+Provider 或 Runtime，也未修改数据库或用户会话。
+
+开发资源共八项不同 Chromium 定向用例通过，含补充的多子智能体无滚动回归。
+导出实际线上镜像资源，七项原布局／显隐／宽度／全屏／溢出回归全部通过；
+已有历史搜索的受控验收副本另验证结果计数、上下导航与正式 event id 定位。
+该副本沿用 OPS-13 对历史预取时序的限定，不声称额外覆盖未渲染缓存历史；
+开发资源的原历史搜索用例已通过。受控 API／WebSocket 验收不代表真实模型执行。
+实际截图确认搜索与概览为独立圆角面板，并共用相同浮动宽度及 10px 间距。
+
+服务器实际 Chromium 验证前缀登录、Agent 深层路由和根登录入口；认证边界为 401，
+公网 HTML／入口 JS／CSS 与运行镜像相同。全新浏览器网络日志确认认证请求带
+部署前缀，没有根 API 请求。AGENTS 补充搜索属于悬浮信息卡容器的长期约束。
+本补记不改变已部署应用代码身份；当前与下一可执行重构切片均为 NONE。
+
+
+所加载的 45 个 JS／CSS SHA-256 与线上镜像一致。Web remote-release-finish
+通过健康、版本与容量门禁，精确回收一个可回收历史 image ID 的 tags，保留
+当前 Web、一个不同版本回滚及所有容器引用；没有过期受管上下文候选。
+收尾后再次核对 Web 版本／健康、服务器配置及其他 46 个容器均符合预期。
+未清理共享 BuildKit、卷、Workspace 或数据库备份。最终只读 audit 无回收候选。
+
+
+### OPS-15 来源列表轻量入口与搜索阴影 — DONE
+
+用户要求参考所附 Codex 截图优化来源入口，并一并减轻搜索框、尤其聚焦状态的阴影。
+默认显示前两项来源，超过两项时才显示“查看全部”。入口仅保留小图标与常规字重的
+灰色文字，去掉分割线、数量及右箭头；仍打开既有完整来源视图。搜索与概览移除
+共同 drop-shadow，分别采用轻微阴影；聚焦仅改变搜索边框，阴影不增加，保持 10px
+独立间距及既有显隐／宽度／全屏规则。
+
+Web typecheck、受影响 ESLint、diff 检查通过。六项不同 Chromium 定向回归通过，
+覆盖 0／1／2／3 个来源的显示边界、完整来源入口、无分割线／常规字重、聚焦不增加
+阴影、四种屏宽／拖拽／全屏，以及多子智能体不滚动。使用受控 API／WebSocket，
+不代表真实模型执行业务。本片只发布 Web，实际版本、健康和收尾结果完成后补记。
+当前与下一可执行重构切片均为 NONE。
+
+
+OPS-15 正式发布补记（2026-10-27）：发布代码为
+`b777f42ec969f7e2e257d4472ad16ce90ac3e4fa`。Web 正式预检与 commit-bound 最小
+上下文 prepare 通过，归档 SHA-256 为
+`436c798fccaa58a483bc2f8aec4cea698924d238ec78d33201035f5164ac2744`。
+实际 linux/amd64 Web image ID 为
+`sha256:e6b99729500cc3a5e960c0519199f450a111869f3a389d14e460b14a5a652498`，
+OCI revision 核对通过。保留原日志及 rollback tag 后只 recreate Web；Web HTTP
+与健康通过，服务器 Compose／env 摘要不变，其余 46 个容器的 image／StartedAt
+不变，数据库 head 保持 `0177_merge_workspace_credentials`。没有更新 API、Worker、
+Provider 或 Runtime，不修改数据库或用户业务会话。
+
+
+实际线上镜像资源的六项定向 Chromium 回归全部通过，验证四个来源数量边界、
+查看全部入口、聚焦不增加阴影、显隐／宽度／全屏和无滚动；实际聚焦截图确认
+两块面板间距清晰且入口无分割线。所加载的 45 个 JS／CSS SHA-256 与运行镜像
+一致。公网前缀登录、Agent 深层路由、根登录、认证边界及全新浏览器前缀网络
+验证通过；公网 HTML／入口资产与镜像一致。以上受控回归不代表真实模型执行。
+
+Web remote-release-finish 的健康、版本与容量门禁通过；精确回收一个历史 image
+ID 的 tags，保留当前、一个不同版本回滚和所有容器引用，无过期受管上下文候选。
+收尾后再次复核健康／版本、服务器配置与其他 46 个容器不变，只读 audit 无候选。
+未清理共享 BuildKit、卷、Workspace 或数据库备份。本补记不改变实际部署代码
+身份，当前与下一可执行重构切片均为 NONE。
+
+
+### OPS-16 远程定时认证与运行记录管理集成发布 — DONE
+
+用户明确授权拉取远程、解决冲突并直接部署受管服务器。工作树从 `a8d00c6b`
+快进到远程 `c881f5fd`，纳入七个提交，没有文本冲突；远程新增定时任务默认
+全选认证、悬浮信息卡操作与阴影、工作区手动展开锚点、FlowRun 记录创建／管理
+及暂停期间不计时。与已发布的迁移分支产生双 head，追加
+`0178_merge_schedule_credentials` 合并，保留全部原 revision 和服务器迁移历史。
+
+补齐远程 Python 导入／行长规范，扩展认证回归覆盖未配置、显式空选和明确选择；
+新增独立 PostgreSQL 的已发布 0177 到新 head 升级、重复升级、记录／认证选择
+保留与 FORCE RLS 验证。空库完整链由同组 PostgreSQL fixture 执行；最终十二项后端回归全部通过。
+Web typecheck、受影响 ESLint／Ruff、diff 和 CURRENT 唯一性检查通过。
+八项不同 Chromium 定向回归通过，覆盖工作区 Git 设置两项、展开锚点、
+子智能体无滚动、浏览器入口、搜索布局、暂停后计时及运行记录目录；子智能体
+用例移除对远程已删除箭头的旧断言，保留所有实际裁切／滚动边界。
+额外旧悬浮卡长用例仍断言已不存在的 IDEA / Gateway 文案，未执行到布局断言，
+不记为通过。受控 API／WebSocket 回归不等于真实模型业务执行。
+
+本片发布范围为 platform／Web；先冻结同一代码 commit，再正式预检、最小上下文
+prepare、迁移并同步更新 api／stream-api／worker／web。实际部署身份、健康、
+公网浏览器验收及容量收尾完成后补记。当前与下一可执行重构切片均为 NONE。
+
+
+OPS-16 正式发布补记（2026-10-27）：实际部署代码为
+`3ba9aaf33875c954ae827dc31578655d403e1510`，包含拉取前 `a8d00c6b` 与远程
+`c881f5fd` 全部祖先。platform／Web 正式预检及 commit-bound 最小上下文 prepare
+均通过；源归档 SHA-256 分别为
+`29bf5c0828f2193e37eb3ec92dfbf5983655db70bd0ee3efbe728ae2581d5619`、
+`cf4b49d95f9b90de1601b90d9afe95e3fee7c07173a5217aaf37fab671c2ed64`。
+实际 linux/amd64 镜像 ID：platform
+`sha256:ef2a039e7d7d933df87474bd7f5bca1f2a9b8e8a1bb511b030ff2f409604385f`，
+Web `sha256:08614c5f560e6cfcd5454d3b959a709ce5d54057bf2c3393b193d18f78b11591`。
+均核对 OCI revision 与架构。实际平台镜像在唯一隔离 PostgreSQL 完成空库完整链
+经已发布 0177 到新 head、重复升级、非空 Boolean 与 FORCE RLS 验证，四个关键
+源码文件摘要匹配本次提交；测试数据库容器已移除，没有业务挂载或模型调用。
+
+发布前保留旧服务日志、精确 rollback tags 和服务器侧受保护的认证引用快照。
+正式 migration 成功后同步 recreate api／stream-api／worker／web；四服务同一
+revision，健康／readiness／Web HTTP 均通过。生产唯一 head 为
+`0178_merge_schedule_credentials`；原四条定时任务身份、owner、认证引用保留，
+新增字段回填符合非空选择语义且 FORCE RLS 保持。服务器 Compose／env 摘要及
+其余 43 个容器的 image／StartedAt 不变；没有重启 Provider、构建 OpenHands
+镜像或 replacement Runtime generation。发布后四服务日志错误计数均为零。
+
+导出实际运行 Web 镜像资源后，八项原定向 Chromium 回归全部通过；所加载的
+53 项 JS／CSS SHA-256 与镜像导出内容一致。服务器实际 Chromium 验证前缀
+登录、Agent 深层路由和根登录入口；公网 HTML／入口 JS／CSS 与运行镜像一致，
+API 认证边界为 401。全新浏览器网络确认认证请求带部署前缀，根 API 请求为零。
+这些受控 API／WebSocket 回归不等于真实模型业务执行，没有发送、暂停、继续
+或重放用户业务会话。
+
+platform／Web remote-release-finish 均通过健康、版本与容量门禁，回收两份
+超过 24 小时且未引用的受管上下文，以及一个可回收 Web 历史 image ID 的精确
+tags。保留当前镜像、每仓库一个不同版本回滚及全部容器引用，不清理共享
+BuildKit、卷、Workspace 或数据库备份。Web 收尾无剩余候选；收尾后再次复核
+四服务版本／健康、唯一迁移 head、服务器配置与其他容器不变。本补记不改变
+实际部署代码身份；本地集成与补记提交未推送，当前与下一可执行切片均为 NONE。
+
+
+### OPS-17 远程文件引用、Git 摘要与运行记录状态集成发布 — DONE
+
+用户明确授权拉取远程、解决冲突并直接部署受管服务器。本地保留 OPS-16 的两个
+提交，以非快进合并纳入远程 `651a2a18` 及其六个新提交；没有文本冲突，原迁移
+合并保持，源码唯一 head 仍为 `0178_merge_schedule_credentials`。远程改动包含
+本地文件引用附件展示和独立别名、文件树快捷复制与折叠、Git 刷新及暂存／未暂存
+分开计数、悬浮信息卡阴影，以及运行记录返回后的目录和工作台选择恢复。
+
+集成时移除远程遗留的未使用类型，并拆分既有超长字符串字面量；AST 对比确认
+字符串格式调整不改变运行语义。Web typecheck、受影响 ESLint、Python Ruff、
+diff 与 CURRENT 唯一性检查通过。附件／工作区引用后端三项回归通过；十项
+Chromium 定向用例通过，覆盖 Git 设置、文件树复制／折叠、拖放文件别名、工作区
+展开锚点、子智能体无滚动和搜索卡片布局。运行记录和 Git 摘要综合验收继续执行。
+受控 API／WebSocket 回归不代表真实模型业务执行。本片从同一已提交版本发布
+platform／Web，实际身份、健康、路由和容量收尾结果在发布后补记。当前与下一
+可执行重构切片均为 NONE。
+
+
+OPS-17 正式发布补记（2026-10-27）：实际部署代码为
+`290d4c0007cefb6fcd284429d365cb36c41b394e`，同时保留本地 `206b3718` 与远程
+`651a2a18` 的全部祖先。platform／Web 正式预检与 commit-bound 最小上下文
+prepare 通过；并行 prepare 的平台请求被发布锁拒绝，串行重试成功，无目录覆盖。
+源归档 SHA-256 分别为
+`e72a032b9818307164c467a942bf811580c2a8f369c40f21b83158bd71c8b04d`、
+`67dbeb65ee1672bfe2a6809389688148e1dec38f0e01e903c88251d460ce6cc8`。
+实际 linux/amd64 镜像 ID：platform
+`sha256:5a92fc96767259d7681c62301338c4da6ce95d3c10f9a814752856467c7ac943`，
+Web `sha256:c4f9ab7aef0b054a5caa8991bdc95f80deaef5ff5fd472fe6fa490f6cba0056d`。
+四服务实际镜像 OCI revision 均匹配发布 commit，两个平台变更源码摘要匹配。
+
+保留原日志与精确 rollback tags 后，正式 migration 成功，同步 recreate
+api／stream-api／worker／web，health／readiness／Web HTTP 均通过。数据库
+唯一 head 保持 `0178_merge_schedule_credentials`；服务器 Compose／env 摘要
+及其余 43 个容器的 image／StartedAt 不变。没有修改 Provider、OpenHands 镜像、
+Runtime generation 或用户业务会话；四服务发布后日志错误计数均为零。
+
+实际运行 Web 镜像的 14 项不同 Chromium 定向回归通过：十项会话界面、三项运行
+记录与一项独立 Git 摘要验收，覆盖同一文件同时暂存和未暂存时独立计数、刷新
+期间保留计数及完成后的远端状态。运行记录创建夹具补齐与该文件其他用例一致的
+生产前缀归一化后，两种创建模式均通过。旧 product-flow 综合用例仍查找已删除
+的“Agent 会话”导航按钮，在进入 Git 断言前超时，不计为通过；独立验收补足
+本次 Git 行为。53 项加载的 JS／CSS SHA-256 与运行镜像导出内容一致。
+受控 API／WebSocket 回归不等于真实模型业务执行，没有发送或重放业务消息。
+
+服务器实际 Chromium 验证前缀登录、Agent 深层路由和根登录入口；公网 HTML
+与入口 JS／CSS 匹配运行镜像，API 认证边界为 401，全新浏览器确认认证请求带
+部署前缀、根 API 请求为零。短时远端验收延迟后连接、健康与上述检查均成功。
+容量收尾和最终状态在完成后补记；本补记与夹具修正不改变实际部署应用身份。
+
+
+platform／Web remote-release-finish 均通过健康、版本与容量门禁，没有过期
+受管上下文候选。精确回收两个可回收历史 image ID 的 tags，保留当前镜像、
+每仓库一个不同版本回滚及所有容器引用；Web 收尾无剩余镜像候选。不清理共享
+BuildKit、卷、Workspace 或数据库备份。收尾后再次核对四服务版本／健康、
+唯一迁移 head、服务器配置及其他 43 个容器。本地集成与补记提交未推送，
+当前与下一可执行重构切片均为 NONE。
+
+
+### OPS-18 悬浮卡 Git 摘要紧凑布局 — DONE
+
+用户反馈 Git 区域字体、颜色和高度与相邻信息不协调。本片将图标恢复为与其他
+概览行相同的独立图标列；标题与右对齐分支组成首行，暂存／未暂存和本地／远端
+状态统一为次行的小号常规字重。移除此前叠加的强制布局和继承大字号，零计数
+采用次要文字色，分支允许省略，窄卡片有界换行。保留刷新禁用、错误反馈和
+正式 Git 详情入口，不改服务端或 Runtime 语义。
+
+Web typecheck、受影响 ESLint、diff 检查、CURRENT 唯一性与唯一 Alembic head
+`0178_merge_schedule_credentials` 核对通过。四项既有 Chromium 悬浮卡回归
+通过，覆盖加载门禁、全局显隐、搜索布局／全屏和子智能体无滚动；既有发布
+验收脚本确认三个屏宽无横向溢出、桌面 Git 行不超过 56px、窄屏不超过 74px，
+并验证暂存计数和刷新期间状态保留／完成同步。更新旧综合用例的布局选择器，
+其过期导航入口不计为本片通过证据。截图人工检查通过，使用受控 API／WebSocket，
+不代表真实模型执行。沿用当前会话直接部署授权，仅发布 Web；实际发布结果
+完成后补记。当前与下一可执行重构切片均为 NONE。
+
+
+OPS-18 正式发布补记（2026-10-27）：实际部署代码为
+`a15d39d2924a418652a1f4cd430cde464fa5546b`。Web 正式预检和 commit-bound
+最小上下文 prepare 通过，源归档 SHA-256 为
+`be36a7035e846b183793f0f31a11a245c360fd2f983056dfd23ca877afa87c7b`。
+实际 linux/amd64 Web image ID 为
+`sha256:220b651bac029d64ec23f23c623f925029f08f614e1221218aeb1018bc4afe42`，
+OCI revision 核对通过。保留旧 Web 日志与 rollback tag 后仅 recreate Web，
+HTTP／健康通过；服务器 Compose／env 摘要和其他 47 个容器的 image／StartedAt
+保持不变，没有迁移、API／Worker／Provider 重启或 Runtime replacement。
+
+导出实际运行镜像后，五项不同 Chromium 定向回归全部通过；三个屏宽的 Git
+紧凑布局、刷新状态和计数保留通过，截图人工检查通过；45 项加载的 JS／CSS
+SHA-256 匹配运行镜像。服务器实际 Chromium 验证前缀登录、Agent 深层路由和
+根登录入口；公网 HTML／入口资产与镜像一致，认证边界为 401。全新浏览器网络
+确认认证请求使用部署前缀，根 API 请求数为零。使用受控 API／WebSocket，
+未对用户业务会话发送或重放消息。
+
+Web remote-release-finish 的版本、健康与容量门禁通过，无过期受管上下文；
+精确回收一个可回收历史 image ID 的 tags，保留当前 Web、一个不同版本回滚
+及所有容器引用，不清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后
+再次核对版本／健康、服务器配置及其他 47 个容器保持。补记不改变线上应用
+代码身份，本地提交未推送；当前与下一可执行重构切片均为 NONE。
+
+
+### OPS-19 运行记录单行列表与统一打开交互 — DONE
+
+用户反馈运行记录行占用过高、进入入口不明显且与选中交互割裂。本片将列表改为
+约 46px 单行：名称、类型、状态、进度、分钟级时间与明确的“打开”入口。名称
+可省略并通过悬停查看完整值；窄屏优先保留名称、类型、状态和打开入口，避免
+多行撑高。清理旧行布局及其叠加内外边距。左侧原生复选框专用于批量选择；
+记录内容与“打开”为同一个原生按钮，单击任意内容或键盘 Enter 均打开既有
+工作台，统一 hover／focus 反馈；选择与导航不再共用正文命中区。
+
+Web typecheck、受影响 ESLint、diff／CURRENT 唯一性与唯一 Alembic head
+`0178_merge_schedule_credentials` 核对通过。五项不同 Chromium 既有定向
+回归通过，覆盖记录目录／定时分组、两种记录创建、两种启动入口；目录用例
+补充复选框只选中不导航、点击名称打开、键盘进入、返回后的目录定位保持，
+以及 1920／1440／1024 三个屏宽行高不超过 50px 且无横向溢出。更新受影响
+夹具的生产前缀归一化，截图人工检查通过。受控 API 回归不代表真实模型
+业务执行。沿用当前会话部署授权仅发布 Web，实际版本和发布验收完成后补记。
+当前与下一可执行重构切片均为 NONE。
+
+
+OPS-19 正式发布补记（2026-10-27）：实际部署代码为
+`930b380b903c291f7eac41aa8588b678602fcb7d`，Web 正式预检与 commit-bound
+最小上下文 prepare 通过。源归档 SHA-256 为
+`d4b26ed79228798b535bdc89e8396ec66d5a37037faaf9a1d7ba9297186c7699`，
+实际 linux/amd64 Web image ID 为
+`sha256:36bba6905ced3775886c4471268c7019cb5f1f969da488651a22d81cb54f3490`，
+OCI revision 一致。保留原日志与 rollback tag 后仅 recreate Web，HTTP／健康
+通过；服务器 Compose／env 摘要及其他 47 个容器的 image／StartedAt 不变，
+没有迁移、API／Worker／Provider 重启或 Runtime replacement。
+
+服务器实际 Chromium 验证前缀登录、Agent 深层路由和根登录入口；公网 HTML
+及入口资产与运行镜像相同，API 认证边界为 401。全新浏览器确认认证请求带
+部署前缀，没有根 API 请求。实际镜像资源回归与容量收尾在完成后补记。
+
+
+实际运行镜像的五项 Chromium 定向回归全部通过，覆盖单行排版与选择／打开
+分离、三种屏宽、点击名称和键盘进入、目录返回定位、两种记录创建与两种
+启动入口。49 项加载的 JS／CSS SHA-256 与镜像导出内容一致，实际截图人工
+检查通过。以上使用受控 API，不代表真实模型业务执行，没有向用户业务会话
+发送、暂停、继续或重放消息。
+
+Web remote-release-finish 的健康、版本与容量门禁通过，无过期受管上下文
+候选；精确回收一个可回收历史 image ID 的 tags，保留当前镜像、一个不同
+版本回滚及所有容器引用，不清理共享 BuildKit、卷、Workspace 或数据库备份。
+收尾后再次确认 Web 版本／健康、服务器配置及其他 47 个容器不变。本补记
+不改变实际部署应用代码身份，本地提交未推送；当前与下一可执行切片均为 NONE。
+
+
+### OPS-20 运行记录内容选择与打开入口分离 — DONE
+
+用户明确要求点击记录内容仍只选中，只有单独点击“打开”才进入详情。本片保留
+OPS-19 的紧凑单行与原生复选框，将记录内容改为带 aria-pressed 的选择按钮，
+“打开”改为同级独立导航按钮；不存在嵌套按钮或正文导航。内容点击／Enter
+切换选择，复选框同步；打开不改选择。样式保留常驻文字入口与独立 hover／focus。
+
+Web typecheck、受影响 ESLint、diff 与 CURRENT 唯一性检查通过，唯一 Alembic
+head 保持 `0178_merge_schedule_credentials`。既有 Chromium 目录回归通过，
+覆盖内容点击与 Enter 只选择且不导航、复选框同步、独立按钮进入、定时分组、
+返回定位及三种屏宽单行高度不超过 50px／无横向溢出；补充返回后选择保留
+断言将在实际镜像回归中核对。受控 API 验收不代表真实模型执行业务。沿用当前
+会话授权仅发布 Web，实际身份与发布结果完成后补记。当前与下一可执行切片
+均为 NONE。
+
+
+OPS-20 正式发布补记（2026-10-27）：实际部署代码为
+`4902c56df91d6c08c711366cab4dbcb93bdb4101`。Web 正式预检与 commit-bound
+最小上下文 prepare 通过，源归档 SHA-256 为
+`f6f5af2678b59136af88a24fe3d9ced4f4ecf96eccbf2595f40b01170c9529cb`，
+实际 linux/amd64 Web image ID 为
+`sha256:b2f571e1fbd077894c0622a2087a5555b0c43a2b68e8903e0f656b8b837174e7`，
+OCI revision 一致。保留日志与 rollback tag 后仅 recreate Web，HTTP／健康
+通过；服务器 Compose／env 摘要与其他 47 个容器的 image／StartedAt 不变。
+没有迁移、API／Worker／Provider 重启、Runtime replacement 或业务消息操作。
+
+最终本地源码 Chromium 定向回归通过，含新增的返回后选择保留断言；内容点击
+与 Enter 不导航、独立按钮进入及三屏宽排版同时通过。镜像静态导出遇到传输
+阻塞，重试有界超时，公网完整资源导出遇到 HTTP 502，未将实际镜像行为回归
+计为通过。实际镜像身份、线上入口 HTML／JS／CSS 摘要与公网路由核验通过；
+服务器 Chromium 验证前缀登录、Agent 深层路由、根登录及 API 401 边界，全新
+浏览器请求带部署前缀、根 API 请求数为零。受控源码回归不代表真实模型执行。
+
+Web remote-release-finish 通过健康、版本与容量门禁；没有过期受管上下文，
+精确回收一个可回收历史 image ID 的 tags，保留当前镜像、一个不同版本回滚
+及所有容器引用，不清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后
+版本／健康、服务器配置与其他容器再次通过检查。补记不改变实际部署应用
+身份，本地提交未推送；当前与下一可执行切片均为 NONE。
+
+
+### OPS-21 运行记录单行页头与表格独立滚动 — DONE
+
+用户要求将标题、概要与操作按钮收为一行，类型切换放到表格上，并只允许
+表格记录区滚动。页头现单行展示可裁切标题、Run 编号、容器状态、环境与
+终端／暂停按钮；完整流程、环境、创建时间、流程版本和快照信息通过原生
+details 信息入口展开。移除重复的两层概要块与英文眉题。类型筛选并入同一
+表格顶部工具栏，与批量操作保持固定；记录表格独占剩余高度，只有行容器
+滚动，主详情与页面不再滚动。保留 OPS-20 内容选择、独立“打开”及目录定位。
+
+Web typecheck、受影响 ESLint、diff／CURRENT 唯一性及唯一 Alembic head
+`0178_merge_schedule_credentials` 核对通过。三项 Chromium 定向回归通过，
+覆盖既有选择／进入与返回、容器暂停／恢复，以及 40 条记录下的真实滚轮
+滚动。1920／1440／1024 屏宽均验证页头不超过 44px、页面无纵向滚动和
+横向溢出、记录区可滚动且标题／工具栏位置不变、筛选与空态可用；详情
+信息展开和人工截图检查通过。使用受控 API，不代表真实模型执行业务。
+沿用当前会话授权仅发布 Web，实际发布结果完成后补记。当前与下一可执行
+重构切片均为 NONE。
+
+
+OPS-21 正式发布补记（2026-10-27）：实际部署代码为
+`fc77b05dcdc4f9c08e2cd1189e471c79887889c9`。Web 正式预检与 commit-bound
+最小上下文 prepare 通过，源归档 SHA-256 为
+`a2fa8474f0355b5a18de1a1d6af563c3a94767168891e7b5f78c81d5e7c714d1`，
+实际 linux/amd64 Web image ID 为
+`sha256:abf32ea3a46130ba41eb37e9d959d2ecb1df8750d18773ac66b8cc84701060cb`，
+OCI revision 一致。保留日志与 rollback tag 后仅 recreate Web，HTTP／健康
+通过；服务器 Compose／env 摘要与其他 47 个容器的 image／StartedAt 不变。
+没有迁移、API／Worker／Provider 重启或 Runtime replacement。
+
+本地源码的三项定向 Chromium 回归与截图检查通过，涵盖 40 条记录的独立滚轮
+与三屏宽固定页头／工具栏。补充尝试将受控 API 用例直接指向公网页面，三项
+均在等待“流程运行”导航入口时超时，未到达本次布局断言，不计为实际线上
+行为验收。服务器实际 Chromium 验证前缀登录、Agent 深层路由、根登录与
+API 401 边界通过；公网 HTML／入口 JS／CSS 与运行镜像相同，新浏览器确认
+认证请求带部署前缀，根 API 请求数为零。未操作用户业务会话或真实模型。
+
+Web remote-release-finish 通过健康、版本与容量门禁，精确回收两个超过
+24 小时且无引用的受管上下文和一个可回收历史 image ID 的 tags；保留当前
+镜像、一个不同版本回滚及全部容器引用，不清理共享 BuildKit、卷、Workspace
+或数据库备份。收尾后版本／健康、服务器配置及其他 47 个容器再次核对通过。
+本补记不改变实际部署应用身份，本地提交未推送；当前与下一可执行切片均为 NONE。
+
+
+### OPS-22 统一轻量记录分页与信息浮层外部关闭 — DONE
+
+用户反馈记录先显示连续运行、稍后补齐逐步运行，并要求滚动分页及运行信息
+点击外部关闭。取证确认原目录同时请求两个列表，逐步路径还为每条记录调用
+run_detail，加载快照、节点、产物等完整执行详情；两个独立 Query 分别提交
+结果导致分段显示。本片新增用户隔离的统一 `/flow-runs/{id}/records` 摘要
+入口，按 started_at／id 稳定倒序、scope／filter 校验的 keyset cursor 分页，
+默认 30 条、上限 100 条；仅投影列表字段和 SQL JSON 子键，节点进度按页聚合，
+不加载会话、Attempt、Snapshot、产物、usage 或 Runtime 投影。保持现有删除
+排除与历史逐步起点显示语义，旧详情及其他宿主接口保留。
+
+目录改为同一分页 Query，首屏明确加载态，滚动接近底部自动单飞请求下一页，
+视口未填满时继续分页；筛选／父运行隔离缓存与 AbortSignal，迟到响应不混入
+新筛选。失败保留现有行并提供重试，游标耗尽停止，批量全选只作用于已加载
+记录。移除目录原先两个全量请求和五秒完整详情轮询；创建、导入与管理操作
+同步失效新目录缓存。运行信息保留原生 details，捕获阶段外部 pointerdown
+关闭且不拦截外部点击，内部点击保留；Esc 关闭并尊重已消费事件，切换范围
+关闭，卸载清理监听。
+
+Web typecheck／受影响 ESLint、后端 Ruff／新增模块严格 Pyright、diff 与
+CURRENT 唯一性通过，唯一 Alembic head 保持 `0178_merge_schedule_credentials`，
+没有迁移。真实独立 PostgreSQL 新增三项加既有摘要回归共四项通过，覆盖混合
+小响应、同时间稳定顺序、新增记录不造成下一页重复／遗漏、游标作用域、
+非法参数、删除排除和用户隔离；查询取证没有加载执行历史表。六项 Chromium
+定向回归通过，涵盖 70 条混合记录分三页、首屏原子展示、延迟／单飞、失败
+重试、选择保留、耗尽停读、筛选迟到隔离、独立滚动、浮层内部／外部／Esc，
+以及原选择与打开、容器操作和两种创建。使用受控 API，不代表真实模型执行。
+本片沿用当前会话授权发布 platform／Web，实际身份、健康、查询观测与容量
+收尾完成后补记。当前与下一可执行重构切片均为 NONE。
+
+
+OPS-22 正式发布补记（2026-10-27）：实际部署代码为
+`d3f9ff5b669989de7328fd0c661d2f3753cfc39c`。platform／Web 正式预检与
+commit-bound 最小上下文 prepare 通过，源归档 SHA-256 分别为
+`a76095603f965f73a69cfa0d38d6c097d26dcb52f42f9eeb673337082e44c1d5`、
+`aa201a90a96f85a7756b4aae1119c96d2d3e0c39b0aa967c30d5b69761783455`。
+实际 linux/amd64 镜像 ID：platform
+`sha256:8c7191d103224b78dc4f01a676734387bd673c7ac1419d35d673b9b1a11d222d`，
+Web `sha256:8416c72eb7aba46346462d7776e3567a13fe0109b8a8f895abdd54a26ef0163b`，
+均与本次 OCI revision 一致。保留旧服务日志和精确 rollback tags 后，正式
+migration 成功，唯一 head 仍为 `0178_merge_schedule_credentials`；同步
+recreate api／stream-api／worker／web，健康／readiness／HTTP 通过，服务器
+Compose／env 摘要及其他 43 个容器的 image／StartedAt 不变。未重启 Provider
+或替换 Runtime，四服务发布后日志错误计数为零。
+
+实际 API 镜像在服务器上通过正常用户上下文执行 PostgreSQL 只读事务，核验
+新目录服务返回 11 条混合类型记录，响应 3312 bytes；单次服务查询观测为
+47.65ms，不含认证、网络、浏览器和连接建立，不作端到端耗时承诺。该页游标
+已耗尽；真实生产数据不足 30 条，因此没有声称生产实跑第二页，分页及迟到
+隔离由独立 PostgreSQL 和 70 条受控 Chromium 用例验证。没有修改业务数据
+或向业务会话发送消息。
+
+服务器 Chromium 验证前缀登录、Agent 深层路由、根登录和 API 401 认证边界
+通过；公网 HTML／入口 JS／CSS 匹配运行镜像，新浏览器认证请求带部署前缀，
+根 API 请求数为零。容量收尾及最终状态完成后补记。
+
+
+platform／Web remote-release-finish 均通过健康、版本与容量门禁；精确回收
+两个超过 24 小时且无引用的受管上下文及两个可回收历史 image ID 的 tags。
+保留当前镜像、每仓库一个不同版本回滚及所有容器引用，不清理共享 BuildKit、
+卷、Workspace 或数据库备份。Web 收尾无剩余候选；收尾后再次核对四服务
+版本／健康、唯一迁移 head、服务器配置和其他 43 个容器保持。本补记不改变
+实际部署应用身份，本地提交未推送；当前与下一可执行重构切片均为 NONE。
+
+
+### OPS-23 定时调度以执行记录为视觉重心 — DONE
+
+用户要求定时调度参照流程运行页优化，优先展示执行记录。本片统一为紧凑
+单行页头：任务名、状态、Cron、信息入口与暂停／恢复、立即运行、删除操作。
+去掉占高的四格概览、英文眉题和重复说明，完整 Cron、北京时间、下次／上次
+执行及母版信息放入原生 details；内部点击保留、外部点击／Esc 关闭，切换任务
+重新挂载关闭。左侧任务目录同步收紧，内容区扩展到可用宽度。
+
+记录改为约 46px 单行，名称为主、编号／触发方式／时间／状态为辅，常驻
+“查看节点”入口且保留整行打开节点状态弹窗。无计划触发时间的手动记录可
+显示正式运行创建时间，并在 title 明确区分，不猜测触发时间。页头、记录
+工具栏和原有十条分页固定，仅记录区滚动；任务目录独立滚动，页面不滚动。
+切换任务通过 key 隔离页码和弹窗，翻页复位列表滚动，补充读取失败重试。
+保持原有 API、三秒状态刷新、节点跳转和各管理动作，不修改服务端或 Runtime。
+
+Web typecheck、受影响 ESLint、diff／CURRENT 唯一性及唯一 Alembic head
+`0178_merge_schedule_credentials` 核对通过。六项 Chromium 定向回归通过，
+覆盖创建母版筛选、删除确认、立即运行成功／失败反馈、节点弹窗与分页，
+以及 1920／1440／1024 下页头不超过 44px、记录不超过 50px、无页面滚动和
+横向溢出、真实滚轮只移动记录、分页／工具栏固定、信息浮层外部／Esc 关闭、
+手动记录时间含义和切换任务时迟到旧页不污染。截图人工检查通过；使用受控
+API，不代表真实模型执行。沿用当前会话授权仅发布 Web，实际发布结果完成
+后补记。当前与下一可执行重构切片均为 NONE。
+
+
+OPS-23 正式发布补记（2026-10-28）：实际部署代码为
+`516e647f6460b2d1c0f29da93f0553e1f113d196`，Web 正式预检及 commit-bound
+最小上下文 prepare 通过，源归档 SHA-256 为
+`91677197d1b6acd16476f5db1c618327f104745f004566c87cebc0bfec693478`。
+实际 linux/amd64 Web image ID 为
+`sha256:b1a936b4c55ecbefa2039f79c17ffdfdf5e5a584cdffde80f0c464292ffe74ee`，
+OCI revision 核对一致。保留旧日志和 rollback tag 后仅 recreate Web，HTTP／
+健康通过；服务器 Compose／env 摘要与其他 47 个容器的 image／StartedAt 不变，
+没有迁移、平台服务重启、Provider 变更或 Runtime replacement。
+
+本地开发资源六项 Chromium 定向回归通过，实际截图人工检查通过；不将其
+声称为生产认证后的功能回归。服务器 Chromium 验证前缀登录、Agent 深层
+路由、根登录和 API 401 边界通过；公网 HTML／入口 JS／CSS 摘要匹配运行
+镜像，新浏览器确认认证请求带部署前缀、根 API 请求为零。未对用户业务
+任务执行触发／暂停／恢复／删除操作，未调用真实模型。发布收尾结果完成后补记。
+
+
+Web remote-release-finish 通过健康、版本与容量门禁，无过期受管上下文；精确
+回收一个可回收历史 image ID 的 tags，保留当前 Web、一个不同版本回滚及
+全部容器引用，不清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后
+再次核对 Web 版本／健康、服务器配置及其他 47 个容器保持。本补记不改变
+实际部署应用身份，本地提交未推送；当前与下一可执行重构切片均为 NONE。
+
+
+### OPS-24 流程菜单删除项左对齐 — DONE
+
+用户指出流程编排行菜单的删除项与其他按钮不对齐。根因是删除项命中通用
+`.danger` 的 `justify-content:center`，菜单只设置了 `text-align:left`，
+不能改变 flex 子项居中。本片只在 `.flow-row-menu button` 明确设置
+`justify-content:flex-start`，统一三项图标和文字起点，保留危险色及原操作。
+
+Web typecheck、diff／CURRENT 唯一性与唯一 Alembic head
+`0178_merge_schedule_credentials` 核对通过。既有流程列表 Chromium 用例的
+临时验收副本通过，在 1440／1024 宽度直接测量三个图标及文字 x 坐标一致、
+计算样式为 flex-start，并继续验证复制流程与画布布局。截图人工检查通过；
+没有新增产品逻辑或永久测试。受控 API 验收不代表真实业务删除，沿用当前
+会话授权仅发布 Web。实际发布结果完成后补记；当前与下一可执行切片均为 NONE。
+
+
+OPS-24 正式发布补记（2026-10-28）：实际部署代码为
+`423615e395b1c91ff6e468cedaeac4b11fc6ef9c`。Web 正式预检及 commit-bound
+最小上下文 prepare 通过，源归档 SHA-256 为
+`60b0f8d78c03ce4af086b64921ee1d4a3cd702f0bf5d98748df14fd6dbcec23c`，
+实际 linux/amd64 Web image ID 为
+`sha256:5cc7caf430faab1837984738fc1679d3c875041452d94e098721c510102129c0`，
+OCI revision 一致。保留旧日志和 rollback tag 后仅 recreate Web，HTTP／
+健康通过；服务器 Compose／env 摘要及其他 47 个容器的 image／StartedAt
+不变，没有迁移、API／Worker／Provider 重启或 Runtime replacement。
+
+本地受控 Chromium 菜单坐标检查与既有流程复制／画布用例通过；不冒称真实
+业务删除或线上认证后的菜单操作。服务器 Chromium 验证前缀登录、Agent 深层
+路由、根登录及 API 401 边界通过；公网 HTML／入口 JS／CSS 摘要匹配运行
+镜像，新浏览器认证请求带部署前缀，根 API 请求为零。发布收尾完成后补记。
+
+
+Web remote-release-finish 通过健康、版本与容量门禁，无过期受管上下文；
+精确回收一个可回收历史 image ID 的 tags，保留当前 Web、一个不同版本
+回滚及全部容器引用，不清理共享 BuildKit、卷、Workspace 或数据库备份。
+收尾后版本／健康、服务器配置和其他 47 个容器再次核对通过。本补记不改变
+实际部署应用身份，本地提交未推送；当前与下一可执行重构切片均为 NONE。
+
+
+### OPS-25 能力仓库左右布局与后台分页排序 — DONE
+
+能力仓库改为左侧六类能力导航、右侧列表，Skill 组合置于 Skill 下方独立子入口。
+移除横向大分类卡和组合区占高，紧凑工具栏保留原有上传、Git／Marketplace
+Plugin 导入、MCP／Context／Hook 创建、Agent Definition 上传、组合管理及批量
+删除；行菜单保留编辑、下载和删除，Context／Agent Definition 名称保留查看入口。
+列表展示说明、来源文件、大小、版本、上传时间、历史版本引用合计和依赖状态。
+页面固定、表格独立滚动，分页按钮固定底部，每页 20 项，不使用滑动分页。
+
+新增独立目录读取接口，SQL 先按最新已发布版本分组，再筛选、全局排序及分页；
+默认上传时间倒序，支持名称、大小、版本升降序和稳定 ID 次序。组合支持名称、
+分类、成员数、创建／更新时间排序；成员版本按当前页批量投影，避免逐组合
+扫描整个能力仓库。旧能力／组合 API 和写入协议不变。跨页选择保持，全选仍
+覆盖当前模块全部匹配项；仅显式全选、删除及组合编辑时按需读取全量版本，
+删除前重新解析所选 lineage 的全部已发布版本，引用保护及内置项保护沿用原逻辑。
+
+Web typecheck、受影响 ESLint、Ruff、目录／投影／路由 Pyright、diff 检查通过。
+真实 PostgreSQL 目录与组合 13 项通过，覆盖全局排序、分页、稳定同值、完整历史
+版本、转义搜索、类型过滤、组合成员排序及非法参数；补充 retired 版本后目录
+8 项再验通过。扩大后端回归 62 项通过、4 项失败：三个旧 Hook JSON 夹具缺少新
+表单必填 name，以及 Marketplace resolver 旧 mock 缺少响应字段；四项在改版前
+`b314f4b5` 源码隔离副本均复现，不是本片新增回归，原导入路径未修改。
+11 项 Chromium 回归通过，覆盖六类入口、编辑浮层、Context 文本／资料包发布和
+查看、组合编辑／分页、内置保护、六类批量删除、Skill 下载、后台排序请求、跨页
+选择／全模块全选、表格滚动与短屏固定分页。截图人工检查通过；浏览器使用受控
+API，不代表真实模型执行。唯一 Alembic head 为 `0178_merge_schedule_credentials`，
+无 CURRENT。沿用当前会话授权发布 platform 与 web，实际发布结果完成后补记。
+当前与下一可执行重构切片均为 NONE。
+
+
+OPS-25 正式发布补记（2026-10-28）：实际部署代码为
+`42b2062793403b41bf815d73fc8fc3d4ff3bf968`。platform／web 正式预检及
+commit-bound 最小上下文 prepare 通过，归档 SHA-256 分别为
+`aa68eeaeb6c468d1f3e1649850c0b5d1c333359a31f411fa801d75eb6a88c2f4` 与
+`f4c852b7b50a369a0d587425bec1425f09cab3dcdf8f1c99f01b0bb7ce094a68`。
+实际 linux/amd64 平台／Web image ID 分别为
+`sha256:5f12a975515f01075945521418d1aa82e9e0f6b354d0321cbe66f0cbd984eefb` 与
+`sha256:abb2879b88343a18ccbea5b792726e801e4a9b3a8790978d809b1eeb189dbe68`，
+OCI revision 均一致。保留旧服务日志与 rollback tag 后运行 migration，head 仍为
+`0178_merge_schedule_credentials`；同步 recreate api、stream-api、worker、web，
+四服务健康和版本核对通过，服务器 Compose／env 摘要及其他 43 个容器的 image／
+StartedAt 保持。未修改 Provider、Runtime generation 或业务数据。
+
+正式 API 经临时内存认证后只读验收：57 项 Skill 首屏 20 项，4 项 MCP、7 项
+Context、其余三类空列表及 4 个 Skill 组合均正常。默认上传时间倒序；名称全局
+排序的前两页与同序较大窗口一致且无交叉，合计与旧能力 API 的 lineage 数一致。
+六类列表本次 HTTP 约 51–91ms、组合约 69ms；属于单次抽样，不作为性能承诺。
+没有真实上传、发布、编辑、删除或模型调用。生产浏览器验收覆盖前缀／根登录、
+Agent 深层路由及部署前缀请求；公开 HTML 和入口资源摘要与运行镜像一致，新增
+目录接口的匿名 401 边界通过。认证后列表 UI 的功能回归使用本地受控 API，
+不冒称为线上已登录浏览器验收。
+
+platform 与 web remote-release-finish 通过；无过期受管上下文，精确回收两个
+可回收旧 image ID 的 tags，保留当前镜像、每仓库一个不同版本回滚和全部容器
+引用。未清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后四服务健康、
+版本、数据库 head、服务器配置及其他 43 个容器再次核对通过。本补记不改变
+实际部署应用身份；本地提交未推送，当前与下一可执行重构切片均为 NONE。
+
+
+### OPS-26 Case 路径优先的场景空间 — DONE
+
+按产品要求将场景空间改为紧凑左列表与完整右路径：页头只保留名称、状态、阶段
+计数与场景信息／Agent 配置／控制记录／启动 Agent／删除入口。基础信息与
+会话配置改为按需弹窗，外部点击／Esc 可关闭，键盘焦点限制在当前面板。移除
+右侧常驻长表单和重复说明；路径占据主体，路径区域独立滚动、页头固定，场景
+列表独立搜索与滚动。保持资料上传、链接、预览、改名、移除、能力和认证选择、
+路径添加／拖拽／键盘排序／移除及删除保护。列表更新原位替换，读取／保存不
+打乱场景顺序；新建后才显式选择新场景，迟到更新不改变用户当前选择。
+
+用户明确确认名称、工作区创建后固定，说明、目标、资料仍可补充。浏览器只读／
+禁用及 API 的 CASE_IDENTITY_FROZEN 双边约束，保留 row_version 乐观锁、文件
+引用保护和用户隔离。创建过程因导入文件提前产生 Case 时也冻结名称／工作区，
+失败重试继续复用该 Case。修改上下文仍更新正式 case.toml，未改动旧执行记录。
+
+路径卡片展示模式、阶段状态、当前节点、进度、模板和独立执行记录入口；纠正
+DRAFT／CANCELLED／MISSING／等待门禁状态误报运行中。手动启动作为辅助动作
+保留，首步复制成功而启动失败时重新读取副本，重试沿用已有草稿，不重复复制。
+控制记录按正式 control_plans／decision_proposals／tasks 展示动作、状态、原因、
+错误和执行记录。只轮询当前有会话或执行副本的非终态 Case，低版本响应不得
+回退较新保存；不轮询所有 Case。Agent 首次启动前前后端检查非空且完整的阶段
+模板路径，浏览器同次失败重试复用提交键；已有控制会话仍直接打开。新会话
+统一绑定专属 Case 工作目录，修复选择已有目录时与控制 Binding 授权目录不一致；
+原工作区选择元数据保持，已有会话不迁移。启动任务明确按路径通过平台受控动作
+协调独立执行副本，沿用 OpenHands 原生会话、既有白名单与审计，不新增文本
+控制协议或执行器，也不将提示词或 UI 状态当作真实动作成功。
+
+Web typecheck、受影响 ESLint、Ruff、diff 检查通过；Case 服务 Pyright 与改动前
+基线同为 40 项既有诊断，签名比较无新增，本片不改写无关类型推断。15 项 Case
+配置测试通过，覆盖不可变身份、上下文更新、版本冲突、用户隔离、资料路径与
+符号链接边界、路径顺序、完整路径启动门禁、专属目录和原会话复用；Runtime
+bootstrap 使用受控替身，未运行真实模型。14 项 Chromium 定向回归通过，覆盖
+原有完整配置／资料／路径功能、四种尺寸、认证失败重试、删除拒绝、长路径滚动、
+只读身份、控制记录、启动门禁／提交键及手动阶段重试；最终面板键盘／状态
+调整后 3 项新增用例再验通过。截图人工检查通过。唯一 Alembic head 保持
+0178_merge_schedule_credentials，无迁移、无 CURRENT。沿用当前会话授权发布
+platform 与 web，实际发布完成后补记；当前与下一可执行重构切片均为 NONE。
+
+
+OPS-26 正式发布补记（2026-10-28）：实际部署代码为
+`3f92634af7e4c8cbe285dcc1cf8225504d660044`。platform／web 正式预检与
+commit-bound 最小上下文 prepare 通过；归档 SHA-256 分别为
+`a85d765f223d8b2d9638e38bdb820c82a940895b84ba67400f46b00e85912cde` 和
+`3712e02147fa949bd05a6752a1e1b763fa133e07d3364eb16c48f408b964a402`。
+实际 linux/amd64 平台／Web image ID 分别为
+`sha256:0fe5884f41f84835db1473954a7651a870fdf2497fa5b31e9eff994457db08c0` 和
+`sha256:1edc37e9e1196238ae6fd096c604d7580117f98a21db8c9b9d143a8d141263a4`，
+OCI revision 一致。保留旧日志与回滚镜像后执行 migration，数据库 head 仍为
+0178_merge_schedule_credentials；同步 recreate api、stream-api、worker、web，
+四服务健康与版本核对通过。服务器 Compose／env 摘要及其他 43 个容器的 image／
+StartedAt 保持，未重启 Provider 或 replacement Runtime。
+
+发布前后在只读数据库事务中核对 Case、阶段、控制计划、决策、观察任务及关联
+运行的记录摘要完全一致。正式认证后 GET 场景列表与详情通过，现有一个空路径、
+无控制会话的 Case 保留；未发送业务写请求、启动场景或调用真实模型。公网 HTML、
+入口 JS／CSS 与运行镜像摘要一致，Case 路由和新 CasesPage JS／CSS 可达，模块
+包含新场景信息／控制记录／Agent 启动入口。生产 Chromium 验证前缀／根登录、
+深层路由、匿名 401 与全新浏览器前缀请求通过。复杂路径、资料编辑和 Agent
+失败重试由本地受控 API 回归验证，不冒称为生产真实 Agent 全流程执行验收。
+
+platform 与 web remote-release-finish 通过，无过期受管上下文，精确回收两个
+可回收历史 image ID 的 tags，保留当前镜像、每仓库一个不同版本回滚及全部
+实际引用；未清理共享 BuildKit、卷、Workspace 或数据库备份。实际部署身份
+不因本补记改变；本地提交未推送，当前与下一可执行重构切片均为 NONE。
+
+
+### OPS-27 流程运行记录详情紧凑布局 — DONE
+
+记录详情合并重复标题与工具栏，单行展示返回、记录名称、模式和状态；起点、
+Git 作者、创建时间改为紧凑信息行。流程图说明收进提示，保留流程／产物流转
+切换和完整定义 Hash 提示；节点移除重复选中标签和标准端口说明。配置区加宽，
+输入／提示词、Agent、门禁及执行记录同时挂载展开，原页签作为区内定位入口；
+输入、Agent 模块和开始／结束门禁采用列布局，统一保存配置名称。页面固定，
+详情区独立滚动；画布尺寸变化时重新 fitView，不改写节点坐标或运行配置。
+
+执行详情优先显示状态、节点会话入口及人工操作，随后展示本轮冻结模型、推理
+程度、启动方式、提示词、输入与上下文。冻结配置只读当前 Attempt 事实，完整
+提示词保留全文弹窗，能力以紧凑网格全部展示，完整名称／类型／digest 可查看。
+移除普通完成态重复进度与长说明，异常、取消恢复、门禁和危险确认仍保留；
+输出与历史审计保持原分页及按需读取。未修改保存载荷、乐观锁或执行协议。
+
+Web typecheck、受影响 ESLint、git diff --check 通过。5 项 Chromium 定向回归
+通过，覆盖连续／逐步草稿编辑保存、运行中人工输入与取消确认、已完成记录
+自身冻结配置及输出、36 项能力和提示词／Context 全文、门禁／审计读取、
+1440×900／1440×650／1024×768 布局与缩放后画布适配。截图人工检查通过。
+回归使用受控 API，不代表真实模型执行。旧 feedback spec 的 3 项用例因旧目录
+导航选择器在进入详情前失败；本片新增用例经当前正式目录／显式打开入口验收，
+不冒称旧套件通过。无后端或迁移变更，唯一 Alembic head 保持
+0178_merge_schedule_credentials，无 CURRENT。沿用当前会话授权仅发布 Web，
+发布结果完成后补记；当前与下一可执行重构切片均为 NONE。
+
+
+OPS-27 正式发布补记（2026-10-28）：实际部署代码为
+`0329a6c92593f834c21bf5ee047d8613a5f6c75e`。Web 正式预检及 commit-bound
+最小上下文 prepare 通过，归档 SHA-256 为
+`dabfacf0bdf7571f65838554321174289c52c1779496dfe0632c9e80e476a7bd`，
+实际 linux/amd64 Web image ID 为
+`sha256:8eda768a8e0359bfabaa8e5b82aa2506133bdf11c2e3274f8b1f74220aa0b619`，
+OCI revision 一致。保留原日志与回滚镜像后仅 recreate Web，健康及版本通过；
+服务器 Compose／env 摘要与其他 47 个容器的 image／StartedAt 保持。未执行
+迁移、业务写入或模型调用，未重启平台／Provider 或 replacement Runtime。
+
+公网 HTML、入口及 WorkbenchPage JS／CSS 摘要与运行镜像一致，记录详情新控件
+存在；Chromium 验证前缀／根登录、Agent 与 FlowRun 深层路由及匿名 401 边界
+通过，全新浏览器认证 API 使用部署前缀，根 API 请求为零。认证后详情交互由
+本地受控 API 回归验证，不冒称生产真实模型或已登录完整操作验收。
+
+Web remote-release-finish 通过健康、版本和容量门禁，无过期受管上下文，精确
+回收一个历史 image ID 的 tags，保留当前镜像、一个不同版本回滚和全部实际
+容器引用；未清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后健康、
+版本、服务器配置及其他 47 个容器再次核对通过。本补记不改变实际部署应用
+身份，本地提交未推送；当前与下一可执行重构切片均为 NONE。
+
+
+### OPS-28 按运行记录隔离临时标签与深层链接 — DONE
+
+复用每条连续／逐步记录既有完整 ID，不新增数据库标识或迁移。记录详情采用
+`/flow-runs/<parent>/records/<automatic|stepwise>/<record>` 地址，标签身份由
+父 FlowRun、模式及完整记录 ID 共同组成，文字显示 `Run #<run_no>_<ID 前八位>`，
+悬浮提示保留完整相对路径。同记录重复打开复用标签，同父不同记录各自保留；
+短 ID 只作显示，不参与记录身份或授权。URL 优先于陈旧 history selection，
+刷新与新浏览器标签直接读取对应受权记录，不依赖原页面内存。
+
+按记录 key 重新挂载工作台，避免同父记录间沿用另一条的本地模式／配置选择。
+目录进入在布局阶段建立完整地址，避免子页面消费一次性提示后只留下父 URL。
+兼容旧父级地址及已有 sessionStorage 标签，能从原导航状态恢复的记录转换为
+新地址；存储仍只保存受限导航元数据，保持用户隔离、去重、损坏／禁用兜底。
+节点会话沿用来源记录的标签身份，浏览器 Back 及显式返回来源均回到准确记录；
+显式返回直接使用记录 URL，保留正式 NodeRun／Attempt 选择与原投影刷新。
+
+Web typecheck、受影响 ESLint、git diff --check 通过。11 项 Chromium 定向回归
+通过，覆盖原有 5 项详情功能、同父多记录目录进入／切换／关闭／刷新／前进
+后退、无 history 的复制链接、相同记录 ID 不同模式隔离、旧标签迁移、URL
+覆盖陈旧 history、节点会话归属及存储损坏／不可用。最终导航简化后 3 项记录
+用例再次通过，补齐节点工作区 fixture 后节点会话 Back 与显式返回来源再验
+通过；截图人工检查通过。使用受控 API，无真实模型或业务写入。Alembic 唯一
+head 保持 0178_merge_schedule_credentials，无 CURRENT、无后端改动。沿用当前
+会话授权仅发布 Web，正式结果后补；当前与下一可执行重构切片均为 NONE。
+
+
+OPS-28 正式发布补记（2026-10-28）：实际部署代码为
+`2329f7ce4846e6f3079751e1ca4dd673971b9c72`。Web 正式预检与 commit-bound
+最小上下文 prepare 通过，源归档 SHA-256 为
+`9c0419a047fc7a26cfe0b10784aeef11b69d436cd57d7b1041270c40fb89f690`，
+实际 linux/amd64 Web image ID 为
+`sha256:639cac0b9d03ef5074e37496d8c3923a7ab93297969cb71a15bbaa6f7b30366c`，
+OCI revision 一致。保留旧日志及回滚镜像后只 recreate Web，健康、版本与
+配置摘要通过，其他 47 个容器的 image／StartedAt 保持。没有数据库迁移、
+业务写入、模型调用、平台／Provider 重启或 Runtime replacement。
+
+公网 HTML、入口 JS／CSS 和 WorkbenchPage 模块摘要与运行镜像一致；新增
+运行记录深层地址、Agent 路由、前缀／根登录经 Chromium 验证通过，匿名 API
+401 边界和全新浏览器的部署前缀请求通过，根 API 请求为零。记录切换、刷新、
+旧标签恢复及节点会话返回使用本地受控 API 验收，不冒称生产已登录完整操作。
+Web remote-release-finish 通过健康、版本与容量门禁，无过期受管上下文；精确
+回收一个历史 image ID 的 tags，保留当前镜像、一个不同版本回滚及全部容器
+引用。未清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后健康、版本、
+配置及其他 47 个容器再次核对通过。本补记不改变部署应用身份，本地提交未
+推送；当前与下一可执行重构切片均为 NONE。
+
+
+### OPS-29 流程列表操作菜单外部点击收起 — DONE
+
+流程编排列表的行操作菜单使用当前打开行的 DOM 引用限定内部区域；仅在打开时
+监听 document 捕获阶段 pointerdown，点击预览画布、搜索框或其他外部区域即
+收起，不阻断原点击操作。菜单本体与触发按钮保持内部点击，按钮仍可再次切换；
+另一行操作按钮正常切换菜单，复用既有 Esc 关闭栈。卸载或关闭时移除监听。
+进入编排、复制、删除及其确认逻辑保持，无 CSS／API／迁移变更。
+
+Web typecheck、受影响 ESLint 和 git diff --check 通过。2 项既有 Chromium
+流程库回归通过，覆盖草稿创建、列表滚动／布局、复制与进入编排；一次性受控
+浏览器检查通过画布／搜索框外点、按钮开合、Esc、跨行切换及菜单内进入编排。
+未新增永久测试，临时脚本位于忽略目录；未进行生产业务删除或模型调用。
+无 CURRENT，沿用当前会话授权仅发布 Web，正式结果后补；当前与下一可执行
+重构切片均为 NONE。
+
+
+OPS-29 正式发布补记（2026-10-28）：实际部署代码为
+`aed2da17c785f184306ebe5ebbb99efd5b8cdb44`。Web 正式预检和 commit-bound
+最小上下文 prepare 通过，归档 SHA-256 为
+`bc9106f03c1bf0c1ffa1fd6bc8842cb972ecb4201cf4bbeb68a713fd7622559c`，
+linux/amd64 Web image ID 为
+`sha256:40ddcab581bdcbf6e037b5b23aa3b110cdb4b753ef71ee66d6f511b15a131df3`，
+OCI revision 一致。保留原日志及回滚镜像后仅 recreate Web，健康／版本通过；
+服务器配置摘要及其他 47 个容器的 image／StartedAt 保持。没有迁移、生产
+业务写入、模型调用、平台／Provider 重启或 Runtime replacement。
+
+公网 HTML、入口资源及 FlowsPage 模块摘要与运行镜像一致，流程操作控件存在；
+Chromium 验证前缀／根登录、Agent／记录深层路由及匿名 401 边界通过，全新
+浏览器认证请求带部署前缀，根 API 请求为零。菜单交互采用本地受控 API 验收，
+不冒称生产已登录或真实删除验收。remote-release-finish 通过，无过期受管
+上下文，精确回收一个历史 image ID 的 tags，保留当前、一个不同版本回滚及
+全部容器引用，未清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后
+健康、版本、配置及其他 47 个容器再验通过。本补记不改变部署身份，本地提交
+未推送；当前与下一可执行重构切片均为 NONE。
+
+
+### OPS-30 运行记录工具栏全量搜索 — DONE
+
+在记录类型／选择与管理按钮之间加入名称或记录 ID 搜索，250ms 防抖，支持一键
+清空和无结果提示。查询词与父 FlowRun／类型共同隔离 Query cache 及分页链，
+沿用 AbortSignal 取消旧请求；关键词变更重置表格滚动和选择，避免对旧结果批量
+操作。返回同一目录保留当前搜索，切换父运行或流程时清空。宽屏占用工具栏
+中部空间，窄屏搜索框独占第二行；仍只滚动记录区，不增加整页滚动。
+
+目录接口新增可选 q，SQL 在稳定时间／ID 排序及 keyset 分页前完成名称／ID
+不区分大小写的包含搜索；转义 LIKE 特殊字符，保留用户隔离、父运行范围和
+待删除记录排除。搜索游标绑定标准化关键词，不可跨搜索或类型复用；空搜索
+继续接受既有四字段游标。游标用 UTF-8 JSON 保持长 Unicode 关键词也在长度
+上限内。仍只投影目录字段，不读取执行详情、Runtime 或完整记录集，无迁移。
+
+Web typecheck、受影响 ESLint、Ruff、目录与路由 Pyright、git diff --check
+通过。5 项真实 PostgreSQL 测试通过，覆盖原目录语义、跨页全量搜索、名称／ID、
+大小写、空白、类型、搜索游标范围、长 Unicode、特殊字符字面量、无结果及用户／
+删除隔离。2 项 Chromium 定向回归通过，覆盖原固定页头／表格滚动和新搜索、
+防抖后迟到请求、分页参数、清空、选择清除、目录恢复、父运行切换及两种尺寸。
+截图人工检查通过；浏览器使用受控 API。Alembic 唯一 head 保持
+0178_merge_schedule_credentials，无 CURRENT。沿用当前会话授权发布 platform
+与 web，正式结果后补；当前与下一可执行重构切片均为 NONE。
+
+
+OPS-30 正式发布补记（2026-10-28）：实际部署代码为
+`e0eb61d766ab4f7e30ecb333b0dde07d7fe8acfa`。platform／web 正式预检与
+commit-bound 最小上下文 prepare 通过，归档 SHA-256 分别为
+`993292a6dce2f8d34513ee24504b9a739ffef5f1db59dbcc52e04ed037372690` 和
+`c6f02d3b404084b0b6babe2eb83e95fc504c0faac7ae8a12f447d644394d2eed`。
+实际 linux/amd64 平台／Web image ID 分别为
+`sha256:f464ec7fa37f16cb5125ff08daa9caad9b3f3418b40a093ee56dce45439a6f4d` 和
+`sha256:1345735caee37830331e21c5d98e21f6386a24e95780f0714ddd8e31eb4f94ca`，
+OCI revision 均一致。保留旧日志与回滚镜像后执行 migration，head 保持
+0178_merge_schedule_credentials；同步 recreate api、stream-api、worker、web，
+四服务健康与版本通过。服务器配置摘要及其他 43 个容器的 image／StartedAt
+保持，没有 Provider 重启、Runtime replacement 或业务数据变更。
+
+正式认证后对 3 个现有父运行目录执行只读 GET 验收，名称／完整 ID 的大小写
+搜索、无结果、类型筛选、搜索分页和游标范围拒绝通过；未创建、编辑或删除
+业务记录，未调用模型。公网 HTML、入口资源及 RunsPage 模块摘要与运行镜像
+一致，搜索控件存在。Chromium 验证前缀／根登录、Agent／记录深层路由、匿名
+401 及全新浏览器前缀请求通过，根 API 请求为零。认证后复杂 UI 交互仍由本地
+受控 API 验收，不冒称线上已登录完整交互。
+
+platform 与 web remote-release-finish 通过，无过期受管上下文；精确回收两个
+历史 image ID 的 tags，保留当前镜像、每仓库一个不同版本回滚及全部容器引用。
+未清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后四服务健康、版本、
+数据库 head、配置与其他 43 个容器再次核对通过。本补记不改变实际部署身份，
+本地提交未推送；当前与下一可执行重构切片均为 NONE。
+
+
+### OPS-31 Skill 组合编辑器列表优先 — DONE
+
+新建／编辑 Skill 组合去掉英文眉题、长说明提示、分类输入及大段说明框；保留
+紧凑标题与关闭，名称和简短说明单行并列，其下直接是 Skill 列表。扩大弹窗
+可用宽度，收紧字段、工具栏和底部留白，列表填满剩余高度并独立滚动。Skill
+名称／说明截断显示，title 保留完整内容；选择数量、搜索、版本和保存保持。
+新建分类为空，编辑保存保留已有分类；说明沿用原长度上限，不截断历史数据。
+最新版本映射、选中项与 row_version 写协议不变，无 API／数据库变更。
+
+Web typecheck、受影响 ESLint、git diff --check 通过。2 项既有 Chromium 组合
+回归通过；加强原布局用例后，1440×900／1280×640／1024×768 三尺寸验证名称
+说明同行、列表占比大于 65%、弹窗无整体滚动、保存入口可见与无横向溢出通过，
+截图人工检查通过。一次性受控浏览器检查创建／编辑载荷、历史分类保留、旧
+成员映射最新版本、搜索不丢选择及完整说明提示通过，无生产业务写入或模型
+调用。无 CURRENT，沿用当前会话授权仅发布 Web；正式结果后补，当前与下一
+可执行重构切片均为 NONE。
+
+
+OPS-31 正式发布补记（2026-10-28）：实际部署代码为
+`1205dba9d4e9a530f6a4915042b1928b050f02a3`。Web 正式预检与 commit-bound
+最小上下文 prepare 通过，归档 SHA-256 为
+`65c896d19503f42d13ff26fbb0ad85e9de5ab7eed3a229b4ef3580f2d53f9373`，
+实际 linux/amd64 Web image ID 为
+`sha256:f7a6464162e31a3766b7fa30a66d15cec5c5b8c0efc6703fe2ddcec85f579d7b`，
+OCI revision 一致。保留旧日志与回滚镜像后仅 recreate Web，健康及版本通过；
+服务器配置摘要和其他 47 个容器的 image／StartedAt 保持，无迁移、平台／
+Provider 重启、Runtime replacement、生产业务写入或模型调用。
+
+公网 HTML、入口资源及组合编辑器模块摘要匹配运行镜像，新简短说明与 Skill
+列表控件存在；Chromium 验证前缀／根登录、Agent／记录深层路由、匿名 401 和
+全新浏览器前缀请求通过，根 API 请求为零。组合保存及复杂交互使用本地受控
+API 验证，不冒称线上已登录业务操作。remote-release-finish 通过，无过期受管
+上下文；精确回收一个历史 image ID 的 tags，保留当前、一个不同版本回滚和
+全部容器引用，未清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后
+健康、版本、配置和其他 47 个容器再验通过。补记不改变部署应用身份，本地
+提交未推送；当前与下一可执行重构切片均为 NONE。
+
+
+### OPS-32 Agent 定时详情紧凑布局与会话滚动分页 — DONE
+
+Agent 定时详情移除英文眉题和重复说明，标题、状态、会话模式及暂停／恢复、
+立即运行、编辑、删除按钮保持同行；Cron、工作区和上下次运行压成紧凑信息行，
+提示词单行省略并保留可关闭全文弹窗。详情取消固定最大宽度，运行会话列表填满
+主体，显示触发方式和最近运行；标题／列表表头固定，仅列表局部滚动，左任务
+选择与箭头展开仍独立，左侧默认三个运行会话及会话配置入口保持。
+
+新增独立 run-conversations 只读目录，在 SQL 按 binding 合并触发记录，并优先
+投影已 STARTED 的可读会话，避免新待投递／失败覆盖旧会话。按各 binding 最近
+触发时间和完整 ID 稳定排序，返回全量唯一会话数和范围绑定游标，每页默认20，
+浏览器在列表底部自动加载；页面范围之外的旧会话可继续读取。bindings 按页批量
+投影，无 Runtime／事件历史读取或逐行查询。显示的最近运行和触发类型均来自
+最近触发，代表会话读取身份仍来自可读 occurrence。旧 occurrences API 和调度
+写入协议不变，无迁移。查询缓存按工作区／任务隔离，AbortSignal 取消迟到读取，
+分页失败保留已有行并可重试，只有当前详情发起新分页接口读取。
+
+Web typecheck、受影响 ESLint、Ruff、git diff --check 通过，新分页模块 Pyright
+零诊断。触及的原 schedules／workspace router 共14项既有 Pyright 诊断，与 HEAD
+隔离文件消息／规则签名完全一致，无新增。15项真实 PostgreSQL 调度测试通过；
+补齐最近触发类型后3项新历史用例再验通过，覆盖47条会话跨页及同时间顺序、新增
+头记录不挤动分页、持续会话45次重复触发只保留一条可读记录、批量绑定读取、
+空列表、游标范围及用户隔离。6项 Chromium 回归通过，覆盖删除保留会话、任务
+选择／展开独立、会话返回、轮询不覆盖收起、首20项滚动至40项、长提示词全文、
+初始／分页失败重试和迟到分页不污染另一任务。三尺寸截图人工检查通过，含
+1440×1000／1440×600／1024×700，页面及详情主区域无溢出。受控 API 与测试库
+不代表生产模型执行。Alembic head保持0178_merge_schedule_credentials，无CURRENT。
+沿用会话授权发布platform／web，正式结果后补；当前与下一可执行切片均为NONE。
+
+
+OPS-32 正式发布补记（2026-10-28）：实际部署代码为
+`6ab404d593ff715dcf234e5aefc55321ea2092ee`。platform／web 正式预检与
+commit-bound 最小上下文 prepare 通过，归档 SHA-256 分别为
+`212b5275baddec2508e7ce223ce0e5c3fcd986efaca2805d117485daf4553356` 和
+`cde921beca99a00a9330a47b4a5cff1b4af5cf98b09fc20ba98bae4137ae1750`。
+实际 linux/amd64 平台／Web image ID 分别为
+`sha256:d9383cd7d52a85da56ea24ecd4e7c8d1e380bb462df53d04ad0c85c407ccd0c7` 和
+`sha256:a74ed1c0994aee86193d619066f78cd1e568a91dd8596e88a222986b6449e76d`，
+OCI revision 一致。保留旧日志和回滚镜像后执行 migration，数据库 head 保持
+0178_merge_schedule_credentials；同步 recreate api、stream-api、worker、web，
+四服务健康和版本通过。服务器配置摘要及其他43个容器 image／StartedAt 保持，
+无 Provider 重启、Runtime replacement 或业务数据变更。
+
+正式认证后对4个现有 Agent 定时任务执行只读历史目录 GET 验收，会话唯一数、
+最近触发时间／类型及分页响应结构通过，旧 occurrences 中可见会话数未丢失。
+未触发、编辑或删除任务，未调用模型。公网 HTML、入口资源及调度模块 JS／CSS
+摘要匹配运行镜像；Chromium 验证定时页面、记录深层路由、前缀／根登录、匿名
+401及全新浏览器前缀请求通过，根 API 请求为零。复杂滚动／错误重试由本地
+受控 API 验证，不冒称生产已登录完整交互或真实模型执行。
+
+platform 与 web remote-release-finish 通过，无过期受管上下文；精确回收两个
+历史 image ID 的 tags，保留当前镜像、每仓库一个不同版本回滚与全部容器引用。
+未清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后四服务健康、版本、
+数据库 head、配置及其他43个容器再次核对通过。本补记不改变部署应用身份，
+本地提交未推送；当前与下一可执行重构切片均为 NONE。
+
+
+### OPS-33 场景路径与配置进一步紧凑化 — DONE
+
+移除添加流程说明条、Case 路径标题和拖拽排序提示，阶段计数保留在主工具栏，
+当前阶段合并到同一行。流程卡片压缩边距、字号和间隔，空路径／追加入口统一为
+46px 单行按钮；添加、模板选择、拖拽／键盘排序、执行记录及重试保持。
+场景信息和 Agent 配置弹窗随内容收缩，名称／工作区、说明／目标各同行，
+资料列表局部滚动；Agent 配置移除重复标题，保存置底，模型和能力选择保持。
+
+名称、工作区、说明、目标创建后固定，前端只读并在资料写入时保留服务端原值，
+服务端使用 CASE_IDENTITY_FROZEN 拒绝修改。创建表单不提供资料添加或上传，
+创建成功后仍可添加、上传、预览、改名、移除资料；上传失败重试不重复建场景。
+控制记录改名为 Agent 操作记录，保留正式操作、观察、决策的状态／原因／错误
+与执行记录链接，不改变 Agent 执行协议。AGENTS 同步最新基础信息锁定要求。
+
+Web typecheck、受影响 ESLint、Ruff、git diff --check 通过。17项 Case 配置测试
+通过，覆盖四字段不可变、资料编辑、乐观锁、上传边界及迁移兼容。14项 Chromium
+Case 回归通过，覆盖创建、资料导入失败重试／取消、预览／改名、排序、配置、
+认证、删除保护、启动及手动执行重试，四尺寸1440×900／1440×700／1024×768／
+1280×620页面无整体溢出，长资料列表局部滚动；另两尺寸验证短 Agent 弹窗和
+下拉菜单。截图人工检查通过。浏览器使用受控 API，不代表生产模型执行。
+无新增迁移，Alembic唯一head保持0178_merge_schedule_credentials，无CURRENT。
+沿用当前会话直接部署授权发布platform／web，正式结果后补；当前及下一可执行
+重构切片均为NONE。
+
+
+OPS-33 正式发布补记（2026-10-28）：实际部署代码为
+`8e6c1a6e2a858bf37e3f22aab22e0e217b18220c`。platform／web 正式预检与
+commit-bound 最小上下文 prepare 通过，归档 SHA-256 分别为
+`08abebbe60d9fbb6b9383e98855b40fef42614490941eeb0cfb694a28b24ca82` 和
+`d19897162c5210224749336b917d3f43e763f28bc9e5968ad58cb7c5458670c0`。
+实际 linux/amd64 平台／Web image ID 分别为
+`sha256:863446fd495c1bea2c2074083e5808b96b0be2fb4f844713040cb7675a3d65f1` 和
+`sha256:70dc45ff97165f571276b34a102bc7ed6cb169f13ea268fe730bb9e8c7ae95a5`，
+OCI revision 均一致。保留原日志和回滚镜像后执行正式 migration，数据库 head
+保持0178_merge_schedule_credentials；同步 recreate api、stream-api、worker、web，
+四服务健康与版本通过，服务器配置摘要及其他43个容器 image／StartedAt保持。
+没有 Provider 重启、Runtime replacement 或业务写入。
+
+发布前后以只读数据库快照及正式认证 GET 核对现有 Case 控制面元数据，全部
+保持一致。公网 HTML、入口资源及 Case 模块 JS／CSS 摘要匹配运行镜像，新
+紧凑面板及 Agent 操作记录控件存在；Chromium 验证场景深层路由、记录深层
+路由、前缀／根登录及匿名401边界通过，全新浏览器认证 API 使用部署前缀，
+根API请求为零。基础信息锁定与复杂交互由本地服务测试及受控浏览器API验收，
+未通过线上业务写入验证，也未调用模型。
+
+platform与web remote-release-finish通过，无过期受管上下文；精确回收两个
+历史image ID的tags，保留当前镜像、每仓库一个不同版本回滚及全部容器引用。
+未清理共享BuildKit、卷、Workspace或数据库备份。收尾后健康、版本、数据库
+head、配置和其他43个容器再次核对通过。本补记不改变部署应用身份，本地
+提交未推送；当前及下一可执行重构切片均为NONE。
+
+
+### OPS-34 运行详情次要配置收纳与目录完整记录 ID — DONE
+
+节点运行概览将执行配置、节点输入、上下文与能力收成三行摘要，仅保留模型／
+思考程度、输入配置数量、应用上下文和能力数量。详细冻结启动方式、备用模型、
+提示词全文、输入字段／产物链接及完整能力列表移到二级弹窗；Context 原文在
+同一弹窗内切换查看并可返回列表，不再叠加第三层。弹窗正文局部滚动，支持
+外点、Esc、显式关闭、Tab／Shift+Tab焦点循环和关闭后焦点恢复。
+
+连续／逐步草稿的输入摘要直接打开既有二级输入表单，去掉展开输入卡片及重复
+按钮；启动提示词收成单行。资料上传、URL绑定、保存载荷／乐观锁、门禁、输出、
+审计及运行控制语义保持。运行记录目录在名称旁显示完整记录ID，长名称省略、
+窄屏允许身份区换行，全部／连续／逐步及定时分组共用同一行渲染；原服务端
+名称／ID搜索、滚动分页、选择与显式打开行为不变。
+
+Web typecheck、受影响ESLint及git diff --check通过。9项记录详情Chromium回归
+通过，覆盖三尺寸概览无滚动、二级配置／输入／36项能力、全文与弹窗交互、
+连续／逐步输入文件和URL保存、人工输入／取消、历史快照／输出、独立记录标签
+与路由恢复。3项目录回归通过，覆盖固定工具栏、局部滚动、分页失败重试、
+搜索全量分页及ID核对；补充完整UUID双尺寸断言后独立标签用例再验通过。
+截图人工检查通过。浏览器使用受控API，未写生产业务数据或调用模型。
+无后端／迁移改动，Alembic唯一head仍为0178_merge_schedule_credentials，无CURRENT。
+沿用当前会话授权仅发布Web，正式结果后补；当前与下一可执行重构切片均为NONE。
+
+
+OPS-34 正式发布补记（2026-10-28）：实际部署代码为
+`12932c0c6a5ef00e30bf3615c43400ec04fd68aa`。Web正式预检与commit-bound
+最小上下文prepare通过，源归档SHA-256为
+`a7c777879f44491bce000b37f0f0725d6ebc50f3b0b54db0c8a96d912b2f6661`，
+实际linux/amd64 Web image ID为
+`sha256:da5620bd567c7de5e58ca3a7f27793078e2c00412f04c2ba1c745e284c5219b8`，
+OCI revision一致。保留原日志及回滚镜像后仅recreate Web，健康与版本通过；
+服务器配置摘要及其他47个容器的image／StartedAt保持。没有迁移、平台／Provider
+重启、Runtime replacement、生产业务写入或模型调用。
+
+公网HTML、入口资源及WorkbenchPage／RunsPage模块JS／CSS摘要匹配运行镜像，
+二级弹窗和完整记录ID控件存在；Chromium验证Agent／运行记录深层路由、前缀／
+根登录及匿名401边界通过，全新浏览器认证API使用部署前缀，根API请求为零。
+详情交互和输入保存使用本地受控API回归，不冒称生产已登录完整业务操作。
+
+Web remote-release-finish通过，无过期受管上下文，精确回收一个历史image ID
+的tags，保留当前镜像、一个不同版本回滚和全部容器引用；未清理共享BuildKit、
+卷、Workspace或数据库备份。收尾后健康、版本、配置和其他47个容器再验通过。
+本补记不改变实际部署身份，本地提交未推送；当前及下一可执行重构切片均为NONE。
+
+
+### OPS-35 场景启动前置校验、路径全宽与次要操作审计 — DONE
+
+核对Case控制会话bootstrap、阶段模板复制／受控计划、逐步前驱接受推进、
+FlowRun完成／取消回写和Case观察任务投影。操作记录同时包含平台自动推进、
+手动动作与会话请求，不能一概标为Agent操作；将顶部入口移入场景信息底部，
+仅有记录时显示“操作记录”及数量，保留全部正式状态、原因、错误及执行链接。
+会话消息继续由OpenHands会话展示。当前创建协调会话只发送初始上下文与任务；
+受控API、阶段状态回写已存在，但本片未实现或验证默认Agent工具调用、后台任务
+回访与跨阶段决策的完整自动闭环，不能把会话创建成功写作整条路径自动执行成功。
+
+路径或已保存Agent模型配置缺失时前端直接禁用启动，悬浮提示缺失项，不再允许
+点击后出现红色说明条；终态阻止新建，已有Binding保持直接打开。后端新增启动
+前模板存在性／模式／配置就绪校验，要求已保存配置并拒绝陈旧请求，复用保存
+配置的正式校验重新确认供应商、模型、推理程度、能力和认证可用性，全部通过
+后才写Case文件和bootstrap原生会话；无新执行器或Runtime协议。AGENTS同步约束。
+
+路径卡片和添加入口铺满主体可用宽度，取消960px上限；添加表单去掉重复标题、
+步骤编号与独立按钮行，FlowRun／方式／记录与取消／添加同行，记录选项可见
+完整ID。选择依赖、运行状态轮询、过期记录拒绝、拖拽／键盘排序仍保留，Esc可
+收起添加表单，空状态无额外占位高度，仅路径区局部滚动。
+
+Web typecheck、受影响ESLint、Ruff、git diff --check通过。Case service原40项
+Pyright既有诊断与HEAD隔离副本消息／规则签名完全一致，无新增。28项SQLite
+Case配置测试通过，覆盖两种模板模式、空／缺失／未就绪模板、未保存／陈旧
+配置、模型／能力／推理程度不可用均不触及会话、文件或Runtime，以及原资料、
+乐观锁和用户隔离行为。14项Chromium Case回归通过，包括启动禁用／保存后启用、
+失败重试幂等、次要审计入口、双尺寸全宽路径及同行选择器、资料管理／排序／
+手动阶段重试；四尺寸页面无整体滚动，截图人工检查通过。浏览器使用受控API，
+未调用模型或在生产创建会话。无新增迁移，唯一Alembic head仍为
+0178_merge_schedule_credentials，无CURRENT。沿用当前会话授权发布platform／web，
+正式结果后补；当前与下一可执行重构切片均为NONE。
+
+
+OPS-35 正式发布补记（2026-10-28）：实际部署代码为
+`f71c22632c7fc56797ef33108e9a9346be0c9097`。platform／web正式预检及
+commit-bound最小上下文prepare通过，归档SHA-256分别为
+`7616586d7a191445bfbf24b51da46c4df48e89b9175130d02f94e7b47995806d`和
+`3daa4354c5a5823a0d758b44a653cb860092ddb2b2fdf8f39cd92e8e131470ca`。
+实际linux/amd64平台／Web image ID分别为
+`sha256:6d5e06d6d0f1688f82885a044c1b64ec7f59af0b51e6bca5cc90e0ed82d6a9ae`和
+`sha256:e31beb9916bbdd02904f968b00d51f4215e5309a0266356ee8fde2591ef4fb94`，
+OCI revision一致。
+
+构建期间一个非Compose的受管Runtime出现StartedAt变化，首次activate在任何
+镜像切换／迁移／服务更新前由保护检查拒绝。只读核对其原image ID保持、容器
+运行中、所有目标服务ID与image及服务器配置保持；保护清单原件与变化证据保留
+在受限发布上下文，仅对该独立生命周期变化更新观察基线。本次未操作该Runtime。
+随后保留旧日志与回滚镜像，正式migration通过，head保持
+0178_merge_schedule_credentials，同步recreate api、stream-api、worker、web，
+四服务健康与版本通过。后续保护清单43个容器及配置摘要保持，没有Provider
+重启、Runtime replacement或业务写入。
+
+正式认证只读GET与发布前数据库快照确认现有Case元数据保持。公网HTML、入口
+资源及Case模块JS／CSS摘要匹配运行镜像，新启动限制、次要审计与添加表单控件
+存在；Chromium验证场景／记录深层路由、前缀／根登录、匿名401边界通过，全新
+浏览器认证API使用部署前缀，根API请求为零。启动拒绝与复杂交互由本地服务
+测试和受控浏览器API验收，没有线上创建会话、触发流程或调用模型。
+
+platform与web remote-release-finish通过，无过期受管上下文，精确回收两个
+历史image ID的tags；保留当前镜像、每仓库一个不同版本回滚和全部容器引用。
+未清理共享BuildKit、卷、Workspace或数据库备份。收尾后健康、版本、数据库
+head、配置和更新后的保护清单再验通过。本补记不改变实际部署身份，本地提交
+未推送；当前及下一可执行重构切片均为NONE。
+
+
+### OPS-36 流程预览画布缩放控件恢复交互 — DONE
+
+流程库预览的两段既有布局CSS均将react-flow__controls-button设为
+pointer-events:none，屏蔽原生放大、缩小和适应画布按钮点击。删除两处阻断
+规则，继续复用React Flow原生Controls及其禁用边界；节点端口的只读行为、
+预览拖动和进入编排保持，无API或执行语义变更。
+
+Web typecheck、受影响ESLint与git diff --check通过。2项既有Chromium流程库
+回归通过，覆盖空草稿创建、预览节点／边、鼠标点击放大与缩小后的真实viewport
+scale变化、适应画布后的节点边界及拖动后重新居中，以及列表滚动、选择、复制、
+进入编排和双尺寸布局。截图人工检查通过，使用受控API，未修改生产流程或调用
+模型。无后端／迁移改动，唯一Alembic head保持0178_merge_schedule_credentials，
+无CURRENT。沿用当前会话授权仅发布Web，正式结果后补；当前及下一可执行
+重构切片均为NONE。
+
+
+OPS-36 正式发布补记（2026-10-28）：实际部署代码为
+`5e3db7cd4542fd1c7d856900cfbb130d73f57160`。Web正式预检与commit-bound
+最小上下文prepare通过，源归档SHA-256为
+`deb2b5e840c019f947b793cfe3f1d4eb868497aabce3ade2d9b00c9692a6e9c0`，
+实际linux/amd64 Web image ID为
+`sha256:de76fbc6e5fd8189aafc8ec9e5347f602093aa538b0ffefc1e5de7ede6c208d5`，
+OCI revision一致。保留旧日志和回滚镜像后仅recreate Web，健康及版本通过；
+服务器配置摘要与其他47个容器image／StartedAt保持，没有迁移、平台／Provider
+重启、Runtime replacement、生产业务写入或模型调用。
+
+公网HTML、入口资源及流程预览JS／CSS摘要匹配运行镜像，确认公网样式不存在
+预览控件pointer-events:none阻断规则；Chromium验证Agent／记录深层路由、
+前缀／根登录、匿名401和全新浏览器前缀API请求通过，根API请求为零。真实鼠标
+缩放／适应画布交互由本地受控API回归验证，不冒称生产已登录流程操作验收。
+Web remote-release-finish通过，无过期受管上下文，精确回收一个历史image ID
+的tags；保留当前、一个不同版本回滚及全部容器引用，未清理共享BuildKit、卷、
+Workspace或数据库备份。收尾后健康、版本、配置与其他47个容器再验通过。
+本补记不改变实际部署身份，本地提交未推送；当前及下一可执行重构切片均为NONE。
+
+
+### OPS-37 场景空间端到端链路与能力缺口审计 — DONE
+
+按用户要求核对场景配置、路径、协调会话、模板复制、阶段／节点启动、正式产物与
+事件回写、计划／决策和后台任务消费，形成 `docs/case-space-lifecycle-review.md`。
+文档区分当前行为与目标设计，给出前后端对应能力矩阵、用户启动／运行／暂停／
+终止与结果交付路径、原生OpenHands能力和平台控制面的边界，以及九个候选实施
+切片及依赖。候选切片尚未实施，不改变当前FR任务状态，不自动开始应用开发。
+
+确认现有会话bootstrap不等于场景执行启动；逐步前驱接受后有局部后继推进，
+FlowRun终态有阶段状态回写，但下一阶段仅置ACTIVE，未自动创建／启动执行副本。
+OBSERVE／REVIEW投影有记录，未找到Case任务后台消费者与默认工具／回访闭环。
+受控动作枚举、写入及分发存在未闭环分支，跨阶段数据映射、业务验收、暂停／
+恢复和持久重试需要统一。源码审计基线为
+`cce531c6822a4cb43302b2f65a9a8092e7965d86`，OpenHands契约仅对source lock
+固定commit的原生ToolDefinition／MCPConfig／Plugin和消息入口做必要取证，
+不将接口类型存在视为Case工具已装配或真实模型已验收。
+
+既有Case配置与API定向回归37项通过，1项旧binding范围测试在未完整绑定路径的
+夹具上被CASE_PATH_INCOMPLETE提前拒绝，未走到其授权断言，文档保留此验证缺口。
+三项临时SQLite诊断复现：完成阶段只激活下一阶段；已有FAILED启动决策可导致
+上层START_EXECUTION计划SUCCEEDED而实际启动次数为零；PAUSED场景仍可分发逐步
+后继。编排动作用替身，不代表真实Runtime执行，临时文件仅置仓库根.tmp目录。
+文档diff检查、源码入口与引用、CURRENT唯一性和唯一Alembic head
+`0178_merge_schedule_credentials`核对通过。本片仅文档整理，没有应用代码、
+迁移、服务器变更或模型调用，无需发布。当前与下一可执行重构切片均为NONE。
+
+
+### OPS-38 节点中心内嵌编辑工作台与统一草稿保存 — DONE
+
+按用户确认的方案保留左目录／右编辑，将右侧重排为单行可编辑节点名称、保存
+状态和操作，说明默认两行摘要并原地展开编辑，移除重复英文表头与基础信息区。
+启动提示词、上下文、输入与输出通过三个标签切换；正文完整编辑，复用既有
+Markdown 预览，支持放大编辑，关闭／外部点击／Esc 后仍保留同一节点草稿。
+主编辑与放大窗口支持 Cmd／Ctrl+S，标签支持左右／Home／End 键，放大窗口
+具有焦点约束和关闭后焦点恢复。目录、正文／预览、字段区独立滚动，页头与
+标签固定，四种窗口尺寸下不产生页面滚动或横向溢出。
+
+输入输出改为当前页字段列表，名称、URL／文件类型、说明直接编辑；增删改均
+暂存在同一草稿，统一由顶部保存提交，不再提前创建节点或单独保存字段。
+历史 field_key 保持，新字段仍由服务端正式生成，浏览器 draftId 不进入载荷。
+提交保留 row_version；字段与名称校验失败会定位对应区域，版本冲突保留所有
+修改，保存中禁止重复提交、改动或切换节点。节点切换／新建／关闭及相关删除
+动作增加未保存提醒；主导航、设置／运行标签、刷新数据与退出复用该门禁，
+浏览器刷新使用原生 beforeunload。取消设置跳转不创建临时标签；删除其他节点
+保留当前编辑器及草稿。API、服务端模型与 Runtime 执行契约均不变。
+
+Web typecheck、受影响 ESLint、diff 检查与唯一 Alembic head
+`0178_merge_schedule_credentials` 核对通过，无 CURRENT。19 项 Chromium 节点
+编辑回归通过，覆盖单次统一保存、创建目录绑定、字段增删改及版本标识、提示词
+编辑／预览与放大同步、键盘保存、错误反馈与重试、保存中去重和切换门禁、
+节点／导航／设置跳转取消、原生刷新取消、删除其他节点／未创建草稿所属目录的保护、四尺寸滚动几何和
+大量字段／目录独立滚动。截图人工检查通过。既有设置临时标签用例的临时副本
+仅将旧“节点资产”导航名称调整为当前“节点中心”，五项均通过，未改其业务断言。
+浏览器使用受控 API，不代表生产业务写入或真实模型执行。沿用当前会话直接
+部署授权仅发布 Web，正式发布结果后补；当前与下一可执行重构切片均为 NONE。
+
+
+### OPS-39 场景 Agent 自主协调目标与事件／资料契约修订 — DONE
+
+按用户四点要求修订 `docs/case-space-lifecycle-review.md`：启动采用类似Agent定时
+一次新运行的原生会话bootstrap，继承场景配置并获知目标、完整路径和资料；流程
+与节点是否具备启动条件、是否修改配置／重跑／进入下一阶段均由场景Agent判断，
+平台负责正式工具、技术校验、执行、事实投递和审计。覆盖OPS-37初稿中启动直接
+触发首阶段、条件就绪后由平台直接推进下一阶段的目标建议，保留原现状审计证据。
+
+区分会话启动就绪与流程执行就绪，避免要求用户先填完本轮输入才让Agent介入。
+新增目标工具能力矩阵，涵盖输入输出、提示词、上下文、能力／认证／模型预设、
+正式验收、重跑、停止和恢复；明确逐步未启动端口／已执行节点新快照／新尝试及
+连续运行启动后仅复制为新草稿的边界，不改原模板和历史，不新增逐项人工确认。
+节点完成与流程完成先触发Agent复核，不能抢先自动接受、启动后继或完成场景。
+
+补全事件队列、原生会话串行回访、忙时合并、幂等与过期决策拒绝契约；每次明确
+新协调轮次新建会话，重试／事件回访／继续保持原轮次，历史与当前可写身份分离。
+正式节点输出自动登记为场景资料引用；链接保持业务URL，文件使用平台标准
+artifact-version内容URL并补齐binding范围的认证读取。不得把容器路径或
+storage_key当URL，不给Runtime分发管理员Cookie／明文密钥。保留版本、候选／
+已接受状态、来源、哈希和删除保护；跨容器实际读取列入验收，不假设工作区共享。
+
+源码追加核对Agent定时_bootstrap_run、标准产物内容路由、逐步草稿／运行时端口／
+已接受前驱重跑接口，重新组织九个待实施切片与全链路验收。目标能力仍未实现；
+本片只更新文档，未重跑初次审计测试，也不将历史37项回归和三项诊断声称为新目标
+验收。文档diff、引用、CURRENT唯一性及唯一Alembic head核对通过。工作树中的
+节点中心改动属于其他在途工作，本片未修改或提交；无应用／服务器／Runtime发布。
+当前与下一可执行重构切片均为NONE。
+
+
+OPS-38 正式发布补记（2026-10-28）：实际部署代码为
+`2c43a1052bad6db0db4a97233b01845572d9e085`。Web 正式预检及 commit-bound
+最小上下文 prepare 通过，源归档 SHA-256 为
+`18b736845c3810d740383f53ef4c414dd1dcf0672da1870ce49eb6ad6988c65f`，
+实际 linux/amd64 Web image ID 为
+`sha256:e7d06c52de520500cc4923168266381c4ab3d31eea5194fcc3627bd17410504e`，
+OCI revision 一致。保留旧日志和回滚镜像后仅 recreate Web，健康与版本通过；
+服务器配置摘要和其他 47 个容器的 image／StartedAt 保持，没有迁移、平台／
+Provider 重启、Runtime replacement、生产节点写入或模型调用。
+
+公网 HTML、入口资源及 NodesPage 模块 JS／CSS 摘要匹配实际运行镜像，确认
+新标签编辑区、放大编辑、统一草稿保存和未保存状态控件已进入发布模块。
+Chromium 验证前缀／根登录、Agent 与记录深层路由、匿名 401 边界和全新浏览器
+前缀 API 请求通过，根 API 请求为零。节点编辑与保存行为由本地受控 API 的
+19 项回归验证，不冒称生产已登录节点编辑／保存验收。
+
+Web remote-release-finish 通过，无过期受管上下文，精确回收一个历史 image ID
+的 tags；保留当前镜像、一个不同版本回滚及全部容器引用，未清理共享 BuildKit、
+卷、Workspace 或数据库备份。收尾后健康、版本、配置和其他 47 个容器再验通过。
+本补记不改变实际部署身份，本地提交未推送；当前及下一可执行重构切片均为 NONE。
+
+
+### OPS-40 排队消息跨事件窗口的历史回复渲染修复 — DONE
+
+复现排队消息经“调整方向”投递后，上一轮正式 assistant MESSAGE 仍被留在工作
+过程、刷新后才恢复回复正文的竞态。流通道先将 assistant 消息标为非最终回复；
+下一轮已经推进时，后续有界 REST 窗口可能不再包含该回复，因此浏览器保留的旧
+分类未得到修正。原有单气泡身份回归和普通自动排队通过，补充跨窗口场景后，
+未修复页面在上一轮 assistant 正文断言失败；截图及 trace 仅保存在根 .tmp 下。
+
+浏览器在同一 binding 的正式 REST／流事件合并后，沿正式用户事件的 parent_id
+查找最近 assistant MESSAGE，复用服务端 terminal_assistant_message_ids 的历史
+回复投影规则。只补齐已被后继正式用户事件证明的历史回复，不依赖正文、时间或
+到达顺序；遇到缺失父事件、用户边界或循环立即停止。当前轮过程消息仍保持非
+最终，未增加消息、执行协议或读取请求，保留本地气泡 renderKey 与正式 event.id。
+
+Web typecheck、受影响 ESLint 与 diff 检查通过。14 项定向回归通过：9 项真实
+Chromium 覆盖直接发送、自动排队、排队调整方向与三种正式事件／ACK 到达顺序，
+校验单气泡及 DOM 身份、上一轮回复和工作过程收口、下一轮回复与刷新前后正文
+一致；2 项投影边界用例覆盖最近祖先、当前过程、缺失链、用户边界及循环；另
+3 项既有浏览器回归覆盖队列快捷键、正式最终回复不被旧流降级及定时会话列表。
+修复后截图人工检查通过。浏览器使用受控 API／WebSocket，不代表生产会话或
+真实模型验收。无后端／迁移／Runtime 改动，唯一 Alembic head 核对为
+0178_merge_schedule_credentials；无 CURRENT。其他在途节点编辑与目录服务改动
+不属于本片；未部署、未推送。当前与下一可执行重构切片均为 NONE。
+
+
+OPS-40 正式上线核验补记（2026-10-28）：用户授权部署后，正式 Web 预检
+通过；发现后续版本 `851bbb3fcbae0238506b20d0b3be9f6ccb2c9623` 已完成上线，
+其祖先包含本片 `8d0950292f6294e154cfda7f7ab5336935490f5a`，且本片两个
+修复源文件与实际部署版本完全相同。因此没有将 Web 回退到较早提交，也没有
+重复构建、迁移或 recreate 服务。
+
+对实际上线版本重新执行正式预检，核对四服务 OCI revision、linux/amd64、
+健康与 readiness。实际 Web image ID 为
+`sha256:f1acc8462ae159b5b37845a40cc51f57f2b3ce3de550ceaa24f559cc1c27c885`，
+受管 Web 源归档 SHA-256 为
+`94351cdf69a30339ca69872cbe2af57cb6ddf3f31c3c7af700c6f4e89133256c`。
+公网 HTML、入口 JS／CSS 及包含历史回复投影修复的模块摘要与运行容器一致，
+确认修复已进入公开资源。真实 Chromium 验证前缀登录、Agent／记录深层路由、
+根登录及匿名 401 边界通过；全新浏览器认证请求使用部署前缀，根 API 请求为零。
+排队交互与刷新正文一致性由本片受控 API 的本地回归验证，未在生产发送消息。
+
+两类受管发布 marker 均为 succeeded；本次 Web remote-release-finish 再验
+通过，精确回收一处刚符合 24 小时保留条件的受管上下文，无历史 image 候选。
+保留最近 24 小时上下文、实际路径引用、当前与回滚镜像；未清理共享 BuildKit、
+卷、Workspace 或数据库备份。收尾后四服务健康、版本及公开资源再验通过，
+服务器配置和其他 43 个容器 image／StartedAt 保持。本次没有 Runtime／Provider
+操作或生产业务写入；本补记不改变实际部署身份，未推送，下一切片为 NONE。
+
+
+### OPS-41 节点元数据创建后固定与草稿取消 — DONE
+
+按用户最新要求去除节点页头的已保存／未保存状态，将已创建节点的名称和说明
+合并为同一行只读展示；长说明在可收缩轨道内省略并保留原生全文 title。名称与
+说明仅在新建草稿中填写，首次成功创建后立即锁定。目录服务同时拒绝修改已
+创建节点的 name／description，返回 NODE_ASSET_METADATA_IMMUTABLE；校验在
+版本号递增和子项替换前执行，不产生部分写入。不改数据库结构和原节点数据。
+
+页头“关闭”替换为“取消”，仅有未保存差异且未保存中时可用。点击取消或在
+主编辑区按 Esc 直接恢复最近一次成功保存的完整快照，清除本轮错误，保留所选
+节点和标签，不发起写请求。新建草稿取消恢复空表单，保存后再修改则恢复最新
+保存版本。放大编辑中的 Esc 同样取消改动后退出放大，显式关闭／完成仍只退出
+放大。共享 Esc 处理在输入法组合／229 键码期间让位给输入法，避免选字时丢稿。
+原有导航未保存门禁、快捷键保存、字段身份和版本冲突语义保持。
+
+Web typecheck、受影响 ESLint、目录服务 Ruff／Pyright 和 diff 检查通过。
+22 项 Chromium 节点回归通过，覆盖创建前可填与创建后只读、名称／说明同一行、
+保存状态移除、四尺寸长说明裁切与正文独立滚动、取消提示词／上下文／字段的
+全量修改、最新保存基线、空草稿取消、Esc 和中文组合键保护、放大焦点、取消
+按钮可用状态、保存失败／保存中门禁、目录／导航和刷新保护。截图人工核对通过。
+PostgreSQL 元数据及字段身份 12 项通过：拒绝单字段／双字段元数据修改且原
+记录完全保持，正常提示词／字段保存、版本冲突及自动字段标识保持。扩大目录
+API 回归 5 项通过，1 项旧 blank-output 运行夹具缺少显式模型配置而被
+AGENT_MODEL_CONFIGURATION_REQUIRED 拒绝；在改动前 8d095029 的隔离源码副本
+复现相同失败，不是本片新增回归。无 CURRENT，唯一 Alembic head 为
+0178_merge_schedule_credentials。浏览器使用受控 API，不声称生产业务写入或
+真实模型验收。沿用会话授权发布 platform／web，正式结果后补；当前及下一
+可执行重构切片均为 NONE。
+
+
+OPS-41 正式发布补记（2026-10-28）：实际部署代码为
+`851bbb3fcbae0238506b20d0b3be9f6ccb2c9623`。platform／web 正式预检与
+commit-bound 最小上下文 prepare 通过，源归档 SHA-256 分别为
+`2a5eb494139eb4fe8d0106da5a2dd5f56f85815890493e87e662797aaef13695`、
+`94351cdf69a30339ca69872cbe2af57cb6ddf3f31c3c7af700c6f4e89133256c`。
+实际 linux/amd64 platform／web image ID 分别为
+`sha256:d0c510fead91176ca0ba9cf87a8eb7412b0d8771d0c71bb9148d0d1a96bb98fe`、
+`sha256:f1acc8462ae159b5b37845a40cc51f57f2b3ce3de550ceaa24f559cc1c27c885`，
+OCI revision 均一致。保留原日志和回滚镜像后，从同一版本同步 recreate api、
+stream-api、worker、web；四服务健康与版本通过，迁移成功且唯一数据库 head
+保持 `0178_merge_schedule_credentials`。服务器配置摘要、其他 43 个容器的
+image／StartedAt 保持，未变更 Runtime／Provider 或服务器配置。
+
+已登录只读 API 核对现有 3 个节点及完整目录摘要与发布前完全一致，正式服务内
+包含元数据不可变校验；没有执行生产节点编辑、上传、删除或模型调用。公网 HTML、
+入口资源与 NodesPage JS／CSS 摘要匹配实际运行镜像，新页头、取消控件及样式已
+进入发布模块。Chromium 验证登录、Agent／记录深层和根路由、匿名 401 边界及
+全新浏览器前缀 API 请求通过，根 `/api/v1` 请求为零。编辑、取消与保存行为由
+本地受控 API 的 22 项回归验证，不冒称生产已登录编辑验收。
+
+platform／web remote-release-finish 均通过，无过期受管上下文，精确回收两个
+可回收历史 image ID 的 tags；保留当前版本、每仓库一个不同回滚版本及所有
+容器引用，未清理共享 BuildKit、卷、Workspace 或数据库备份。收尾后四服务
+健康、版本、数据库 head、配置和其他 43 个容器再验通过。本补记不改变实际
+部署身份，本地提交未推送；当前及下一可执行重构切片均为 NONE。
+
+
+### OPS-42 节点字段类型切换的选中层次 — DONE
+
+按用户截图调整节点中心输入／输出的 URL／文件切换：浅灰绿色底槽增加内阴影，
+选中块使用深绿底、白字、明确边框和外投影，并保留轻微内高光；未选中项保留
+底槽色，悬停时轻微提亮。选中态跟随既有 aria-pressed，键盘 focus-visible 使用
+独立外轮廓，不改变字段类型、草稿、统一保存和取消行为。仅修改节点编辑器作用域
+CSS，不增加接口、迁移或 Runtime 变更。
+
+Web typecheck、diff 检查通过，6 项既有 Chromium 定向回归通过，覆盖输入／输出
+字段修改与单次保存、全量取消，以及四种窗口尺寸的独立滚动和固定操作。临时
+回归副本只增加截图输出，人工核对 URL 与文件分别选中时的层次与布局通过。
+首次运行因本地开发服务器未启动而连接拒绝，启动后同组用例全部通过。无新增
+产品测试；浏览器使用受控 API，不代表生产编辑。唯一 Alembic head 为
+0178_merge_schedule_credentials。并行 CASE-01 CURRENT 属其他在途工作，
+本片不修改其实现或状态。沿用会话授权仅发布 Web，正式结果后补；本片无后续任务。
+
+
+OPS-42 正式发布补记（2026-10-28）：实际 Web 部署代码为
+`8262f5dbcee88b57860825d840252a4305094ba5`。正式预检和 commit-bound 最小
+上下文 prepare 通过，源归档 SHA-256 为
+`d686e54d36f4a92c56319973b02356b1bb2400020b16fe8bdfe8606c8001df71`，
+实际 linux/amd64 Web image ID 为
+`sha256:e55a0d1bdcbe7b8bc6daa096509cfb498d7e341df8163db5a8dc5b542669db8a`，
+OCI revision 一致。保留原日志和回滚镜像后仅 recreate Web，健康和版本通过，
+服务器配置摘要及其他 47 个容器的 image／StartedAt 保持。
+
+公网 HTML、入口资源、NodesPage JS／CSS 摘要匹配实际镜像，并核对字段切换
+选中底色与阴影已包含在发布 CSS 中。Chromium 登录／Agent 与记录深层／根路由、
+匿名 401 边界与全新浏览器前缀 API 请求通过，根 API 请求为零。切换、保存、
+取消和布局由本地受控 API 回归及截图验证，不声称生产已登录编辑操作验收。
+Web remote-release-finish 通过，无过期受管上下文；保留当前镜像、每仓库一个
+不同回滚版本和容器引用，未清理共享 BuildKit、卷、Workspace 或数据库备份。
+收尾后健康、版本、配置与其他 47 个容器再验通过。未发布后端／Runtime，未作
+生产业务写入。本补记不改变部署身份，本地提交未推送，本片无后续任务。
+
+
+## 场景 Agent 自主协调实施跟踪
+
+产品与审计依据：`docs/case-space-lifecycle-review.md`。以下切片按用户“开始实施”
+授权顺序推进，一次提交一片；CASE编号独立于历史OPS与FR。
+
+| 切片 | 状态 | 依赖 | 范围 |
+| --- | --- | --- | --- |
+| CASE-01 | DONE | OPS-37、OPS-39 DONE | 动作结果、失败重试与暂停门禁 |
+| CASE-02 | DONE | CASE-01 | 新协调轮次与原生会话bootstrap |
+| CASE-03A | DONE | CASE-02 | 原生 MCP 注册、冻结授权与场景范围读取 |
+| CASE-03B | DONE | CASE-03A | 流程图／草稿读取与当前执行副本配置、启动工具 |
+| CASE-04 | DONE | CASE-03B | 产物登记与跨容器授权读取 |
+| CASE-05 | READY | CASE-02、CASE-04 | 持久事件投递与Agent回访 |
+| CASE-06 | PENDING | CASE-03B、CASE-05 | 逐步复核、配置修订与重跑 |
+| CASE-07 | PENDING | CASE-04、CASE-05、CASE-06 | 连续修订、跨阶段决策与完成 |
+| CASE-08 | PENDING | CASE-02–CASE-07 | 前端反馈与接管统一 |
+| CASE-09 | PENDING | CASE-01–CASE-08 | 全链路与恢复验收 |
+
+### CASE-01 动作结果、失败重试与暂停门禁 — DONE
+
+本片修正FAILED／未完成阶段启动决策被上层计划当作成功的情况，显式重试创建
+新的可追溯决策并保留旧失败；若已有执行事实且无法安全认领，拒绝再次启动，
+不通过新idempotency key重复创建执行。暂停禁止复制、启动、继续和重跑，
+允许作用于当前执行的停止；后台后继推进必须遵守相同门禁。成功／取消计划
+的幂等读取不产生新动作。暂不接入工具、事件回访或跨阶段自主推进。
+
+
+CASE-01 实施结果（2026-10-28）：统一Case执行动作的暂停／终态检查；暂停阻止
+手动／binding计划、建议、复制、启动、继续和重跑，以及后台逐步后继推进，
+保留当前执行的停止和无副作用的成功／取消计划重放。FAILED、PROPOSED和
+SUPERSEDED阶段启动决策不再使上层计划成功；重复执行原失败计划只返回错误。
+显式retry创建关联的新启动决策并保留原失败，重用在途retry计划；真实FlowRun
+行锁串行化并发启动并重新检查场景／阶段状态。已有节点或已冻结连续执行而
+缺少可信成功决策时返回CASE_START_RECONCILIATION_REQUIRED，不创建重复执行；
+这类结果不确定的完整恢复仍属于后续持久事件／恢复切片，本片不伪造成功。
+
+新增CaseActionFailure只标识已登记审计结果的分发失败。Case动作HTTP适配器
+先提交该结果，再返回原DomainError状态；普通校验、权限或已失效数据库事务
+仍回滚，不改变全局run_sync。阶段、计划与决策的失败记录可跨请求读取，通用
+异常返回稳定错误码，不回显内部异常文本。未实现动作明确失败，不再依赖未绑定
+result引发异常。旧binding范围测试补齐合法模板与已保存配置，真正执行原授权
+断言，没有降低启动校验或安全断言。
+
+验证：修复前新增控制动作回归14项失败、1项通过；修复后Case配置、控制动作、
+PostgreSQL／HTTP及既有Case API定向套件66项全通过，含双数据库会话并发启动
+只调用一次、连续失败链、旧失败记录兼容、非终态结果拒绝、部分启动拒绝重复、
+暂停仍可停止、跨用户拒绝和binding／suggestion暂停保护。编排动作使用受控替身，
+不声称真实模型或Runtime执行验收。受影响Ruff、diff检查通过；service Pyright
+由基线40项既有诊断降至39项、无新增诊断，router／public为0。唯一Alembic head
+保持0178_merge_schedule_credentials，无迁移。其他工作台在途改动未纳入本片。
+本片未部署、未推送；当前切片NONE，下一可执行切片CASE-02（新协调轮次与原生
+会话bootstrap），其余依赖状态保持PENDING。提交成功后停止，不开始下一片。
+
+
+### CASE-02 新协调轮次与原生会话 bootstrap — DONE
+
+依赖 CASE-01 DONE。本片把“新建协调轮次”和“打开当前 Agent”分开：显式新启动
+预留固定 round／binding UUID，在同一事务冻结场景配置与场景上下文并投递持久任务；
+HTTP 不等待模型或 Runtime。相同提交只返回原轮次，失败重试使用原 round、UUID、
+配置和首条任务，不创建第二份会话；历史幂等请求不能重新选中旧协调者。新轮次
+保留所有原生历史会话和执行记录，当前会话运行时拒绝替换。
+
+新增 case_control_rounds 与 Case.current_control_round_id，0179_case_control_rounds
+迁移为旧 current binding 回填 legacy 轮次，不伪造旧配置或初始上下文。新表有
+owner ORM 隔离、PostgreSQL 强制 RLS、owner 索引及同 Case 提交键唯一约束。
+启动快照包含目标、说明、状态、有序全路径、模板／当前执行身份及资料目录；
+配置冻结供应商、模型、思考程度、能力版本与认证引用，无 Secret 明文。仍要求
+既有完整可复用模板；本片不新增本轮业务输入校验，也未实现输入补全工具。
+
+Worker 的投递 lane、owner tenant context 和 handler 已接通，调用既有原生
+bootstrap_conversation，复用原生能力冻结、目录版本和首条事件提交／不确定结果
+对账。轮次的 session advisory lock 跨越原生 bootstrap 的内部 commit，阻止
+重复 worker 并发投递。首条任务运行前发布当前 binding 的控制作用域；页面只在
+STARTED 后暴露可打开入口。投递前重新校验路径和已冻结配置；已变路径明确失败。
+未知异常沿既有任务重试，耗尽后记录稳定失败码；显式重试新建 delivery attempt，
+旧任务迟到的终态通知不能污染新 attempt。未新建执行器或解析 Agent 文本动作。
+
+前端新增协调会话历史入口，区分创建中、创建失败、重试、打开和新轮次；创建完成
+后可自动进入本轮会话。浏览器重试保留提交键，已登记失败通过 round retry API；
+自动打开状态带 Case row_version，忽略上一版 FAILED 快照。历史会话路由可打开，
+不再把旧 binding 错判为其他 Case；历史 binding 不能解析为当前 Case 控制作用域。
+历史页面不提供删除当前协调者的入口，删除请求也核对 expected binding，防止
+误删新一轮。删除与新轮次预留共用Case行锁；外部创建期间的资料编辑和版本号
+重新加锁读取后合并。删除 Case 时检查全部保留会话，未完成创建阻止删除。
+
+验证（2026-10-28）：Case 配置／控制动作／PostgreSQL HTTP／协调任务／既有
+Case API 定向套件80项全通过，含运行中的当前会话阻止新轮次。包含并发预留仅一轮／一任务、投递锁跨 commit、幂等及冻结配置、失败
+重试、正式 Worker 领取与 owner 身份、旧迁移回填、实际非超级用户 RLS 读隔离、
+迁移降级，以及原生 bootstrap 适配到 Case binding 的范围检查。使用 PostgreSQL
+与受控 Runtime／编排替身，没有调用真实模型或固定镜像跨容器验收。迁移在测试
+数据库实跑，唯一 head 为0179_case_control_rounds。
+
+Case Chromium 15项全通过，含异步启动、不确定提交重试、后台失败重试、自动打开、
+新轮次与历史路由，以及既有资料／配置／路径／删除交互。最后调整历史删除入口后，
+协调轮次定向用例再次通过。Web TypeScript、受影响 ESLint、后端 Ruff、diff检查通过；
+新增 coordination／router Pyright为0，service保持基线39项既有诊断，签名无新增。
+
+扩展检查如实保留：原生 Workspace bootstrap套件9通过、3失败，失败均在未进入
+Case代码前因旧直接调用夹具缺少用户principal而报错；Worker lanes套件8通过、
+2失败，原因是基线注册表未覆盖DELETE_FLOW_RUN_SCHEDULE／
+EXPIRE_AGENT_SIDEBAR_CONVERSATION，以及旧单并发夹具与当前Settings门禁不符。
+这些代码／夹具不是本片新增，未扩大范围修复，也未把扩展检查记为全通过。
+
+本片未部署、未推送；未接入 CASE-03 原生操作工具、CASE-04 产物授权回流或
+CASE-05 事件回访，不能声称自主协调全链路已完成。当前切片NONE，下一可执行
+切片CASE-03（Case原生工具及作用域），提交成功后停止。
+
+
+### OPS-43 会话管理超过单批上限的删除修复 — DONE
+
+用户截图选中115个会话，浏览器将全部binding_ids放入一次请求；正式接口
+AgentConversationManagementDeleteWrite最多接收100项，因而在进入删除服务前
+返回422。前端现按最多100项顺序提交，保持后端上限、逐会话Runtime运行状态
+复核、用户／工作目录隔离和跳过保护。一次确认固定工作区、目录和选中ID快照，
+每批使用现有独立幂等键；显示已处理进度，处理中禁用重复确认、返回、目录切换
+和刷新，不自动重试破坏性请求。
+
+每批成功后仅移除正式确认删除的列表项，并将已处理的删除／跳过项移出选择；
+中途失败立即停止，显示累计删除／跳过与错误，保留未完成选择供用户重新确认。
+成功或失败均刷新管理列表及会话投影，对失败请求的可能部分结果重新对账。
+删除导致末页失效时收敛到有效页码，目录切换也重置分页。没有替用户实际删除
+生产会话，不改服务端删除契约、数据库、Runtime或持久数据。
+
+Web typecheck、受影响ESLint和diff检查通过。4项Chromium管理页回归通过：
+既有固定面板与分页；115项按100＋15串行、暂停两批核对进度／禁用与独立幂等键、
+运行项跨批汇总；500项第二批失败后停止、保留400项且重试不重复已成功100项；
+末页删除后正常显示前页。旧测试的导航名称同步为现有AI工作台与Agent工作区，
+首次旧名称定位失败后更新并完整通过，未降低业务断言。浏览器仅使用受控API。
+唯一Alembic head保持0178_merge_schedule_credentials；并行CASE-01属于其他
+在途工作，不纳入本片提交。沿用会话授权仅发布Web，正式发布结果后补。
+
+
+### OPS-44 会话内搜索命中文字局部高亮 — DONE
+
+会话内搜索不再复用跨会话搜索的整条消息轮廓动画，改为向ConversationSurface
+传递带binding的正式event id与查询值，复用引用定位的Range矩形覆盖与滚动逻辑。
+提交后立即定位首条命中，上一项／下一项仍按既有消息结果导航；同一消息内的
+每处命中文字分别高亮，保留大小写不敏感与字面量特殊字符处理。高亮不改写
+React消息DOM、不选中文字或抢占输入焦点；清除、零命中及会话切换时移除。
+历史命中继续使用既有缓存分页展开，布局变化重新计算局部范围。引用和注释
+定位仍保留原有短时高亮。仅Web改动，无API、迁移或Runtime变更。
+
+验证：Web typecheck、受影响ESLint和diff检查通过。3项Chromium定向回归
+通过：新增搜索回归精确比对加粗、链接与行内代码的文字Range坐标，覆盖多处
+命中、大小写、特殊字符、上下导航与循环、窗口缩放、零命中、清除／Esc及
+会话切换；既有搜索面板四尺寸布局与显隐／全屏回归、引用定位回归均通过。
+截图人工核对通过。初次回归发现回调依赖变化造成更新循环，固定回调身份后
+重跑通过。受控API／WebSocket验证不代表生产会话或真实模型运行。唯一
+Alembic head保持0178_merge_schedule_credentials；当前无CURRENT，Case的
+下一可执行切片CASE-02保持不变，本片无后续任务。其他会话管理在途改动未
+纳入本片；未部署、未推送。
+
+
+OPS-43 正式发布补记（2026-10-28）：实际 Web 部署代码为
+`261a9d1b6360ee8f8f42aa881e4fe1057922b7fd`。正式预检与 commit-bound 最小
+上下文 prepare 通过，源归档 SHA-256 为
+`7e90245cafa20b61c0ec1b7bc47c7e5e67d4776e27da9ff6da67913c253aaca4`，
+实际 linux/amd64 Web image ID 为
+`sha256:ebee407652a98d7a403897763259a03e97fb470c8c237c464336cab6871de40b`，
+OCI revision 一致。保留旧日志及回滚镜像后仅 recreate Web，健康、版本通过；
+服务器配置摘要及其他47个容器的image／StartedAt保持。
+
+公网HTML、入口资源和包含分批删除逻辑的正式会话模块摘要匹配运行镜像，确认
+进度和部分失败处理已进入线上资源。Chromium登录／Agent与记录深层／根路由、
+匿名401边界及全新浏览器前缀API请求通过，根API请求为零。未调用生产删除
+接口；115／500项、跳过和部分失败重试仅由本地受控API的4项浏览器回归验证，
+不冒称实际生产会话删除验收。
+
+Web remote-release-finish通过，回收一个过期受管发布上下文，保留近期上下文、
+实际引用、当前镜像与每仓库一个不同回滚镜像；不清理共享BuildKit、卷、工作区
+或数据库备份。收尾后健康、版本、配置与其他47个容器复核通过。后端与Runtime
+保持，本片未执行push；本补记不改变实际部署身份，当前请求已闭环。
+
+
+### OPS-45 节点字段类型滑动与提示词编辑表面 — DONE
+
+URL／文件切换改为常驻选中底板，通过transform在两项间平滑移动200ms，保留
+深绿底白字、边框和阴影；标签只过渡字色，不重建选中块。使用独立层叠与明确
+box-sizing保持底板位于底槽内，键盘焦点仍可见；prefers-reduced-motion时禁用
+动画。启动提示词与上下文的正文、预览和放大编辑统一使用浅绿背景、圆角边框
+及内边距，正文由12px增至14px并加深颜色，焦点边框保持尺寸稳定。
+
+输入／输出说明由可拉伸textarea改为单行input，新输入通过maxLength限制120字，
+占位提示给出上限，title保留完整说明。历史超长值初始化与未编辑保存不截断，
+不因普通提示词保存丢失原内容；不修改后端数据或扩展约束。保持页头／标签固定、
+正文独立滚动及统一保存／取消、元数据只读等既有行为。
+
+Web typecheck、受影响ESLint和diff检查通过，23项Chromium节点编辑回归通过，
+新增用例验证单行控件、120字输入边界、历史超长说明跨两次保存完整保持。既有
+用例覆盖创建／修改／取消／Esc与输入法、统一字段保存、冲突、放大编辑／预览、
+目录和导航保护、四尺寸与大量字段滚动。临时视觉探针对滑动位置逐帧采样，确认
+从0连续经过中间位置到50px，减少动态效果时过渡为0s；提示词、上下文、放大与
+字段截图人工检查通过。最终底板尺寸修正后只重跑受影响视觉探针。浏览器使用
+受控API，不代表生产编辑或模型运行。无CURRENT，唯一Alembic head保持
+0178_merge_schedule_credentials。沿用会话授权仅发布Web，正式结果后补。
+
+
+OPS-45 正式发布补记（2026-10-28）：实际 Web 部署代码为
+`02f2e7d4ab03f7ff3737f353e32e0c083a9cbd8d`。正式预检与commit-bound最小
+上下文prepare通过，源归档SHA-256为
+`8670a92912d268dbcc722140451e0559199f0af9235e389bdcfadd01d7951f42`，
+实际linux/amd64 Web image ID为
+`sha256:4fe55750b31c2f20801b4d6ac74e591ffbe4f8a6f081a5e5987acad00556b461`，
+OCI revision一致。保留原日志和回滚镜像后仅recreate Web，健康与版本通过，
+服务器配置摘要及其他47个容器的image／StartedAt保持。
+
+公网HTML、入口资源及NodesPage JS／CSS摘要匹配实际镜像；确认滑动底板选择器、
+减少动态效果规则、浅绿与深色文字以及单行说明上限已进入线上模块，同时复核
+既有会话分批删除模块。Chromium登录、Agent／记录深层与根路由、匿名401边界、
+全新浏览器前缀API请求通过，根API请求为零。节点编辑行为、120字边界和滑动
+帧采样由本地受控API回归验证，不冒称生产已登录编辑／保存验收，无生产节点
+写入或模型调用。
+
+Web remote-release-finish通过，回收4个过期受管发布上下文，保留近期上下文、
+实际引用、当前镜像及每仓库一个不同回滚版本；未清理共享BuildKit、卷、工作区
+或数据库备份。收尾后健康、版本、配置及其他47个容器再验通过。后端／Runtime
+保持，本补记不改变部署身份；本片未执行push，无后续任务。
+
+
+OPS-44 正式上线核验补记（2026-10-28）：用户授权部署后，正式Web预检通过。
+只读检查确认后续版本 `02f2e7d4ab03f7ff3737f353e32e0c083a9cbd8d` 已上线，
+其祖先包含本片 `3fadcc27c9ac1b35b199a8bdb2c55384a85842b0`，三个搜索修复
+源文件与本片提交完全一致。故未回退到较早版本、重复构建或recreate服务。
+
+对实际上线版本重新执行正式预检，核对受管上下文三个源文件摘要与固定Git
+源码一致，源归档SHA-256为
+`8670a92912d268dbcc722140451e0559199f0af9235e389bdcfadd01d7951f42`；
+实际Web image ID为
+`sha256:4fe55750b31c2f20801b4d6ac74e591ffbe4f8a6f081a5e5987acad00556b461`，
+OCI revision一致，发布marker为succeeded。公网HTML、入口JS／CSS和包含
+conversation-search-highlights的正式会话模块摘要与运行镜像一致，确认本片
+局部文字高亮修复已进入线上资源。Chromium前缀登录、Agent／记录深层、根
+登录与匿名401边界通过；全新浏览器前缀API请求通过，根API请求为零。局部
+高亮与切换交互沿用本片3项受控API浏览器回归，不冒称生产登录会话交互验收。
+
+API及stream-api的health／readiness通过，Web健康与版本、服务器配置摘要
+及其他47个容器image／StartedAt复核保持。Web remote-release-finish再验
+通过，无过期受管上下文或历史镜像候选；保留近期上下文、实际引用、当前及
+回滚镜像，未清理共享BuildKit、卷、工作区或备份。收尾后健康、版本与配置
+再验通过。无迁移、Runtime／Provider操作或生产会话写入；本补记不改变实际
+部署身份，未推送，本次部署请求已闭环。
+
+
+### OPS-46 已注册 Skill 的行内新版本同步 — DONE
+
+按用户确认的交互，在旧会话同一条 Skill 记录上提示新版本；点击同步只替换
+当前配置草稿，点击保存后通过 OpenHands 原生 load_plugin 重新注册同名 Skill。
+成功后只投影当前生效版本，保留不可变旧版本注册引用；失败不覆盖当前投影。
+同时覆盖 Agent Workspace 与 Flow Node 宿主，不改写 FlowRun Snapshot，
+不扩展为 MCP／完整 Plugin 升级。依赖现有会话动态能力注册与原生同名覆盖。
+
+
+OPS-46 实施结果（2026-10-28）：已注册 Skill 在会话配置中始终保持同一行，
+标记“有新版本”并提供同步按钮；同步仅将新版放入当前草稿，显示待保存，
+取消不提交，保存才经正式 Marketplace／load_plugin 注册。同一 Skill 不再
+显示成未选中的新增行；组合筛选／只看已选仍可找到旧版，目录缺少旧版元数据
+时保留正式会话引用。保存成功后当前投影只显示新版；失败保留旧生效版本与
+待保存选择，可重试。轮询不清空待保存选择，切换 binding 隔离异步完成回调。
+
+服务端仅允许同一 Skill lineage 的更高版本，继续拒绝 MCP／完整 Plugin 的
+同名版本替换；运行中拒绝注册，已生效版本幂等，拒绝降级。旧引用保持不可变，
+以追加注册顺序选择当前版本；详情、分页、绑定配置恢复和临时侧聊继承统一
+选当前版本，FlowRun Snapshot 保持不变。两个宿主共用该规则，无新增迁移。
+
+验证：8 项 PostgreSQL 定向回归通过，覆盖两个宿主的成功、失败／重试、运行中
+拒绝、幂等、降级、旧引用保留、详情／分页与绑定配置恢复；Node 宿主定位使用
+受控替身，不声称真实 FlowRun 执行。10 项 Chromium 定向回归通过，最终回调
+隔离调整后重跑3项行内同步用例通过；覆盖单行、取消、失败重试、组合筛选、
+只看已选、旧版缺目录与窄屏保存按钮，截图检查通过。Web typecheck、受影响
+ESLint、Python Ruff 与 diff 检查通过。两个既有直接调用测试补齐当前要求的
+用户 principal；该旧测试文件有5项既有长行诊断，新增改动无该问题。
+
+额外在已通过预检的服务器配置镜像中执行无网络、无业务挂载的隔离原生探针：
+source commit 与锁定的73e3cd8e一致，同名 Skill 覆盖、原生 invoke_skill 读取
+新版、agent=None 的同会话 ID 恢复后保持新版均通过，无模型调用。早期本地
+镜像探针传入旧 agent 会覆盖恢复配置，按正式服务器恢复契约改为agent=None
+后通过；本地镜像来源不同，正式结论只采用上述锁定镜像探针。
+
+按用户指示先保留本轮改动并拉取origin，再恢复修改；远程无新增提交，本地
+既有8项提交保留。唯一Alembic head为0179_case_control_rounds，当前无CURRENT，
+Case下一可执行切片仍为CASE-03，本片无后续开发任务。用户已授权提交后发布
+平台及Web；正式发布结果后补，不在此将预检或受控回归描述为线上业务操作。
+
+
+OPS-46 正式发布补记（2026-10-28）：用户明确授权拉取后修改、提交并部署。
+实际平台／Web部署代码为e067daca11a91999863fa91f2773fe26f8ae0161，
+正式platform及web预检与commit-bound最小上下文prepare通过，两个源归档
+SHA-256分别为19c77f27474fef47b577caa5a65d4069d4800a69052fe960880ee8ac246f29f9
+和33fd308654a3a0ade7fb06604a39186bc93b0f44178c396b2ea70814783f7c5a。
+平台image ID为sha256:cd86c433585c944439ffb8d83bb3ff54f170d532a5d5d1291b8b70d1a31dde35，
+Web image ID为sha256:4b87f2e96c6fdfff0a7bcbc79c61c9d0c75fd690d1d8a4548a053691600f193b，
+均为linux/amd64且OCI revision一致。新共享版本包含此前已提交CASE-02；
+正式migration从0178_merge_schedule_credentials正常迁移至0179_case_control_rounds，
+退出码0，随后同步recreate api、stream-api、worker及web。发布前保留回滚
+镜像和原日志；健康／readiness通过，服务器配置摘要和其他43个容器的image／
+StartedAt保持。没有重启Runtime Provider或replacement现有Runtime。
+
+三项平台服务中的6个本片源文件逐一与不可变发布上下文摘要匹配；公网HTML、
+入口资源及包含行内同步的JS／CSS摘要匹配运行镜像，确认新版提示、待保存
+状态与行内更新样式已经进入线上资源。初始静态探针误要求未独立定义的按钮
+CSS选择器，改为实际状态容器选择器后通过，产品源码无需修正。Chromium前缀
+登录、Agent与记录深层及根登录路由均通过；匿名API保持401，全新浏览器
+前缀API请求通过，根API请求为0。未修改生产用户的Skill或会话；交互采用
+10项受控API浏览器回归，原生覆盖／调用／恢复采用锁定镜像的隔离探针，
+不冒称生产会话升级实操。新helper的Pyright显式使用项目venv后0诊断。
+
+platform与web的remote-release-finish均通过，精确回收3个过期受管上下文
+和2个历史平台／Web image ID的受管tags，保留近期上下文、实际引用、当前
+镜像及每仓库一个不同回滚版本；未清理共享BuildKit、卷、Workspace或备份。
+收尾后四服务健康／版本、数据库head、配置及其他43个容器复核通过。
+本验收记录不改变实际部署身份；本次未push，当前无CURRENT，本片无后续
+开发任务，Case下一可执行切片仍为CASE-03。
+
+
+### OPS-47 会话能力与认证列表紧凑布局 — DONE
+
+按用户截图将能力列表压缩为一行名称、一行说明；选择标记统一前置方形，
+六种能力采用不同图标，MCP连接状态保留在名称行，同步操作保留在行尾。
+认证列表及全选标记同样前置方形；保留既有选择、锁定、同步与保存行为。
+本片列表改动仅涉及Web，依赖OPS-46 DONE；用户随后明确要求拉取远程并一起部署，
+因此同时集成远程归档／Skill版本保留改动并发布平台与Web。
+
+
+OPS-47 实施结果（2026-10-28）：能力项统一为前置16px方形选择标记、26px
+类型图标、名称与说明各一行；六类能力使用不同图标，长名称／说明单行裁切，
+普通行48px、已注册Skill行约50px。删除第三行类型文字，MCP连接状态移至
+名称行；名称和说明以实际内容展示，悬停可看完整文字，同步状态／按钮固定在
+行尾且窄屏保持同一行。认证项与全选标记均前置方形，状态保留在末尾；保留
+整行点击／键盘选择、已注册锁定、行内同步后保存、取消和失败重试行为。
+
+用户随后要求拉取远程并一起发布。先暂存本片修改，fetch发现6749ca5b和
+6d34fe47两项远程提交；在65ab2d3b合并，保留工作区／会话归档恢复、Skill
+当前／上一版保留及原有100项分批删除、失败保留选择和有效分页。管理页冲突
+保留双方功能并统一删除中禁用，恢复本片时仅图标import冲突，合并全部图标。
+两个0179迁移分支保持原revision，新增无DDL的0180_merge_archives_case_rounds
+收敛为唯一head，不改写已部署Case迁移。归档回归显式传archived=False以核对
+活动过滤，保留None查询全部的既有接口语义。
+
+验证：17项Chromium定向回归通过，其中13项覆盖能力／认证配置、内置能力
+锁定、六类图标、鼠标／键盘选择、长文字裁切、约48px高度、名称说明两行、
+桌面／600px窄屏布局与同步保存；4项管理页覆盖115项分批、500项中途失败
+后重试、末页收敛与固定面板分页。最终说明内容修正后重跑布局用例通过，
+截图人工检查通过。14项PostgreSQL后端定向回归覆盖两个宿主Skill升级、
+归档恢复、Skill两版保留／对比／回滚和Case协调；首轮归档断言未显式指定
+活动过滤失败，补齐该查询条件后通过。测试初始化真实完整迁移链至唯一
+0180 head；不代表生产归档操作或真实模型调用。Web typecheck、受影响
+ESLint及diff检查通过。当前无CURRENT，Case下一片仍为CASE-03，本片无后续
+开发任务。用户明确授权合并后提交及平台／Web部署，正式结果后补。
+
+
+OPS-47 正式发布补记（2026-10-28）：实际平台与Web代码为
+8647d7b6534e3d8a026ca694e3386ca8b95e348e，包含远程6749ca5b、6d34fe47
+及65ab2d3b合并结果。正式platform／web预检和最小上下文prepare通过；
+源归档SHA-256分别为63e3a57bb831ea22db33a5f4ec0305a6573a7291425922dad64ae746ad8b5bb3
+和d027d0d98477cd37d430a7e33892ec57a7ad3484ce03c96df757b54f9f838505。
+平台image ID为sha256:67ab0146677fbff9c7dea56aeccd0be43a67a7b8879c7230bd9868968e851399，
+Web image ID为sha256:62b8b1b6483d26f65ec2ecf1b1a99066b361c6db1eaad2be7e01e374f04b7d9a，
+linux/amd64与OCI revision均一致。保留旧镜像回滚标签及服务日志后，正式
+migration由0179_case_control_rounds到0180_merge_archives_case_rounds成功，
+随后同步recreate api、stream-api、worker及web。健康、readiness与版本通过，
+配置摘要及其他43个容器image／StartedAt保持；Runtime Provider及现有
+Workspace／FlowRun Runtime未重启或replacement。
+
+三项平台服务各8个相关源文件与不可变上下文逐一比对通过；只读数据库检查
+确认归档列及索引、Case协调轮次表和唯一0180 head。公网HTML、入口资源及
+紧凑会话配置JS／CSS摘要匹配运行镜像，确认前置方形选择标记、两行说明
+容器和行内同步样式进入正式资源。Chromium前缀登录、Agent／记录深层及根
+登录页、匿名401边界与全新浏览器前缀API请求通过，根API请求为0。列表
+实际交互沿用17项受控API浏览器回归，不冒称已登录生产编辑、归档或Skill
+版本写入；没有修改生产业务会话、调用模型或执行人工归档／删除。
+
+两个范围的remote-release-finish均通过，精确回收1个过期受管Web上下文
+及2个历史平台／Web image ID的受管tags，保留24小时上下文、实际引用、
+当前镜像及每仓库一个不同回滚镜像；未清理共享BuildKit、卷、Workspace或
+备份。收尾后四服务健康／版本、唯一head、配置和其他43个容器复核通过。
+本补记不改变实际部署身份；未push，当前无CURRENT，本片无后续任务。
+
+### OPS-48 Plugin 导入入口与市场可用性 — DONE
+
+依赖 OPS-47 DONE。将仓库工具栏三项操作收敛为“导入 Plugin”，弹窗内切换
+插件市场、Git 仓库与上传 ZIP。市场采用名称／说明两行、前置方形选择标记、
+分页与完整选中说明，弱化标题、技术状态及说明；单次导入串行复用原生解析、
+冻结和受治理发布，不新增 Runtime 执行协议。Git 支持 GitHub 完整 commit／
+tree 链接自动识别固定来源与目录，保留手动 SHA／子目录输入，并提供获取链接、
+插件清单格式及 Skill 分流说明。支持根 plugin.json、.plugin/plugin.json 和
+.claude-plugin/plugin.json（固定 source lock 源码确认）；分支链接明确拒绝。
+
+市场增加首次加载提示、内联失败重试和 Git 入口，浏览请求设置有界超时与
+卸载取消，导入过程按弹窗代次隔离；关闭后迟到解析结果不得自动发布，发布
+失败可复用 READY 结果重试。样式随导入组件加载，移除旧侧栏市场及全局 Git
+样式。后端将原生目录解析器异常转换为可重试 503，不向用户透传内部诊断。
+
+验证（2026-10-28）：已通过正式 platform 只读预检，并在部署 API 使用相同
+配置及原生 resolver 只读读取官方目录，获得 76 项、耗时17.6秒；本轮未复现
+持续加载失败，不将加载提示修复宣称为已定位所有网络故障。17 项受控 API
+Chromium 回归中16项首轮通过；批量删除用例仍断言合并前“全部历史版本”
+旧文案，更新为现有冻结快照保留语义后定向重跑通过。6项新交互覆盖加载／
+失败重试、搜索／分页、PENDING轮询／发布、固定链接、分支拒绝、发布重试、
+关闭迟到结果、ZIP文件选择，以及1440／390px布局；人工检查截图通过。
+3项后端回归通过，修正既有路由测试缺少必要响应字段的夹具，并覆盖原生
+resolver异常的503与诊断隔离。Web typecheck、受影响 ESLint、Ruff和diff
+检查通过；Alembic仍为唯一0180_merge_archives_case_rounds，无迁移或Runtime
+升级。本片无后续开发任务，正式发布结果如下。
+
+OPS-48 正式发布补记（2026-10-28）：实际平台／Web代码为
+ d2fa28d1f9f18d6b58e63647c6db28804df80912（同时包含已提交OPS-49搜索改动）。
+两个范围的正式预检、commit-bound prepare、构建、健康／版本／路由验收及
+remote-release-finish均通过。平台／Web源码归档SHA-256依次为
+98f5a22f327ef1be81290e746932912dfc1af70031b857ae56f4c288cf2e4650、
+7d335354c75b75682df71b5bdadd1a19f756bd362aef1e54c10b1e4cfe09c5c0；
+运行image ID依次为
+sha256:0360e7e2fa27a7ed4426222c1de98e67ee243ee2c34fb915af5b6258e5cfe23c、
+sha256:b5fbe449297aad68ce339521868dfbd3f1dee81097322c7e9d922f02955e95bd。
+迁移检查仍为唯一0180 head，同步recreate api、stream-api、worker、web；
+保留旧镜像与服务日志，配置及其他43个容器image／StartedAt复核保持。
+三项平台服务的本片源文件摘要匹配固定上下文，公网HTML及新导入JS／CSS
+摘要匹配运行镜像。实际原生resolver再次读取76项官方目录（21.0秒），响应
+通过正式MarketplaceCatalogRead校验；没有导入生产能力、修改业务会话或
+调用模型。Chromium前缀登录、Agent／记录深层路由、根登录页及401边界通过，
+全新浏览器前缀API请求通过、根API请求为0。两范围收尾后四服务健康、版本、
+唯一head、配置及其他43个容器复核通过；保留24小时受管上下文与每仓库一个
+不同回滚镜像，不清理共享BuildKit、卷、Workspace或备份。未push，当前无
+CURRENT，本片无后续任务。
+
+### OPS-49 会话搜索逐处命中与键盘导航 — DONE
+
+依赖 OPS-44、OPS-47 DONE。按用户补充要求将搜索结果从消息条数改为每处
+正文命中计数；所有已渲染正文的命中保持浅色，只有当前选中一处深色高亮。
+上下箭头与 Enter／Shift+Enter 在同一消息内及跨消息逐处循环，并滚动定位
+当前文字范围，保留输入焦点；中文输入法组合中的 Enter 不触发导航。
+搜索使用与正文相同的 Markdown 解析规则匹配可见文本，支持跨行内格式、
+大小写不敏感和字面特殊字符，不把链接目标地址计为额外结果；未搜索时不
+解析历史。当前定位携带 binding、event id、消息内命中序号和导航代次，
+历史仍沿用既有按需展开，异步事件／布局刷新仅更新覆盖层而不重复抢滚动。
+搜索覆盖层与引用／注释的短暂定位独立；清空、无结果和切换会话清除搜索。
+
+验证（2026-10-28）：3 项 Chromium 搜索定向回归通过，覆盖同消息多处、跨
+消息、深浅高亮、首尾循环、Enter／Shift+Enter、输入法、Markdown 精确范围、
+字面特殊字符、链接目标排除、无结果、清空、Esc、会话切换、长回复逐处定位、
+390／1024／1440／1920 宽度与浮卡共享显隐／全屏；另 1 项侧边聊天引用
+原消息定位回归通过。首轮几何断言在布局完成前读取出现 2px 差异，补齐
+既有布局稳定等待后通过，最终 3 项重跑通过。Web typecheck、受影响文件
+ESLint 与 diff 检查通过；人工核对截图。Alembic 仍为唯一
+0180_merge_archives_case_rounds head，本片无迁移、Runtime 或后端变更。
+实现提交时尚未部署，无后续开发任务；不推进 Case 切片。
+
+OPS-49 部署验收补记（2026-10-28）：用户随后明确要求部署。正式 Web
+预检及运行镜像核对确认，线上已为
+ d2fa28d1f9f18d6b58e63647c6db28804df80912，包含搜索实现
+3aeb5fca；8 项搜索源码／样式／构建输入在两个提交间完全一致，因此保留
+已上线的新版本，不重复构建或切换服务。固定受管上下文的源码摘要及归档
+SHA-256 7d335354c75b75682df71b5bdadd1a19f756bd362aef1e54c10b1e4cfe09c5c0
+匹配，状态 succeeded；运行 Web image ID 为
+sha256:b5fbe449297aad68ce339521868dfbd3f1dee81097322c7e9d922f02955e95bd。
+公网 HTML、入口资源、逐处命中 JS 与当前命中深色 CSS 摘要均匹配运行镜像，
+逐处序号／事件定位标记与 Shift+Enter 快捷键已进入正式资源。
+
+服务器侧 Chromium 的前缀登录、Agent／记录深层及根登录页通过，匿名
+401 边界、API／stream-api health/readiness 通过；全新浏览器前缀 API 请求
+通过，根 API 请求为 0。本机 Chromium 入口返回 502，未作为通过的验收，
+其网络入口差异尚未定位；生产搜索交互仍以本片 4 项受控浏览器回归为证据，
+不冒称登录生产会话执行过搜索或发送消息。
+
+本次 Web remote-release-finish 通过，精确回收 2 个超过 24 小时的受管旧
+上下文，历史镜像候选为 0；保留近期上下文、全部实际引用及每仓库一个
+回滚镜像。收尾后版本、源摘要和服务健康复核通过，全部 48 个既有容器
+image／StartedAt 及服务器配置摘要与验收前一致；本次没有重启服务、执行
+迁移、替换 Runtime、改写生产会话或清理共享 BuildKit／卷／Workspace。
+
+### OPS-50 Skill／Context 包文件浏览与版本 Diff — DONE
+
+依赖 OPS-47、OPS-48 DONE。一个可独立验收的包文件工作台切片：Skill 全包
+查看／文本编辑及逐文件版本 Diff；Context 总内容／单文件分区查看、下载与
+两版保留／对比／回滚。复用会话 Diff 布局与导航，保留原生冻结包及历史引用。
+不升级 Runtime，不推进 Case 后续切片；验证包完整性、隔离、并发和浏览器交互。
+
+
+实现（2026-10-28）：包文件工作台左侧为可折叠目录／文件选择，右侧为内容或
+逐文件 Diff。Skill 支持 UTF-8 文本多文件草稿与一次发布，完整保留未修改的
+脚本、配置、二进制资源、ZIP 元信息与执行权限；二进制／大文件提供完整包
+下载，受支持图片可预览。Context 默认总内容，支持选择原始文件与冻结包配置，
+下载原始 TXT／Markdown／ZIP。两类版本对比均列出新增、删除、修改和未变更
+文件，复用会话 Diff 的语法高亮、统一／并排、同步横滚、改动导航与尾部留白。
+Context 发布后同 Skill 保留当前／上一版，可回滚；已有冻结引用使更早版本
+转为 RETIRED 而非物理删除，旧会话引用保持。文本编辑必须匹配固定 digest，
+发布和回滚按 package 加锁，过期编辑拒绝覆盖。无迁移、Runtime／SDK 变更。
+
+验证：能力导入接口 45 项定向回归通过（排除下述 3 项既有 Hook 失败），另
+2 项新增资源权限／原生 Skill 目录物化、Context 冻结引用保留回归通过；累计
+47 项。浏览器 4 项新包文件用例、10 项相关现有回归通过，随后增强既有 Git
+历史用例，确认原会话 Diff 的统一／并排及导航留白通过。类型检查、受影响
+ESLint、Ruff、diff 检查通过；人工核对桌面 Diff 与 390px Context 截图。
+Alembic 仍唯一 0180_merge_archives_case_rounds head。原 Hook 的规范化、
+异步阻断和脚本附件 3 项用例，在修改前 HEAD 的独立源码副本中同样失败；
+未扩展本片修改其导入契约。旧 product-flow 综合用例在进入会话前等待已不存在
+的“Agent 会话”导航按钮超时，不作为 Diff 验收；实际 Diff 已由增强后的
+agent-conversation-schedules 定向用例验证。实现提交时尚未部署，发布验收后补记。
+本片无后续开发任务，不推进 Case 切片。
+
+OPS-50 发布验收补记（2026-10-28）：实现提交 ef149e67；先拉取并无冲突合并
+远端会话归档修复 801d9c9e，实际固定发布为
+ e96c8614368999473bb7844dd28129b321607d7f。合并后 Web typecheck、4 项包文件
+交互与增强后的既有 Git Diff 用例共 5 项再次通过。已完成 platform／web 正式
+预检、commit-bound 最小上下文构建、linux/amd64 和 OCI revision 核验、回滚
+镜像与原日志保留；migration 成功且唯一 head 仍为
+0180_merge_archives_case_rounds，同步切换 api、stream-api、worker 与 web。
+
+运行 Platform image ID：
+sha256:bbaecde4efa645cbe089f04f34ebafe7c469d66130d8a01785b53972bbaf7228；
+Web image ID：
+sha256:5917196388e5e9c5adbe6bd4397f68849abf062e6bf05ac47031d987e1865782。
+三个平台服务的能力包读取／发布／路由／schema 四项源码摘要均与固定上下文
+一致；四服务健康、实际 image 与 revision 通过。公网 HTML、入口静态资源及
+包文件工作台 JS／CSS 摘要匹配运行镜像，API 匿名边界通过。首轮资源探针错误
+假定 API 客户端字段与包工作台位于同一个 JS chunk，修正为工作台自身标记后
+通过，未修改发布代码。服务器侧 Chromium 的前缀登录、Agent／记录深层和根
+登录页通过；全新浏览器 API 全部携带部署前缀，根 API 请求为 0。生产验收未
+写入能力版本或会话；编辑／发布／回滚交互以受控浏览器及独立测试数据库验证。
+
+platform／web remote-release-finish 均通过；按受管策略保留最近 24 小时上下文、
+实际引用和每仓库一个回滚镜像，不扩大清理范围。服务器配置及其他 43 个容器
+的 image／StartedAt 保持，Runtime／SDK／既有会话 generation 未替换。未 push，
+当前无 CURRENT，本片无后续开发任务。
+收尾后再次核对四服务版本、健康、唯一 head、配置与其余容器保护项，均通过。
+
+### CASE-03A 原生工具注册与场景范围读取 — DONE
+
+依赖 CASE-02 DONE。将 CASE-03 按独立授权边界拆为 03A／03B；本片通过正式 MCP
+创建字段接入只读场景工具，冻结 version／digest／blob 与 Runtime Manifest，凭据
+由服务端绑定当前 round／binding／Runtime／用户并在每次调用重新授权。只读取
+目标、阶段路径及资料引用；流程图、草稿和写操作归 CASE-03B，不提前接入事件回访。
+
+实施结果（2026-10-28）：新协调会话经OpenHands正式创建字段接入只读MCP
+`flowweave-case-context`／`read_case_context`，按overview、stages和materials读取
+当前场景，分页上限50。工具参数不接受用户／场景／轮次／binding／FlowRun身份；
+目标、路径和资料引用均由服务端推导，不返回会话配置密钥或平台登录凭据。
+
+新增0181_case_tool_grants，保存当前轮次绑定的凭据摘要、加密凭据和固定version／
+digest／blob／hash Manifest，维护用户隔离和强制RLS。每次调用核对有效用户、当前
+轮次、Case、binding、原生conversation、Runtime Session及冻结目录版本；旧轮次、
+终态、删除与身份漂移失效，暂停仍可读取。binding／round删除由数据库级联回收授权，
+保留其他原生历史。已冻结版本不随默认配置变化，凭据仅通过正式Secret Registry注入。
+初次配置缺失或包损坏明确失败；新私有配置要求记录在场景设计文档中，不含实际入口。
+
+恢复已有原生会话时重新核对正式MCP配置；缺失时按结果不确定保留原身份供对账。
+明确创建失败则删除失败绑定全部能力引用，级联撤销授权；显式重试仍使用原轮次。
+现有成功会话和历史执行不被修改，不把文本当成控制协议。本key／入口保持只读，
+后续写操作须另行冻结动作能力，不能向旧工具入口静默扩权。
+
+验证：Case配置／动作／协调／HTTP和工具定向回归共122项均通过（跨完整套件与
+后补恢复回归）；PostgreSQL升级／降级、非超级用户RLS读写隔离、授权级联回收通过。
+用source.lock固定73e3cd8e4d74ff30c9ed794baf72d977800509d7归档在.tmp内建立隔离SDK
+环境，验证全部SDK源码、1.54.0包版本、初始MCP发现、真实HTTP工具调用、加密
+持久化及原ID／事件恢复后再次调用，未调用LLM。扩展后的共享探针也通过既有历史
+MCP与官方客户端两项兼容回归；将原用例硬编码的旧source commit断言改为实际lock。
+Ruff、目标Pyright（含public为0）、格式和diff检查通过，唯一Alembic head为0181。
+
+扩展检查另记录1项既有夹具失败：test_resource_deletion_preserves_history_and_hard_deletes_run_dependencies
+在直接插入BackgroundTask时未设置owner_user_id，触发NOT NULL，发生在本片逻辑之前；
+该用例和归属规则未修改，不据此宣称全仓库通过。初次扩展178项通过、2项外部环境
+探针未配置而跳过；随后提供固定SDK环境，两项均实际通过。原CASE-02记录的其他
+扩展失败不在本片重复执行或修正。本片未部署、未推送、未升级实际Runtime；下一
+可执行切片CASE-03B。提交本片后停止，不自动开始配置与启动工具。
+
+### CASE-03B 流程读取与当前执行副本配置、启动工具 — DONE
+
+依赖CASE-03A DONE。读取授权场景内的流程图、输入输出契约、当前副本与草稿；
+通过另行冻结的原生动作能力调用既有服务，仅允许活动阶段当前独立副本的配置、
+复制及启动，所有写入使用技术前置条件、乐观版本与持久动作结果。保护源模板和
+历史执行，不接入CASE-04资料发布或CASE-05事件回访；业务输入由Agent选择与补充。
+
+CASE-03B实施结果（2026-10-28）：独立冻结`flowweave-case-flows`原生MCP及
+`case_flow_tool_grants`授权，不扩权CASE-03A只读key／凭据。新协调bootstrap默认
+装配两份冻结能力与独立Secret Registry条目；新授权表强制用户RLS、binding／round
+级联撤销，执行时复查当前协调身份。读取工具提供阶段模板／当前副本、冻结图、输入
+输出契约、运行时端口扩展、节点状态和草稿；明确白名单投影、50项分页及1MiB上限，
+不暴露Runtime清单／物理路径。动作请求限256KiB，仅复制活动模板、配置当前连续
+草稿或未启动逐步草稿、启动执行及逐步节点。Case行锁、场景／目标／Run／Snapshot
+乐观前置条件和既有编排校验共同保护模板、历史、已启动连续记录及已有NodeRun。
+动作入既有CaseControlPlan，保存输入、结果和失败码；同键异载荷拒绝、同载荷重放
+原结果，失败显式关联新尝试。配置／复制局部失败以savepoint及对应补偿保留失败
+审计，不能误提交部分输入。未接入事件回访、资料授权、复核重跑或跨阶段推进。
+
+验证：Case定向160项全部通过，含37项新增流程工具回归；最后补强新会话同时注入
+两份能力／凭据和首次明确失败后的bootstrap重试断言，2项再次通过。真实PostgreSQL
+验证复制独立性、配置持久化／回读、并发同键只创建一份、版本冲突持久失败、关联
+重试、暂停／终态／身份漂移、源模板与物化节点保护、savepoint补偿、HTTP边界及迁移
+升级／降级、非superuser RLS和级联撤销。固定source lock的1.54.0 SDK实际通过四项
+探针：只读上下文、流程读取、原生复制、嵌套自动草稿配置；均核对加密持久化、原会话
+恢复后的正式调用及写动作幂等，不调用模型。SDK会移除null参数，因此无当前副本
+采用可省略字段并在服务端保留严格门禁；未修改OpenHands或推进Runtime基线。
+
+扩展history MCP／连续草稿／逐步端口62项通过、2项失败。两项旧逐步草稿断言只期望
+start_node_key，实际还含git_identity:null；在改动前93d079c2隔离副本重跑均复现，
+未修改旧断言或声明全仓通过。首轮共享工作树被另一会话尚无迁移的用户模型字段
+阻断；最终使用.tmp中的93d079c2加本片精确文件验证副本，未撤销／提交其他工作。
+受影响Ruff、format、diff检查通过；新工具／授权／MCP适配／public及savepoint的
+Pyright为0，既有service保持39项既有诊断、无新增。独立验证迁移head为0182，
+共享工作树另有其他在途0183后继且仍为唯一head；不纳入本片。设计与部署配置要求
+见case-space-lifecycle-review.md。未部署、未推送、未发布实际系统能力；下一切片
+CASE-04 READY。按仓库规则提交本片后停止。
+
+
+### CASE-04 产物登记与跨容器授权读取 — DONE
+
+依赖CASE-03B DONE。正式ArtifactVersion登记同事务幂等保存Case＋产物版本引用，
+仅接受阶段当前独立执行的producer输出，不以旧OBSERVATION／CASE标签筛选，也不将
+模板、普通输入或仅关联运行扩成资料权限。保存阶段／节点／Attempt／正式完成事件来源，
+动态投影候选、接受、拒绝、取消、替代状态；新版本与历史执行证据保留，不自动验收。
+浏览器新增分页资料API；原生MCP返回含部署前缀的标准产物URL、元数据与安全来源。
+
+新会话另外冻结独立flowweave-case-materials MCP与Secret Registry授权，只读工具
+read_case_material提供分页目录及64KiB以内的base64分块。原生凭据也可读取标准
+artifact-versions内容GET；逐请求校验用户、Case、当前轮次、binding、目录版本、
+Runtime／原生身份和冻结版本，不依赖cookie，不可用于其他平台路由。DB授权后释放
+事务再读产物库，核对内容大小／SHA-256，响应no-store；链接保留原URI、不代抓外链。
+0185迁移的资料引用／授权表强制RLS，回填当前同用户正式输出；外键RESTRICT及运行
+子树删除前置检查保护源文件，删除场景仅释放引用，删除binding级联撤销授权。
+
+验证：105项Case定向测试通过，含六项固定source lock的1.54.0 SDK原生调用及恢复
+探针；补充场景启动／配置／暂停／重试兼容性与最终资料回归83项通过，两组有资料用例
+重叠。真实PostgreSQL验证去重、分页、状态、版本、越权／撤销、删除保护、内容漂移、
+迁移升级／降级、回填、非superuser RLS和级联。现有Dockerfile本地独立测试镜像
+内置contract_check通过；另一个不挂载产物目录的Runtime容器通过标准URL与MCP读回
+171000字节文件并核对哈希。最初常用镜像源码与锁不符被正确拒绝，使用单独测试标签
+构建匹配版本后通过，未覆盖常用镜像或替换会话。新增边界Pyright为0，受影响Ruff／
+format／diff检查通过，唯一Alembic head为0185_case_materials。配置契约见场景设计
+文档CASE-04节。没有真实模型、生产发布、系统能力发布或Runtime replacement；事件
+回访与自主跨阶段闭环仍待后续。当前NONE，下一CASE-05 READY；独立提交后停止。
+
+### OPS-51 流程与能力列表整行单击勾选 — DONE
+
+依赖 OPS-50 DONE。按用户两张截图，流程列表的名称、状态与行空白区域
+单击切换复选框，并继续切换画布预览；双击名称仍进入编排，第二次 click
+不重复翻转选择。复选框、行菜单与菜单操作沿用各自交互，不冒泡误选。
+能力仓库的说明、来源文件、大小、版本、时间、引用、依赖状态及行空白
+单击均切换该能力勾选；名称查看／编辑入口、复选框、下载及门户菜单
+独立处理，系统内置能力仍不可选择。键盘 Space 继续使用原生复选框。
+本片仅 Web 行交互，无样式、迁移、后端或 Runtime 变更。
+
+验证（2026-10-28）：3 项 Chromium 定向回归通过，覆盖流程单击／取消、
+预览、双击编排与返回、菜单／进入编排不误选，以及六类能力逐单元格勾选
+和取消、原生复选框单次切换／Space、内置能力禁选、菜单隔离、批量删除与
+Context 名称打开包查看不误选。Web typecheck、受影响 ESLint、diff 检查
+通过。首次借用流程综合用例在原有画布拖动断言失败，尚未到达新增选择
+断言；保留原用例，改用独立行交互用例验证本片，不宣称画布拖动已通过。
+并行 CASE-03A 已加入未提交 0181_case_tool_grants，工作树 Alembic 唯一
+head 为该 revision；未将其纳入本片，也未运行迁移。实现已完成，未部署，
+无后续开发任务；保留其他会话的 CURRENT 与工作树修改。
+
+
+### OPS-52 Diff 行内精确差异叠加高亮 — DONE
+
+依赖 OPS-50 DONE。按用户 IDEA 参考效果，统一和并排 Diff 保留整行浅红／
+浅绿底色，再对配对替换行中的实际删除／新增字符叠加深色背景。同一行
+多处修改分别标记；数字尾部追加只标新增后缀，空白修改保留真实范围。
+能力包版本、Git 提交／工作树、会话文件改动共用字符范围和语法渲染器。
+沿用现有替换块配对与 Git hunk 边界，不跨 hunk 配对，不为纯新增／删除
+的未配对行额外推断差异。Unicode code point 比较后返回 UTF-16 范围，
+避免拆开 emoji；超大替换中段超过 250000 对字符时退化为有界中段高亮，
+保留共同前后缀。highlight.js 输出只遍历解码后的文本节点插入安全 span，
+保留语法 token、HTML 实体和完整原文，不对着色 HTML 做字符串截断。
+未改动既有 Diff 导航、底部定位留白与统一横向滚动机制。
+
+验证（2026-10-28）：7 项定向 Playwright 通过，包括能力包原版本对比、
+新增行内样式回归、Git 历史入口、正式 FileEditor 事件的工作区文件审查，
+以及三项字符范围／Unicode／超长文本／hunk 隔离测试。能力包与两类会话
+Diff 均验证统一／并排效果；覆盖 1123 → 1123123、同一行分散修改、中文、
+emoji、缩进／制表符、HTML 特殊符号及嵌套语法颜色，截图人工核对通过。
+Web typecheck、受影响 ESLint、git diff --check 通过。仅 Web 变更，无迁移
+或 Runtime 修改；并行 CASE-03A 的未提交迁移及其 CURRENT 保持独立。
+实现已完成，未部署；无后续开发切片，发布按用户后续指令执行。
+
+
+### OPS-53 插件市场全高列表与多选导入 — DONE
+
+依赖 OPS-48 DONE。按用户截图移除导入 Plugin 弹窗底部的选中插件详情，
+列表使用内容区剩余高度并独立滚动，搜索、分页与操作栏保留可见；每页
+由 6 项扩至 10 项，并移除通用 modal footer margin 造成的额外留白。
+整行以 checkbox 语义切换选择，点击内容／方框或键盘 Space 均可选中与
+取消；跨搜索、分页保留完整选择，页脚和导入按钮显示已选总数。
+
+批量导入复用正式 Marketplace resolution 与 publish API，按当前选择
+逐项准备、轮询及发布，每个成功项立即刷新能力列表并移出待导入选择，
+本弹窗内标记已导入，避免重复发布。单项失败不阻止后续选中项；失败项
+保留勾选，重试复用该项 READY/PENDING resolution，FAILED/EXPIRED
+重新准备。Git 固定来源与 ZIP 入口继续保留。异步步骤逐次校验现有
+组件请求代次；关闭后不自动发布迟到的准备结果或继续处理剩余队列。
+
+验证（2026-10-28）：plugin-import.spec.ts 全部 9 项通过，覆盖目录加载
+与重试、搜索／分页、多选／取消／Space、跨页选择数量、批量发布、部分
+失败后仅重试失败项、关闭后停止剩余队列、Git 固定提交与目录、发布
+重试复用、ZIP 入口，以及 1440/390px 和低高度布局。截图检查确认详情
+已移除、列表占满可用内容区；Web typecheck、受影响 ESLint 和 diff 检查
+通过。初次新增关闭队列用例被页面已有成功提示遮住重新打开按钮，按其
+正式“关闭成功提示”入口处理后全套通过，未通过强制点击绕过真实交互。
+本片只改 Web，无迁移或 Runtime 修改；并行 CASE-03A 的 CURRENT 与
+工作树变更保持独立。实现已完成，未部署；无后续开发切片。
+
+
+### OPS-54 会话管理紧凑布局与记录视觉重心 — DONE
+
+用户要求会话管理参照此前列表简化、突出记录。本片将标题、当前工作区、会话数
+和刷新移入右侧约46px单行页头，搜索、未归档／已归档分段、活动时间、包含置顶／
+未读和删除收为紧凑工具栏。去掉独立大统计卡、筛选标签行及批量操作横栏，全选
+移入表头，选择数量与按钮分页固定底部；原有跨全部匹配结果的选择语义保持。
+会话名称加深、日期／状态降为辅助信息，行高约44px，整行点击勾选，原生复选框
+及恢复按钮独立处理。保留工作区恢复、会话恢复、截断500项提示和永久删除确认、
+100条顺序分批、失败后保留剩余选择及运行会话跳过；读取失败增加重试、恢复失败
+明确显示，时间下拉外部点击／Esc关闭。工作区目录与表格独立滚动，表头固定、翻页
+复位表格滚动；仅会话管理宿主覆盖工作台640px最小高度，短屏不会裁掉分页。
+
+验证（2026-10-28）：8项Chromium定向回归通过，包含原有4项分页／115条分批删除／
+500条中途失败重试／末页删除回退，新增1项紧凑布局与筛选／归档恢复／行勾选、
+键盘Space、跨页选择、真实滚轮与固定表头／分页、1024／1440／1920宽度及600px
+高度几何验证，以及3项Agent导航、设置返回与草稿恢复。初次短屏检查发现外层
+工作台min-height挤出分页，修正限定宿主后通过；表头测试改为检查实际sticky的th，
+不检查随内容滚走的thead。截图人工核对通过，使用受控API，没有真实业务删除。
+Web typecheck、受影响ESLint与diff检查通过。本片仅Web，无后端／迁移／Runtime变更；
+保留并行CASE-03B的CURRENT及其他工作树改动。工作树Alembic唯一head为
+0182_case_flow_tools，不把未提交迁移纳入本片。沿用当前会话部署授权，仅发布
+本片固定提交Web，结果完成后补记；本片无后续开发切片。
+
+OPS-54 发布验收补记（2026-10-28）：正式部署Web提交
+`7e5a1b52bbfa55b485cd4be818def4afe95be204`，预检和commit-bound最小上下文prepare
+通过，源归档SHA-256为
+`738686676cea973c7193a8916a7e1c6ca88eea54fd264e793640a54b7128578b`。
+实际linux/amd64 Web image ID为
+`sha256:17140df71cb0c54b90e7f2758b88f1a08e9f35e9e54cf73ecf3372f75cc041db`，
+OCI revision一致。保留旧日志与回滚镜像后仅recreate Web；健康、版本和服务器
+配置摘要核对通过，其他47个容器的image／StartedAt保持，无迁移或Runtime替换。
+
+公网HTML、入口资源及会话管理JS／CSS两个模块摘要匹配运行镜像；服务器侧
+Chromium前缀登录、Agent深层与根登录通过，API匿名401边界及新浏览器前缀请求
+验证通过，根API请求为0。生产验收没有恢复／删除业务会话；认证后的列表筛选、
+恢复和删除行为由前述8项受控浏览器回归验证，不冒称生产已登录交互验收。
+Web remote-release-finish通过，精确回收5个超过24小时的受管旧上下文及1个可
+回收历史image ID的tags，保留近期上下文、全部实际引用和每仓库一个不同回滚
+镜像；没有清理共享BuildKit、卷、Workspace或数据库备份。收尾后Web版本、健康、
+服务器配置及其他47个容器复核通过。并行CASE-03B与能力市场工作树保持独立，
+仅从固定提交构建Web；未push，本片无后续开发任务。
+
+
+### OPS-56 统一市场源与 skills.sh Skill 搜索导入 — DONE
+
+依赖 OPS-53、CASE-03B DONE；0183_user_market_sources 顺接已提交的 0182。
+Plugin 与 Skill 在能力仓库和各自导入弹窗共用市场源管理；默认 OpenHands
+明确显示 https://github.com/OpenHands/extensions.git，Skill 默认显示
+https://skills.sh。内置源身份固定、可停用，自定义源可新增、编辑、删除，
+支持 Plugin Git 市场与公开 GitHub Skill 仓库、分支／标签／固定提交及
+仓库内目录。当前用户的 users.market_sources_json 保存配置，更新带内容
+revision 乐观锁和用户行锁；来源选择只能使用该用户启用且类型匹配的源。
+
+Skill 使用官方 CLI 同样的公开 /api/search；版本化 /api/v1 的 OIDC 不是
+此入口的前置条件。不假定可枚举完整 skills.sh：至少两字符搜索，最多50项，
+失败明确可重试或切换 Git 源。Git 来源可空词浏览。多选／再次点击取消、
+Space、跨搜索选择、部分失败保留选择并仅重试失败项；切换来源清空选择，
+关闭／切换后的迟到搜索或校验不继续自动发布。保留 ZIP 与 Plugin Git 入口。
+
+下载在 DB 事务外进行，HTTPS GitHub codeload 限定来源、拒绝重定向和凭据，
+Git HEAD／分支／标签解析固定40位提交；ZIP受压缩／展开／条目数量限制且
+不落地解压。导入唯一匹配的完整 Skill 目录、参考资料及脚本，选中目录内
+符号链接拒绝，不跟随仓库其他位置的链接；确定性 ZIP 复用原有校验、临时
+存储、导入凭证和发布流程。CapabilityImport.preview_json.source 持久记录
+市场、仓库、固定 commit、目录和 content hash，不污染 Runtime config。
+
+验证（2026-10-28至29）：PostgreSQL真实空库全迁移至0183，市场与既有
+Plugin后端26项通过；Plugin/Skill Playwright15项通过，含用户配置、来源
+切换、过期搜索、取消勾选、批量部分失败及关闭队列，390px／短屏布局。
+真实公开 react 搜索返回48项，vercel-react-best-practices固定至提交
+1a2c79d4e6c4a2283dc2c614b6538cbe1ed5ca62，完整76文件94229字节通过
+正式Skill包校验；另有用户隔离、乐观锁冲突、不可篡改内置源、禁用源、
+恶意URL／路径／所选符号链接拒绝及确定性来源记录测试。Web typecheck、
+受影响 ESLint、Ruff、production build、Diff定向回归及 diff检查通过。
+工作树并行设置界面变更保持独立，未提交进本片。实现完成；按用户授权继续
+从已提交版本执行platform/web部署，不开始后续开发切片。
+
+
+### OPS-55 终端环境、认证与模型管理统一左右分区 — DONE
+
+三个设置页共用紧凑资源列表／详情布局。左侧名称、摘要与状态支持搜索、每页20项
+按钮分页及独立滚动，右侧标题与主要操作固定，详情和数据表独立滚动。移除大面积
+资源卡片和重复页头说明；原有风险／匹配说明折叠保留，资源为空或读取失败明确
+提示并可重试，删除／筛选导致列表缩小时回到有效分页。
+
+终端环境保留新建、隔离终端、从最新READY版本创建草稿、继续配置、隐藏后原连接
+恢复、发布选项及进度、停止、环境删除与引用保护。版本历史改为完整表格，展示
+版本说明、能力、摘要、状态、时间、运行引用与受保护删除；工具版本全部可查看。
+认证管理保留三类认证、路径／子域匹配、创建／编辑及单项／批量删除；详情只展示
+已保存状态和原有脱敏提示，既有Secret与用户名不回填，编辑留空仍保留服务端值。
+模型管理保留API Key／Anthropic／Codex OAuth、协议选择、模型发现、启用和默认项、
+编辑／删除／全模块批量删除、连接测试、上游用量、设备码登录／检查／断开。模型
+表格展示启用及停用项，测试反馈与用量仍按provider隔离。认证全选保留当前页语义，
+模型全选保留跨页全部服务语义；左侧复选框与详情选择互相独立。
+
+验证（2026-10-28至29）：8项Chromium设置页回归全部通过，覆盖三个页面的选择、
+搜索、空结果、按钮分页、1920／1440／1024与600px高度下固定布局和真实滚轮、
+认证Secret留空保存与Token新增、认证跨页批量删除、模型测试与用量隔离、完整模型
+列表、协议／发现／默认项、Codex登录／模型刷新／断开、版本引用保护与单版本删除。
+另用原product-flow六项终端用例的临时验收副本，适配当前账户菜单入口并注入受控
+登录，6项均通过：新建内部镜像边界、发布进度、IME独立Enter提交、终端隐藏后保持
+连接、停止配置会话后重试删除、被FlowRun引用时保留配置会话。没有改写既有终端
+协议或执行真实业务删除。旧模型十二卡用例改为十二条列表及唯一详情，保留覆盖。
+首轮新增用例的控件定位沿用可见文字，实际可访问名称为外层label；按正式名称修正。
+OAuth自动发现沿用既有effect生命周期，验收按至少一次及显式刷新增加调用数判断。
+Web typecheck、受影响ESLint和diff检查通过，三个页面截图人工核对通过。
+
+本片仅Web，无API／迁移／Runtime变更。并行Case和能力市场修改保持独立，不纳入
+本片；工作树Alembic head及任务状态提交前单独核对。沿用本会话的受管服务器部署
+授权，仅发布固定提交Web，实际验收结果完成后补记；本片无后续开发任务。
+
+
+### OPS-56 发布验收 — DONE
+
+2026-10-29按用户授权从fc7f192e5151506b9e65ed45492f0a1eef307423执行
+正式platform与web双预检、remote-release-prepare最小上下文、linux/amd64
+镜像构建和revision核验。迁移从0180完整执行至0183_user_market_sources，
+退出0；同commit同步recreate api、stream-api、worker、web，健康及readiness
+通过。服务器配置hash保持，43个受保护容器的image／启动身份保持。
+本次Web已包含OPS-51整行勾选、OPS-52行内Diff深色标识、OPS-53全高多选
+Plugin导入及此前已提交Web功能；后续并行OPS-55提交不混入本次固定上下文。
+
+实际部署API以正式登录验证市场源GET、两项内置URL和身份、无鉴权401；
+skills.sh公开react搜索返回48项，完整76文件的Skill校验通过并保留固定
+commit、目录、content hash。仅生成受现有TTL回收的临时校验记录，没有
+向实际用户能力库发布测试条目；验收登录通过正式logout关闭。迁移列为
+非空JSON，现有用户均完成默认回填。公网前缀首页、Agent深层路由、市场
+源API认证边界、入口与市场／Diff模块静态资源SHA验证通过。三个真实
+Chromium页面完成登录hydration，fresh context无错误根路径API请求。
+
+platform与web均已执行remote-release-finish并通过健康／版本门禁和受管
+保留策略。上线commit为fc7f192e；此收尾提交只补发布记录和同步现有能力
+模块E2E对“导入Skill”及统一源管理按钮的断言，不含新产品代码，故不再
+发布一次。该定向用例1项通过；本片累计市场/Plugin15项、Diff5项、模块
+菜单1项浏览器回归通过，后端26项通过。实现与发布均完成，无待部署项。
+
+OPS-55 发布验收补记（2026-10-29）：正式Web部署提交
+`c049c166352fce43093d69ba372327d6342645f5`。预检和commit-bound最小上下文prepare
+通过，源归档SHA-256为
+`2548275434526a994c7038036260d0c3872d1885b32d9d1e9c264d25ebb9a96e`；
+实际linux/amd64 Web image ID为
+`sha256:ae5bbc184dbd8138eb5495e4a2d3bdb02a9b5c99e4ccce38fc265c297cbae218`，
+OCI revision一致。首轮切换前检测到并行OPS-56已更新Web，旧容器ID门禁拒绝切换；
+核对OPS-56提交为本片祖先且API／Web已同为该版本后，保护其他47个容器不变，
+保留最新线上Web的日志及回滚镜像并重新建立本次原容器基线。并行收尾同时回收
+尚未激活的本片镜像tag，保留诊断后从同一固定上下文通过缓存重建，镜像ID保持
+一致，再次通过门禁后仅recreate Web。未将旧版本覆盖到新的服务或配置上。
+
+实际Web版本与健康、服务器Compose／env摘要及其他47个容器image／StartedAt
+复核通过。公网HTML、入口资源及三个管理页JS／共享CSS共4个模块摘要与运行镜像
+一致。服务器侧Chromium前缀登录、Agent深层与根登录、API匿名401边界及全新
+浏览器前缀API请求通过，根API请求为0。生产验收没有创建／编辑／删除环境、认证
+或模型，也未登录真实Codex；这些交互以14项受控浏览器回归验证，不冒称生产
+已登录管理操作验收。本片无API／Worker重启、迁移或Runtime replacement。
+
+Web remote-release-finish通过，精确回收2个超过24小时的受管旧上下文及1个可
+回收历史image ID的tags；保留近期上下文、全部实际引用及每仓库一个不同版本
+回滚镜像，不清理共享BuildKit、卷、Workspace或数据库备份。收尾后Web版本、
+健康、服务器配置及其他47个容器再验通过；未push，本片无后续开发任务。
+
+### OPS-57 操作菜单按浏览器边界翻转 — DONE
+
+2026-10-29按用户截图修正工作区／会话操作菜单越过视口的问题。新增共享
+`ViewportPopover`，首帧按菜单实际尺寸定位：下方不足时整菜单向上展开，
+右侧不足时向左展开，并保留8px视口边距。菜单通过body portal避开侧栏／列表
+的overflow裁切；短窄视口限制可用宽高并允许菜单内部滚动。resize、捕获阶段
+scroll、visualViewport变化和菜单／元素锚点的ResizeObserver均重新定位，
+不再使用固定菜单高度估计。空间过小无法容纳一项时使用视口兜底。
+
+复用于工作区操作、会话右键菜单、工作区文件菜单、两种终端菜单、排队消息、
+能力／组合行操作、流程行操作、账户设置、自定义启动选项列表和选中文本工具栏。
+排队菜单保留优先向上展开；portal后的外部点击、Escape、焦点、键盘选择和
+菜单动作同步适配，排队菜单样式解除祖先选择器依赖。原本占据侧栏布局空间的
+定时任务筛选保留内联展开，未改成覆盖任务的浮层。
+
+14项定向Chromium回归通过，涵盖工作区右下角翻转、窗口缩放、菜单内容增长
+与末项滚动；会话菜单两个角和260×160短窄窗口；账户短窗口；能力表滚动；
+流程进入编排；排队菜单点击外部与编辑；目录三项菜单、终端完整命令列表；
+原会话配置、组合菜单、自定义选项键盘与侧边提问文本引用。工作区边界截图
+人工核对通过。启动选项旧用例在提交后缺少FlowRun详情等正式读取的模拟响应，
+本片补齐后完整通过；product-flow排队菜单的定位同步改为portal可访问名称，
+并将其旧的不存在的boundingBox.bottom/top断言改为真实y/height。
+
+Web typecheck、受影响源码及E2E的ESLint、production build、git diff检查通过。
+Alembic仍为唯一0183_user_market_sources head，任务表无CURRENT。本片仅Web，
+无API、迁移、Runtime或服务器配置变更；本次尚未部署，无后续实现切片。
+
+### OPS-58 工作区与会话归档一致性及即时列表更新 — DONE
+
+2026-10-29按用户截图修正归档关系。工作区归档在锁定目录及其所有版本下的正式
+会话后，先完整验证未归档会话已停止，再原子写入工作区及会话的归档时间；保留
+既有归档时间，重复调用可修复旧目录中漏归档的会话。工作区恢复整批恢复其中
+会话；单条会话恢复仅恢复该条及父工作区，其他会话保持归档。临时侧边会话不
+参与正式会话的批量归档。新增0184数据迁移，将历史已归档工作区中的正式会话
+同步为归档，限定相同workspace及目录版本关联，保留既有会话归档时间；沿用
+受治理RLS bypass并恢复原设置。迁移降级不逆转用户归档状态，不接触原生会话、
+文件或持久数据。
+
+侧栏成功归档后直接更新所有已加载分页与置顶缓存，排除活动投影中的归档项，
+并保留本地成功归档记录防止迟到列表重新插入。归档当前会话或工作区后回到
+主页，未归档根会话保持可见。会话管理内恢复通过显式回调解除同一工作台实例
+的本地隐藏记录，同步刷新目录、正式会话和活动投影，完整往返无需刷新页面。
+工作区归档被运行态拒绝时保留全部列表并显示错误；修复原先使用固定错误scope
+导致该错误不可见的问题。会话管理删除缓存同步补全包含归档筛选条件的查询键。
+
+恢复工作区复用产品确认弹窗，说明整批恢复范围，取消不发送写请求。选择已
+归档工作区时自动切换已归档筛选。归档状态和最后活动时间均复用自定义
+LaunchOptionMenu，支持方向键、Home/End、Enter、Escape、焦点恢复及视口边界
+约束；根AGENTS.md明确禁止产品选择器使用原生select/option及浏览器默认下拉。
+
+验证：6项PostgreSQL后端定向测试通过，涵盖跨目录版本归档、运行态批次拒绝且
+零部分写入、单条恢复父目录且保留其他归档、整批恢复、重复操作、旧数据迁移
+及现有会话管理根/目录隔离与运行态删除跳过。9项Chromium回归通过（会话管理
+6项、agent-conversation-schedules归档专项3项），覆盖分页和置顶/活动即时移除、
+同一工作台归档恢复往返、单条恢复、确认取消、恢复失败保留数据、键盘筛选及
+既有批量删除。截图人工核对通过。Web typecheck、受影响TS/TSX与E2E ESLint、
+production build、Python源文件及迁移Ruff、git diff检查通过。后端测试文件既有
+5处超长行未改动，其余Ruff规则通过。唯一Alembic head为
+0184_cascade_directory_archives；任务表无CURRENT。本片含Web、API与数据迁移，
+无Runtime及服务器配置变更；尚未部署，无后续实现切片。
+
+### OPS-59 终端环境历史版本列表与批量管理 — DONE
+
+2026-10-29按用户要求将终端环境右侧改为铺满内容区的历史版本表格，移除重复的
+摘要指标和最新版本命令标签。保留左侧环境切换、新建、环境删除、配置终端与
+发布生命周期。紧凑表格展示版本说明、状态、发布时间、运行引用与命令数量，
+表头固定、表格独立滚动、每页20项按钮分页，并支持版本、说明、状态及能力搜索。
+
+每个READY历史版本均可直接创建配置草稿，向现有服务端正式传入该版本的
+base_version_id；存在配置会话时保留继续配置／发布入口并禁用新草稿。
+创建成功先写入正式setup缓存再打开终端，避免旧active_sessions快照令终端
+立即关闭。版本名称和详情按钮打开独立详情弹窗，按所选版本的不可变manifest
+展示命令原始探测结果、来源、镜像摘要、构建平台及Runtime provenance。
+认证页明确标注历史发布未记录认证清单，不能据此判断镜像包含哪些认证，
+也不将当前平台凭据当作历史镜像内容；未新增认证扫描或伪造认证明细。
+
+行点击选择，详情与草稿按钮独立操作；跨页多选与全选匹配项支持批量删除。
+前端跳过被引用、发布中及当前草稿基础版本，服务端继续负责锁定与完整引用
+复核。逐项删除继续处理个别失败，成功项立即从缓存移除并校正页码，失败项
+保留选择供重试，引用冲突按运行、快照、配置会话、验证和MCP认证分类说明。
+详情分类支持方向键、Home/End，弹窗支持Escape及点击遮罩关闭。
+
+验证：Web typecheck、定向ESLint、git diff --check通过；4项新版本管理测试及
+7项既有settings-management测试通过，另6项原终端流程定向回归通过，共17项。
+覆盖三种宽度、独立滚动与固定分页、历史版本草稿、配置会话互斥、选中版本
+命令与未知认证、跨页删除及引用冲突重试；终端回归涵盖新建边界、发布重开、
+IME输入、隐藏保留连接、删除重试与运行引用保护。截图人工核对通过。
+本片仅Web，无API／迁移／Runtime变更；工作树中的CASE-04属并行既有任务，
+保留其CURRENT及唯一0185_case_materials Alembic head，不纳入本片提交或发布。
+本次Web发布待完成后补记验收，不自动开始后续功能。
+
+#### OPS-59 Web 发布验收
+
+2026-10-29沿用本会话受控服务器直接发布授权，将
+`1a87c62e69f7b7bb8b464edad3329bf6d2cc360d` 的commit-bound最小Web上下文发布。
+正式web预检通过；源归档SHA-256为
+`dd3ee1d5a243fb11e84cd1a4b20e40914b05cfc903b4d82c14d8153d5052088a`。
+linux/amd64镜像ID为
+`sha256:1484b8537c5eaa13d13970a97727a3295165cafa0cf8867f4d4a1de3eb3c5070`，
+实际运行镜像revision与目标提交一致。切换前保留回滚镜像与Web日志，仅定向
+recreate Web；服务器Compose/env哈希及其余47个既有容器镜像和启动时间不变。
+
+公网入口及Agent深层路由HTML与运行镜像逐字一致，两项入口资源和三项匹配
+历史版本列表标记的JS/CSS资源SHA-256一致；两个前缀API鉴权边界为401。
+远端全新Chromium实际渲染FlowWeave登录、Agent深层路由与根登录页通过，
+Network确认只使用部署前缀下的auth/me请求，根路径API请求为0。认证后版本
+管理交互使用本地受控模拟数据的17项定向回归验收；未对真实历史版本执行
+新建草稿或删除。历史认证清单未记录的限制保持明确展示，不能声称已完成
+镜像内认证扫描或明细识别。
+
+remote-release-finish通过，无超过保留期的受管上下文候选；保留最近24小时
+上下文、实际引用及每仓库一个回滚镜像。收尾后Web版本、健康、配置及其余
+47个容器再验通过。未发布并行CASE-04后端／迁移，未push；本片无后续开发任务。
+
+### OPS-61 环境版本详情滚动修复与运行引用 — DONE
+
+2026-10-29按用户截图修复详情弹窗滚动时内容穿过表头上方的问题。详情外层仅
+负责弹窗布局，命令表与运行表各有独立无顶部内边距的滚动区，thead整体吸顶，
+说明、分类和底部操作保持固定。40项多行长命令输出的滚动及截图核对通过。
+
+点击版本记录任意内容区直接查看详情（含受引用保护的记录），支持行聚焦后
+Enter／Space打开；复选框仅选择，草稿／删除操作独立。删除重复的详情图标按钮，
+缩减操作列宽度；移除环境主页面凭据风险说明，并移除认证页的风险提醒段落。
+认证清单尚未记录的事实仍保留，未伪造历史镜像内容。
+
+新增按环境版本查询运行引用的分页读取接口，校验环境与版本归属，按创建时间
+倒序及ID稳定排序，包含顶层FlowRun及子运行；复用现有共享顶层与用户私有子
+运行可见性，列表与总数遵循同一权限，不读取Runtime或完整运行详情。参数约束
+page>=1、page_size为1至100。详情增加运行引用分类，按需读取，每页20项按钮
+分页，展示运行名称、ID／编号、逐步／连续及子运行类型、状态和创建时间；
+请求可取消，失败显示重试入口。仅展示正式FlowRun引用，不将镜像版本引用
+误称为所有物理容器当前均在运行。
+
+验证：Web typecheck、定向ESLint、Python Ruff及git diff检查通过。14项Chromium
+定向回归通过（版本管理7项、原设置管理7项）；3项PostgreSQL定向回归通过，
+覆盖子运行、分页、跨版本排除、私有子运行隔离、共享顶层可见性、版本归属、
+参数边界、鉴权与原运行引用删除保护。初次失败为测试数据将其他用户的顶层
+共享运行误当私有、跨用户种子未使用测试bypass及StrictMode取消首请求令
+一次性失败夹具恢复；修正夹具后通过，未降低生产权限规则。长命令与运行
+分页截图人工核对通过。
+
+本片含Web与新增只读API，无迁移或Runtime变更；本地并行CASE-04的唯一
+0185_case_materials head及其CURRENT状态保持不变，不纳入本片提交／发布。
+发布使用已提交的0184迁移链；继承已提交OPS-60会话归档筛选修复。发布验收
+待补记，无后续实现切片。
+
+#### OPS-61 Web／Platform 发布验收
+
+2026-10-29沿用本会话受控服务器直接发布授权，正式web／platform预检通过，
+从`ec6f8746e1291d2c013ec0fa0ab9010cc353dd6c`的受管最小上下文发布。
+Platform源归档SHA-256为
+`33fc7bf186a4c80d4f6f85d31517b4011f9f59df779ab1ff56fd9588ce583224`，
+Web源归档SHA-256为
+`8b74a857fbdf2cf7a52bb83140db4b063acf4d64215a97bc8c3d8db490dfcf7a`。
+linux/amd64的Platform镜像ID为
+`sha256:c277594218c8b4b38f9eeecf3d1e8e304c5dbcba9d692dcda2d70b7aa3de84fb`，
+Web镜像ID为
+`sha256:70130b09a1a59f113b8b8e62540aff05705319a438200a5dd0292698799e6d02`。
+
+首次切换因OPS-60并行Web发布改变容器身份而在任何激活／迁移前停止；只读
+确认新线上revision为本片祖先`1868ee8ab3ba3b04ab1cc1f8a769c68eb1982b2c`，
+其他服务、43个保护容器和配置哈希不变。保留原盘点，并为最新Web补充回滚
+镜像及日志后更新Web盘点。本片已包含OPS-60修复，未覆盖其行为。
+
+正式migration入口退出0，Alembic保持0184_cascade_directory_archives；随后仅
+同步recreate api、stream-api、worker、web。四项运行镜像revision、linux/amd64、
+健康／readiness与Web HTTP验收通过。服务器Compose/env哈希及其余43个既有
+容器镜像和启动时间保持不变。Runtime Provider与运行容器未重建，未发布并行
+CASE-04迁移、源码或本机未提交内容。
+
+公网HTML与Agent深层路由匹配运行镜像，两项入口资源及三项匹配版本详情／
+运行引用模块的JS/CSS资源SHA-256一致；两个前缀API鉴权边界为401。全新远端
+Chromium实际渲染平台登录、深层路由和根登录页通过，Network确认使用前缀
+API，根路径API请求为0。实际API镜像内以只读数据库事务调用正式版本引用
+读取：3个已有被引用版本、25条首屏运行引用及1次第二页读取通过，核对所有
+返回记录确实引用所选版本且分页无重复，正式GET路由已注册。未对线上版本
+执行创建草稿、删除或其他业务写入；认证后的UI交互以本地受控数据回归验收。
+
+platform与web的remote-release-finish均通过，精确回收2个超过24小时的受管
+旧上下文，保留近期上下文、实际引用及每仓库一个回滚镜像；不清理共享BuildKit、
+卷、Workspace或数据库备份。收尾后四项版本、健康、0184数据库head、服务器
+配置和43个保护容器再验通过。未push；本片无后续开发任务。
+
+### OPS-62 已暂停容器的终端入口禁用视觉 — DONE
+
+2026-10-29按用户截图修复流程运行目录中终端入口已禁用但外观仍像可点击按钮
+的问题。运行目录操作按钮增加局部禁用样式：灰色文字／背景／边框、降低透明度
+和禁用鼠标指针。终端入口同时要求正式runtime_status为ACTIVE、write_available
+为true且当前运行无暂停／恢复请求；暂停、准备中与操作中保持禁用，并用title
+说明恢复或等待就绪。保留既有暂停／恢复容器、确认与正式服务端调用契约。
+
+Web typecheck、受影响源码／E2E ESLint与git diff检查通过。既有暂停／恢复
+Chromium用例补充终端入口断言后通过：ACTIVE可用、STOPPED置灰并阻止打开、
+STARTING继续禁用、恢复ACTIVE后重新可用。截图人工核对通过。本片仅Web，
+不修改API、数据库迁移、Runtime或实际暂停／恢复线上容器。工作树中并行
+CASE-04资料及0185迁移不纳入本片；任务状态沿用原记录。发布验收待补记，
+无后续开发切片。
+
+#### OPS-62 Web 发布验收
+
+2026-10-29沿用本会话直接发布授权，正式web预检与最小上下文准备通过，部署
+`9fc47bbf7e5f572b03c055a4f89390469e2b263d`。源归档SHA-256为
+`734ed535aefe310904d3f0b592f3385bfca46fad54c3a023e7e7ffa29595b39b`，
+linux/amd64镜像ID为
+`sha256:491f61e45170e3662cf1834f9a60d4bba41777d98ae13b256fce4a267749daf6`。
+保留切换前Web回滚镜像及日志，仅recreate Web；运行revision与目标提交一致，
+健康、服务器配置哈希及其余47个既有容器镜像和启动时间核验通过。
+
+公网入口／Agent深层路由HTML与镜像一致，两项入口资源及含本次禁用提示与
+CSS的两项模块资源SHA-256一致。全新远端Chromium实际加载平台登录、深层
+路由和根登录页通过，两个API鉴权边界为401，Network确认使用前缀API且根
+路径API请求为0。终端暂停／恢复交互及置灰效果以本地受控回归验收，未在
+线上操作实际容器暂停／恢复。
+
+remote-release-finish通过，无超过保留期的受管上下文候选；保留最近24小时
+上下文、实际引用及每仓库一个回滚镜像。收尾后版本、健康、配置及47个保护
+容器再验通过。无API／迁移／Runtime发布，未push，本片无后续开发任务。
+
+### OPS-63 Skill／Plugin 市场与 ZIP 导入分离 — DONE
+
+2026-10-29按用户要求撤下能力列表工具栏的统一市场源管理入口。Skill和Plugin
+各自提供独立市场入口；“导入 Skill／Plugin”只选择对应ZIP文件，沿用原有
+大小限制、服务端校验、预览确认及正式发布链，并在前端拒绝非ZIP扩展名。
+市场弹窗移除ZIP切换项，重命名为SkillMarketDialog／PluginMarketDialog，
+保留搜索、多选、分页、部分失败重试、关闭后停止剩余队列及Plugin固定Git
+提交／目录导入功能；导入后的不可变能力与现有版本不作改写。
+
+市场源管理仅在各市场中进入，按Skill／Plugin过滤展示与编辑；新增源自动
+固定所属类型，不再提供跨类型下拉。内置来源以紧凑列表展示固定名称／地址，
+允许自定义开关启停；自定义源可编辑名称、地址、版本、目录或从待保存列表
+删除，取消仍保留原服务端配置。编辑区仅展开当前项，内容独立滚动，头尾操作
+固定。来源选择复用LaunchOptionMenu／ViewportPopover，支持键盘、Escape、
+外部点击和边界定位；管理页使用自定义switch，无原生select／option或复选框。
+
+沿用现有按用户存储和校验的来源接口，避免迁移已有配置。保存前重新读取
+最新快照，仅替换本类型来源并保留另一类型的新改动；同类型内容已变化则
+显式提示重新加载，不能覆盖；仅另一类型引发的revision竞争允许重读并有界
+重试一次。复用原服务端来源合法性与乐观锁，不引入平台私有导入链或更改
+OpenHands治理边界。
+
+验证：Web typecheck、受影响TS／TSX与E2E ESLint、git diff检查通过。20项市场
+Chromium回归及1项能力模块入口回归通过，共21项，覆盖Plugin Git／目录／
+批量导入、Skill搜索／完整技能发布、ZIP专用入口及确认、两类来源列表隔离、
+自动类型、跨类型新修改保留与一次冲突重试、同类型竞争拒绝／重新加载、
+删除后取消、键盘选择及1440／390宽度。来源管理桌面／窄屏截图人工核对通过。
+本片仅Web，无API／迁移／Runtime更新；保留已提交CASE-04源码但不发布平台。
+发布验收待补记，无后续实现切片。
+
+#### OPS-63 Web 发布验收
+
+2026-10-29沿用本会话直接发布授权，正式Web预检及受管最小上下文准备通过，
+发布`667f61fba5c4c8f4b5369ba23c31708c3f6461c9`。源归档SHA-256为
+`87211d7f5c9252c432d44c4ad8b334fe6b20b4eadb3ba2810e325a46915b3d64`，
+linux/amd64镜像ID为
+`sha256:61d1a8d1e3e2b72e846f9d5595c5f06d632ed5063c847dd1465d8e5c3c9fd60f`。
+保留旧Web回滚镜像与日志，仅recreate Web。实际revision与提交一致；服务器
+配置哈希及其他47个既有容器镜像和启动时间保持不变。
+
+公网入口／Agent深层路由HTML匹配运行镜像；两项入口资源及三项匹配独立
+市场源、ZIP专用入口和新列表样式的JS/CSS资源SHA-256一致。全新远端Chromium
+实际加载平台登录、Agent深层路由和根登录页通过；两个API鉴权边界为401，
+Network确认只使用前缀API、根路径API请求为0。认证后的市场配置及导入交互
+以21项本地受控回归验收，未修改线上用户市场源或实际导入能力。
+
+remote-release-finish通过，精确回收1个超过24小时的受管旧Web上下文，保留
+近期上下文、实际引用及每仓库一个回滚镜像。收尾后Web版本、健康、服务器
+配置和47个保护容器再验通过。沿用现有来源接口和数据，无API／迁移／Runtime
+发布，未push；本片无后续实现切片。
+
+### OPS-64 Skill 热门首屏与 Plugin 后端分页 — DONE
+
+2026-10-29按用户要求为Skill市场增加默认首屏：skills.sh空查询读取其公开
+累计安装量排行榜第一页，按原始排行选取前20个可通过既有GitHub治理链导入
+的条目；展示真实安装量，搜索特定技能后清空查询可返回热门。自定义Skill Git
+来源打开时自动读取原目录，不伪造热度。榜单有五分钟有界缓存，失败可重试，
+搜索与导入继续使用原正式校验和发布流程。
+
+定位Plugin旧慢路径：每次打开先解析HEAD，再启动隔离Docker解析器获取仓库
+完整目录，前端才过滤与切页。新增只读浏览投影：对允许的公开GitHub仓库，
+固定提交后只读取原生目录约定的.plugin或.claude-plugin/marketplace.json，
+通过有界类型校验投影名称／说明／版本等目录元数据；不读取插件内容、不执行
+代码、不替代导入时OpenHands正式Marketplace解析与不可变内容校验。GitHub
+Raw将符号链接返回为相对路径文本，最多跟随4次且限制在同仓库、同提交内；
+禁止跳到其他仓库／提交／主机或逃出根目录，HTTP重定向关闭，响应限制2MiB。
+其他已允许的Git主机继续使用原正式隔离解析器读取目录。
+
+Plugin浏览接口按q全目录搜索，page/page_size后端分页（默认每页10、上限50），
+响应仅含当前页条目与total。HEAD解析缓存120秒，固定目录快照缓存300秒，
+最多32个缓存项，同键并发single-flight且失败不缓存。翻页／搜索沿用首屏
+commit，缓存过期也继续取同一提交，手工刷新重新选择最新快照。前端只请求
+当前页，保留跨页／搜索多选与部分失败重试，250ms合并搜索并取消／忽略旧
+响应，补上仅空白变化不应永久进入加载态的边界。
+
+验证：Web typecheck、定向ESLint、Python Ruff、新market_browse模块严格Pyright、
+git diff检查通过；既有skill_market整体严格Pyright仍有历史未标注dict／set
+类型问题，未将其声称为全量通过。24项PostgreSQL／Python定向回归和22项
+Chromium市场回归通过，共46项；最后搜索边界变更后再验2项分页／多选通过。
+覆盖真实分页请求／全局搜索、快照commit稳定、迟到结果抑制、热门初始加载／
+搜索返回、跨来源隔离、ZIP与Git导入保留、缓存合并／上限／失败重试、响应
+大小及符号链接安全。新首屏和分页截图人工核对通过。本机真实公开源只读
+探针：Plugin目录共78项，冷首屏约4.1秒、缓存第二页小于1ms；Skill热门20项
+约3.2秒。数字只代表当次开发机网络，线上发布后另行只读核验。
+
+本片含Web与市场读取API，无数据库／Runtime变更。工作树中CASE-05A为唯一
+CURRENT、唯一Alembic head为0186_case_execution_events，不纳入本片提交。
+发布将从线上已部署平台ec6f8746的0184链创建独立、已提交的发布快照，只合入
+本片市场API和当前已提交Web，以排除尚未发布CASE-04／CASE-05迁移与源码；
+具体SHA、快照验证和发布验收待补记，不自动开始后续开发。
+
+### OPS-65 终端环境的 FlowRun 引用与目录定位 — DONE
+
+2026-10-29按用户要求，终端历史版本列表、概览及引用详情统一展示顶层FlowRun，
+不再把共享同一容器的子运行记录重复列为使用者。服务端版本引用分页按顶层
+FlowRun过滤，并返回正式flow_definition_id；新增flow_run_reference_count用于
+展示，原run_reference_count及完整引用删除保护保持不变，包括只有子记录引用
+某版本时仍禁止删除。沿用正式权限、稳定倒序和按钮分页，无数据库迁移。
+
+点击FlowRun行或键盘激活名称后关闭详情，切到流程运行tab，展开所属流程、选中
+目标FlowRun、清除旧记录筛选，并在目录挂载后滚动居中、聚焦和短暂高亮。
+定位请求为不持久化的瞬态状态，不启动或暂停容器、不进入子运行工作台。
+
+验证：Web typecheck、定向ESLint、Python Ruff及git diff检查通过；17项Chromium
+回归及4项PostgreSQL回归通过。覆盖顶层分页、共享父运行与私有子记录边界、
+子记录删除保护、详情重试、折叠目录和较远目标定位、键盘与整行跳转、原设置
+管理与运行目录暂停／恢复。截图人工核对通过。唯一Alembic head为
+0184_cascade_directory_archives，任务表无CURRENT。
+
+本片从已部署OPS-64快照实施，仅含Web及只读平台API，不含并行CASE开发、迁移、
+Runtime或服务器配置变更。沿用本会话直接发布授权，发布验收待补记，无后续
+实现切片。
+
+#### OPS-65 Web／Platform 发布验收
+
+2026-10-29正式platform及web预检、受管最小上下文准备通过，发布
+`a801b635cd50e8a1ef84f05b912e68eacd8bd248`。Platform源归档SHA-256为
+`64136562980479420c100a42b33e1db081d8e01a9b3f9d63f71410d4c52c4d0c`，
+Web源归档SHA-256为
+`5f9bf78508eb3e750c4a1ad4b05887895cbd4eca804ea177c7f7c578bbf653a3`。
+linux/amd64的Platform镜像ID为
+`sha256:e9c112801143e34f78f95d8de05e1d40377a9c8dc2e3a9d7e4e2b94b2629c9c3`，
+Web镜像ID为
+`sha256:bb04dcafa13b08afbaabfe22bb77ee1058653057ddfa84c1ee2b78026aa708dc`。
+
+切换前保留回滚镜像及日志，正式migration退出0，Alembic仍为
+0184_cascade_directory_archives。仅同步recreate api、stream-api、worker和web，
+四项revision、健康／readiness与Web入口核验通过；服务器配置哈希及其他43个
+容器镜像和启动时间不变。Runtime Provider和运行容器未重建。
+
+公网HTML、深层路由、两项入口资源及三项匹配FlowRun引用功能的模块资源与
+运行镜像一致。全新Chromium验证平台登录、Agent深层路由和根登录页通过，
+Network只使用部署前缀API，根路径API请求为0；两项API鉴权边界为401。
+实际API镜像内以只读数据库事务读取全部环境版本：4个有引用版本、5个顶层
+FlowRun及4页核对通过，确认无子运行混入、无分页重复、flow_definition_id正确，
+展示数量与正式查询总数一致且原始引用数量不小于展示数量。未对线上业务
+执行新建、删除、启动或暂停；认证后的跳转交互以本地受控Chromium回归验收。
+
+platform与web的remote-release-finish均通过，精确回收9个超过24小时的受管
+旧上下文，保留近期上下文、实际引用及每仓库一个回滚镜像。收尾后四项版本、
+健康、数据库head、配置与43个保护容器再次核验通过。未push，无后续实现切片。
+
+### OPS-66 会话管理工作区操作与时间筛选精简 — DONE
+
+2026-10-29按用户要求，将归档工作区的恢复按钮从左侧工作区条目移到右侧工具栏，
+与删除已选会话共用操作区；仅选中归档工作区时展示，保留整工作区及其会话的
+恢复确认、失败重试及成功后的缓存同步。恢复请求期间禁用删除入口。
+
+侧栏移除工作区名称后的已归档文字，以低饱和暖色背景、文字及选中边线区分，
+名称保留完整可用宽度，并以无障碍描述表达归档状态。单条会话状态及恢复入口
+保持不变。最后活动时间选项改为全部时间、7天前、30天前，沿用已有早于阈值的
+筛选语义、自定义下拉、键盘／Escape／外部点击行为。
+
+验证：Web typecheck、定向ESLint、git diff检查通过；7项会话管理与1项嵌入式
+工作台归档恢复Chromium回归通过。覆盖右侧按钮同区对齐、根工作区无恢复入口、
+恢复确认取消／失败／重试、单条恢复同步父工作区、7天／30天结果及分页归位、
+原多选批量删除和滚动布局。截图人工核对通过。修正旧E2E夹具将无archived参数
+误当未归档的行为；测试以正式归档状态等待更新，不再依赖被移除的名称后缀。
+首次新增筛选断言误期待单页分页器，按现有小于一页时隐藏的规则修正后通过。
+
+本片仅Web，无API、数据库、Runtime或服务器配置变更；唯一Alembic head仍为
+0184_cascade_directory_archives，任务表无CURRENT。不含并行CASE开发。沿用
+本会话直接发布授权，发布验收待补记，无后续实现切片。
+
+#### OPS-66 Web 发布验收
+
+2026-10-29正式Web预检与受管最小上下文准备通过，发布
+`0d02b0992c1c85e5de55cf69ffe06fc29be766d2`。源归档SHA-256为
+`7756c0938639ab3b97470c6ba67d1b24531971ce839f70a459383243214c0889`，
+linux/amd64镜像ID为
+`sha256:a2fee08fe77bc170d378956bd4ae62d01a76cd0b3bc96479c94fb28cb264fa38`。
+保留旧Web回滚镜像及日志，仅定向recreate Web。运行revision与提交一致，健康
+及HTTP入口通过；服务器配置哈希与其他46个受保护容器镜像和启动时间不变。
+
+公网入口及Agent深层路由HTML、两项入口资源、三项匹配新时间筛选／右侧操作区／
+归档配色的JS及CSS资源与运行镜像逐项一致。全新Chromium验证平台登录、深层
+路由和根登录页通过，Network只使用部署前缀API，根路径API请求为0，两项API
+鉴权边界为401。认证后的工作区恢复和筛选交互以8项本地受控回归验收，未对
+线上工作区或会话执行恢复、删除或其他业务写入。
+
+remote-release-finish通过，无过期受管上下文候选；保留近24小时上下文、实际
+引用及每仓库一个回滚镜像。收尾后版本、健康、配置及46个保护容器再验通过。
+无API、迁移或Runtime发布，未push，无后续实现切片。
+
+### OPS-67 内置 MCP 保护与版本详情／编辑精简 — DONE
+
+2026-10-29按用户要求，会话配置的默认历史查询MCP移到能力列表最后，仅在all和
+MCP类型中按查询显示；all启用Skill组合筛选后隐藏，保留默认启用、不可取消、
+单一展示及不进入普通MCP探测／注册载荷的约束。
+
+仓库投影根据正式保留类型／身份识别平台内置MCP及默认运行策略，所有版本统一
+返回is_builtin。内置行显示内置徽标、灰色内容、禁用选择，不提供编辑或操作
+菜单；全选排除内置。服务端单条／批量删除返回BUILTIN_CAPABILITY保护，编辑
+拒绝内置，公共重复导入不得替换已安装的内置身份；平台受控初始化与内部发布
+通道不变，不改写现有内容、版本或配置引用。
+
+普通MCP名称打开左右布局详情：左侧版本历史，右侧所选版本配置、JSON与脚本
+清单，版本标识折叠显示；内容独立滚动，标题／操作固定。任一历史版本可作为
+编辑内容来源，提交仍携带打开时的最新版本身份并发布新的不可变版本。服务端
+准备及最终确认均复核最新版本，最终确认锁定package后再锁基线，防止迟到编辑
+覆盖更新；历史重复内容不能误报为新版本，原版本源与已有冻结引用保持。
+
+编辑器精简标题与说明，连接类型在左、配置在右，表单与JSON共享同一内容，
+脚本上传／入口／移除及高级字段保留；改用LaunchOptionMenu处理协议选择，
+不使用原生select。未修改禁用发布，保存期间禁用配置和关闭，失败保留输入并在
+弹窗内显示错误。支持Escape、外部点击、Tab焦点约束及关闭后恢复焦点。修正
+脚本区因网格收缩而裁切，并使成功提示不阻挡后续列表操作。
+
+验证：Web typecheck、定向ESLint、Python Ruff与git diff检查通过；16项Chromium
+定向回归与70项后端定向回归通过，2项既有外部探针按环境跳过。覆盖三类会话
+配置的内置顺序／类型／组合筛选、仓库不可管理与全选排除、版本切换、历史内容
+与脚本编辑、发布失败重试、重复版本／两阶段迟到提交拒绝、自定义协议键盘／
+Escape／外部点击、390／760／1440宽度及原其他能力模块；54项历史查询集成／
+MCP回归包含在后端计数内。截图人工核对通过。首次失败分别为新增后端测试
+缺少Settings／Artifact上下文，以及成功提示遮挡新建按钮，已修正并定向复验。
+
+本片含Web与平台能力治理保护，无数据库迁移、OpenHands／Runtime或服务器
+配置变更。唯一Alembic head为0184_cascade_directory_archives，任务表无CURRENT。
+仅使用当前发布工作树，不纳入并行CASE开发。沿用直接发布授权，发布验收待
+补记，无后续实现切片。
+
+#### OPS-67 Web／Platform 发布验收
+
+2026-10-29正式Web／Platform预检及受管最小上下文准备通过，发布
+`8dfc782ae86dd12d6e6fc4526efdda79c5879d36`。Platform源归档SHA-256为
+`3168b71a4eed5910b72c6de1c9d190dbdd3343b085dd1905908c7fc3edd1fce9`，
+Web源归档SHA-256为
+`30bf306fabace17ff96cf0d661cc3cc17bb84fdb95f8586a634d593f6c7c0885`。
+linux/amd64的Platform镜像ID为
+`sha256:61f7f159dcb4c002d089d5d9353b01333592a96404c428ddbad2a4ac3ec30e9d`，
+Web镜像ID为
+`sha256:426bbd7b9d4c163882470baa0333c7c2adc32110152bc0ff3968f7a7e04f55ed`。
+
+切换前保留回滚镜像及日志，migration正式入口退出0，Alembic仍为
+0184_cascade_directory_archives。同步recreate api、stream-api、worker和web，
+四项运行revision、健康／readiness与Web入口验证通过；服务器配置哈希及其他
+43个保护容器的镜像与启动时间不变，Runtime Provider和运行容器未重建。
+
+公网HTML、Agent深层路由、两项入口资源及四项匹配MCP版本详情／编辑／内置
+样式的模块资源与运行镜像一致。全新Chromium验证平台登录、深层路由和根
+登录页通过，Network仅使用部署前缀API，根路径API请求为0，两项鉴权边界为401。
+实际API镜像内以只读数据库事务读取5个MCP版本及其源配置；发布前后ID、digest、
+content_hash的汇总摘要相同，2个内置版本均返回is_builtin且管理保护判定为403。
+正式configured_capability校验当前历史查询MCP的身份、配置、digest及源内容通过。
+未对线上MCP执行修改、导入或删除；认证后的详情与编辑交互以本地受控E2E验收。
+
+platform及web的remote-release-finish通过，精确回收1个过期受管上下文；保留
+近24小时上下文、实际引用及每仓库一个回滚镜像。收尾后四项版本、健康、数据库
+head、服务器配置及43个保护容器再次核验通过。未push，无后续实现切片。
+
+### OPS-68 主页侧栏收起不影响定时会话 — DONE
+
+2026-10-29按用户截图复现：主页收起会话栏后切到定时会话，外层仍带
+conversation-rail-collapsed，第二网格列宽度变成0，使定时任务和运行会话侧栏
+消失。将折叠样式与主页按钮的折叠投影限定为home视图，定时任务、定时会话、
+管理及设置不再继承主页折叠样式；保留既有主页开关和内部返回导航行为。
+
+新增1440／1024两种宽度回归，覆盖主页收起、打开定时运行会话、侧栏宽度及
+记录可见性、回到任务详情、返回主页及再次收起／进入定时任务。原实现先在
+同一用例复现失败，修复后与主页草稿、设置返回、定时详情和内部导航回归共
+6项Chromium通过。Web typecheck、定向ESLint、git diff与任务唯一性检查通过，
+截图人工核对通过。唯一Alembic head仍为0184_cascade_directory_archives。
+
+本片仅Web，无API、迁移、Runtime或服务器配置变更，不含并行CASE开发；任务
+表无CURRENT。沿用本会话直接发布授权，发布验收待补记，无后续实现切片。
+
+#### OPS-68 Web 发布验收
+
+2026-10-29正式Web预检及受管最小上下文准备通过，发布
+`5b58a5b36ff93c836fdc9ff4619e4f1000ac2bbb`。源归档SHA-256为
+`d24c3a85a7b6b883402caaf758e9ad92d82b096f8941bdedbf18eecda9d492e6`，
+linux/amd64镜像ID为
+`sha256:e47e2e4e73c1432e8ae7ac30fb909cd84b0e8915bb5f992d5d97edbd4ce5091a`。
+保留旧Web回滚镜像及日志，仅定向recreate Web；实际revision、健康及HTTP入口
+通过，服务器配置哈希与其他46个保护容器镜像及启动时间不变。
+
+公网入口／Agent深层路由HTML、两项入口资源及两项匹配工作台折叠样式的模块
+资源与运行镜像逐项一致。全新Chromium验证平台登录、深层路由及根登录页通过，
+Network仅使用部署前缀API，根路径API请求为0，两项API鉴权边界为401。认证后
+主页收起、定时侧栏和会话切换以6项本地受控回归验收，未对线上会话执行业务
+写入。remote-release-finish通过，精确回收1个过期受管上下文，保留近24小时
+上下文、实际引用及每仓库一个回滚镜像；收尾后版本、健康、配置和46个保护
+容器再次核验通过。无API、迁移或Runtime发布，未push，无后续实现切片。
+
+### OPS-69 会话管理跨页批量归档 — DONE
+
+2026-10-29按用户要求，在会话管理右侧操作区增加归档已选会话，复用跨页选择
+与全选匹配结果，仅提交未归档选中项。通过产品确认弹窗说明数量及工作区保持
+不变，每批最多20条顺序提交、显示处理进度。运行中或范围变化项跳过且保留
+选择，失败批次停止后续提交并保留未完成项，重试不重复提交已成功项；全是
+归档项时禁用入口。操作期间禁用冲突选择／筛选／恢复／删除，列表仍独立滚动。
+
+新增用户隔离的management/archive接口，限制1至20条，复用正式停止检查及单条
+归档元数据逻辑，不发送、暂停或删除OpenHands会话。服务端按所选工作区全部
+版本限定直接会话，排除临时侧边会话、其他用户与其他分组；稳定顺序锁定，
+逐项savepoint隔离可识别拒绝，意外错误回滚整批。已归档请求重复执行返回原
+归档时间，不再重复探测；不修改工作区归档状态、版本或持久文件。
+
+每批成功后取消管理页旧读取并更新各状态缓存，修正页码／选择，同时复用
+工作台正式归档对账，立即排除普通分页、置顶及活动列表的已归档项。为后续
+恢复登记各条所属目录，不把整工作区加入排除集合。归档当前会话时同步清除
+内部返回旧路由；筛选读取未返回时保留选择，防止加载态清空待重试项。
+
+验证：Web typecheck、定向ESLint、Python Ruff、git diff及CURRENT唯一性检查
+通过。14项Chromium与7项PostgreSQL定向回归通过，覆盖43条跨页、20／20／2
+分批、确认取消、运行中跳过后重试、第二批失败后仅提交剩余项、旧分页／置顶／
+活动同步、工作区保留、原单条与工作区归档恢复、筛选／分页／删除；后端覆盖
+多目录版本、用户隔离、临时会话排除、根分组、幂等、认证／数量约束及意外错误
+整批回滚。截图人工核对通过。首次测试夹具误传tenant_bypass参数，修正后通过；
+回归同时发现并修复加载期选择丢失与返回已归档路由问题，非放宽产品断言。
+
+本片含Web及平台API，无数据库迁移、Runtime／OpenHands或服务器配置变更。
+唯一Alembic head仍为0184_cascade_directory_archives，任务表无CURRENT，不含
+并行CASE开发。沿用本会话直接部署授权，发布验收待补记，无后续实现切片。
+
+#### OPS-69 Web／Platform 发布验收
+
+2026-10-29正式Web／Platform预检与受管最小上下文准备通过，发布
+`afb090baf06dfc86cd18bdbf704fe28c9962cf2b`。Platform源归档SHA-256为
+`f0ddbf5a87fc350933cad9277aca5d185c74bd03b0aa4b09f9e49977eb4c0085`，
+Web源归档SHA-256为
+`72dcf7847e3f1b0118a80f132a6d877de99028188f3d71619cce3ad2b2ce224e`。
+linux/amd64的Platform镜像ID为
+`sha256:3df3d96b63b8d6813ac71f9356035e43b598acf0d0be93c3f9a105a230b327c8`，
+Web镜像ID为
+`sha256:a1cf000c76a084f63fe1c5cc0efe14887c7cb97fbd929f1f95b35d32585fd1ba`。
+
+切换前保留回滚镜像与日志，正式migration入口退出0，Alembic保持
+0184_cascade_directory_archives。仅同步recreate api、stream-api、worker和web，
+四项revision、健康／readiness和Web入口核验通过；服务器配置哈希与其余43个
+保护容器的镜像和启动时间不变。Runtime Provider和会话运行容器未重建。
+
+公网HTML、Agent深层路由、两项入口资源及三项匹配批量归档按钮／进度／样式
+的模块资源与运行镜像一致。全新Chromium验证平台登录、深层路由和根登录页
+通过，Network只使用部署前缀API，根路径API请求为0，两项API鉴权边界为401。
+实际API镜像内确认新POST路由及1至20条数量约束；在连接级REPEATABLE READ及
+只读事务内以空服务输入核验无操作路径，管理列表前后相同，实际归档会话为0。
+只读探针首次在RLS初始化后设置事务隔离被数据库拒绝，改为连接级隔离后通过；
+该探针未执行任何业务写入。认证后的真实批量选择／归档／恢复交互以本地受控
+回归验收，未替用户归档线上记录。
+
+platform与web的remote-release-finish通过，无过期受管上下文候选；保留近24小时
+上下文、实际引用及每仓库一个回滚镜像。收尾后四项版本、健康、数据库head、
+服务器配置及43个保护容器再验通过。未push，无后续实现切片。
+
+### OPS-70 能力仓库展示实际版本编号 — DONE
+
+2026-10-29按用户截图修正Skill与Context列表版本列：在原有两行空间中明确
+展示当前vN及上一版vM，不再仅显示当前版本／可回退文案。编号直接取正式
+revision_number，上一版从同一谱系中选择小于当前编号的最大真实版本，不按
+保留数量或当前减一推算；仅剩一版时仍展示其真实编号并禁用对比与回退。
+
+包详情／编辑标题和底部显示当前编号，对比底部和两版下载入口显示正式
+version_no，保留既有下载可访问名称。后台本来就返回版本编号，本片只修正
+Web呈现；不变更保留策略、发布编号或回退删除语义，不重写历史数据。
+
+验证：Web typecheck、定向ESLint、git diff及任务状态唯一性检查通过；19项
+Chromium回归通过，覆盖Skill／Context当前v12与上一版v9、仅存v27、包编辑、
+对比／下载／回退、模块操作、MCP历史与内置保护、全局排序及按钮分页。
+列表截图人工核对通过，未增加行高。唯一Alembic head仍为
+0184_cascade_directory_archives，无CURRENT，不含并行CASE改动。
+
+本片仅Web，无API、迁移、Runtime或服务器配置变更。沿用本会话直接部署授权，
+发布验收待补记，无后续实现切片。
+
+#### OPS-70 Web 发布验收
+
+2026-10-29正式Web预检和受管最小上下文准备通过，发布
+`87cb499fe6d0109ca6a94501252f406d9d79f97d`。源归档SHA-256为
+`ce7d656bcb2a4073f1dfdfdf342a9fb6384174dfff69ac78990b91c186bd120a`，
+linux/amd64镜像ID为
+`sha256:966bc334d3baefcd24e785950c636a194cd0a612907c9cac5cceecf48839241c`。
+保留旧Web回滚镜像与日志，仅定向recreate Web，版本、健康及HTTP入口通过；
+服务器配置哈希与其余46个保护容器的镜像及启动时间不变。
+
+公网HTML／Agent深层路由、两项入口资源及两项匹配能力版本编号文案的模块
+资源与运行镜像一致。全新Chromium核验平台登录、深层路由、根登录页通过，
+Network仅使用部署前缀API，根路径API请求为0，两项鉴权边界为401。认证后
+能力列表、包详情和版本操作由19项本地受控浏览器回归验收，未修改线上能力。
+remote-release-finish通过，无过期受管上下文候选，保留近24小时上下文、实际
+引用及每仓库一个回滚镜像；收尾后版本、健康、配置和46个保护容器再次核验
+通过。无API、迁移或Runtime发布，未push，无后续实现切片。
+
+### OPS-71 引用发送失败清理与 Mermaid 错误隔离 — DONE
+
+2026-10-29按用户截图排查引用会话发送后的DATA_CONFLICT、重复空态与页面底部
+Mermaid错误图。经正式预检后只读保留服务和数据库诊断，确认数据库拒绝删除
+agent_conversation_bindings，关联约束为凭据同步记录的binding_id外键。已创建
+原生会话且记录凭据版本后，历史能力校验或首条消息投递失败会进入清理路径；
+该路径遗漏凭据同步记录，二次数据库错误覆盖真实DomainError，并留下不可见
+PROVISIONING记录。补齐本binding的同步投影清理，保留凭据本身；记录原始错误
+code/status但不记录正文、凭据或运行入口。初始Runtime失败原因已被旧路径覆盖，
+现有日志不能还原，不能据此断言为重名或用户引用错误。
+
+受控浏览器复现同一容器内空态逐次增加：ConversationSurface与错误提示同时
+使用相同scope作为兄弟key。分别加transcript/error前缀，恢复正确替换与卸载。
+Mermaid默认render在body创建临时SVG，解析失败抛错时未清理错误图；改为固定
+定位、不可见且不占布局的专用渲染容器，禁用库内错误图，每次调用独立ID，
+Promise finally统一移除容器，卸载取消仅禁止状态写入。错误仅留在原消息图表
+块内，长度受限且可切换源文本，正常图表与全屏操作保留。
+
+验证：67项后端回归通过、2项既有可选测试跳过；真实隔离PostgreSQL覆盖凭据
+已同步后历史校验拒绝／发送拒绝、完整清理、原始错误保留、凭据不删，以及
+原草稿UUID／幂等键重试成功；历史授权、能力加载、失败恢复与用户边界回归
+通过。两个新增Chromium场景各重复3次通过，覆盖正常与错误图并存、文本切换、
+全屏、渲染期间离开、三次引用发送拒绝、草稿保留、单一空态及整页无滚动；
+1440／1024拖放各重复3次通过。首次用例遗漏拖放eventId字段、未等待新会话
+标题出现导致误读旧发送框，修正夹具后通过；重复key先真实复现，再修复断言。
+截图人工核对通过。
+
+Web typecheck、定向ESLint、Python源码与历史测试Ruff、git diff及任务状态唯一性
+检查通过；工作区测试文件5项既有E501与HEAD逐项一致，修改未新增违规。
+Alembic唯一head保持0184_cascade_directory_archives。仅Web及平台代码，无迁移、
+Runtime、OpenHands或服务器配置改动；不含并行CASE实现，未清理线上会话或
+更改历史授权。只读配置检查确认历史能力来源／digest有效；现存授权均已过期，
+未为诊断续期或发消息，线上原引用成功发送不能以本地回归代替。
+
+沿用当前会话直接部署授权，发布验收待补记，无后续实现切片。
+
+#### OPS-71 Web／Platform 发布验收
+
+2026-10-29正式Platform／Web预检及受管最小上下文准备通过，发布
+`a5ebc3eb10dde1cc619e9dbe9a615a3a236fb8fc`。Platform源归档SHA-256为
+`ba091868188fffc840a687ffd11beaebd1aba2959e36844f1e175d7dff233d9d`，
+Web源归档SHA-256为
+`36b4a0d8a0a12d036a9f394fb7b6996d941e5f10a68b0ae0e803b3985c670b39`。
+linux/amd64 Platform镜像ID为
+`sha256:734fa1196f03fc6e74477a50cf179c73ecf8bdc13598e69e7f5058d666b4c985`，
+Web镜像ID为
+`sha256:ce526a49bfac7e7af9e2308075c795567f3c46aa42a1c804b0f688308b4075a1`。
+
+保留旧镜像回滚tag和诊断日志，正式migration入口退出0，数据库保持
+0184_cascade_directory_archives。同步recreate api、stream-api、worker和web，
+四项revision、健康／readiness与Web入口通过；服务器配置哈希及其他43个保护
+容器的镜像和启动时间不变，Runtime Provider与会话运行容器未重建。
+
+公网HTML／Agent深层路由、两项入口资源和五项匹配图表错误隔离／独立key／
+错误样式的模块资源与运行镜像一致。全新Chromium核验平台登录、深层路由、
+根登录页通过；Network仅使用部署前缀API，根路径API请求为0，两项鉴权边界
+为401。运行API镜像内源码SHA-256与本地已提交修复文件一致。认证后引用发送
+拒绝、草稿／空态与错误图交互以本地受控回归验收，未对线上会话发送消息、
+删除记录或续期历史授权；首条发送的原始失败仍不能从旧日志还原。
+
+Platform及Web的remote-release-finish通过，精确回收1个过期受管上下文；保留
+近24小时上下文、实际引用和每仓库一个回滚镜像。收尾后四项版本、健康、
+数据库head、配置哈希及43个保护容器再次核验通过。未push，无后续实现切片。
+
+
+### OPS-72 节点默认预览与标签页状态保留 — DONE
+
+2026-10-29按用户要求，已有节点的启动提示词和上下文默认显示Markdown预览，
+保留编辑／预览切换；预览采用中性白底，编辑采用浅绿底、绿色边框及模式标识。
+新建节点仍直接编辑；放大窗口与主面板共享预览状态和草稿，保留键盘、焦点、
+保存及错误交互。
+
+主导航及临时管理／FlowRun标签使用React Activity保留已访问页面的DOM和本地
+状态，离开后断开effects与订阅，返回恢复所选记录、内层tab、筛选、分页、
+列表／正文滚动及未保存草稿。只保留已访问且仍开放的标签；关闭临时标签、
+显式重新加载或切换账户时释放状态，本次不新增跨浏览器刷新草稿持久化。
+流程画布和运行配置的初始化effect按原资源身份去重，避免Activity重新连接时
+清空编辑。跨主标签不再触发节点放弃草稿确认；节点内部切换、删除、显式
+重载及退出仍保留保护，隐藏节点草稿也参与beforeunload校验。
+
+React／React DOM固定升级至19.2.9以使用正式Activity API，类型同步升级。
+会话回归先复现TanStack Query 5.83.0在隐藏后取消MutationObserver订阅、
+返回未重新关联导致isPending永久停留的问题；读取固定发布包源码，升级并
+锁定5.105.0，其onSubscribe重新关联mutation并更新result。未改会话正式事件、
+发送状态判定或使用本地伪终态规避问题。上游问题证据：
+https://github.com/TanStack/query/issues/11171 。
+
+最终60项Chromium回归全部通过：节点编辑23项、标签状态4项、运行记录9项、
+能力模块13项、账户隔离1项、会话导航／草稿／Mermaid4项，以及普通与FlowNode
+会话发送三个时点离开／返回6项。覆盖预览默认态与两态样式、放大编辑、
+未保存提示词／字段／画布／运行配置、分页和精确滚动恢复、临时标签关闭释放、
+隐藏页面停止轮询、账户切换隔离、正式消息单气泡及发送状态收口。
+隐藏DOM的既有定位断言改为可见性断言，保留正式消息身份和数量检查。
+旧flow-run-workbench-feedback两项使用过时入口，无法到达目标步骤，未计入
+通过数；现代run-record-details对应场景通过。截图人工核对通过。
+
+Web typecheck、受影响源码／测试ESLint、production build、git diff及任务状态
+唯一性核对通过。唯一Alembic head仍为0184_cascade_directory_archives，
+无CURRENT。本片仅Web及依赖，不含API、迁移、Runtime或并行CASE实现。
+沿用本会话直接部署授权，发布验收待补记，无后续实现切片。
+
+
+#### OPS-72 Web 发布验收
+
+2026-10-29正式Web预检及受管最小上下文准备通过，发布
+`e44ddf7808801808c077bb77e36ae899f3aa1a76`。源归档SHA-256为
+`15c036b6806d6a3c6591d43629108065a69e58533189fc18dc00d0b8ee7ac791`，
+linux/amd64镜像ID为
+`sha256:b9ddc9f9f82e749b75eecd74369e35de93070da3789cf9241a2dbbdb53a29f0d`。
+保留旧Web回滚镜像与日志，仅定向recreate Web，revision、健康及HTTP入口
+通过；服务器配置哈希及其余46个保护容器的镜像和启动时间不变。
+
+公网HTML／Agent深层路由与运行镜像一致，两项入口资源及三项匹配标签保留／
+预览样式的模块资源SHA-256一致。全新Chromium核验平台登录、深层路由及根
+登录页通过；Network仅使用部署前缀API，根路径API请求为0，两项鉴权边界
+为401。首次浏览器命令已输出登录DOM但进程未退出而超时，保留诊断后改为
+有界读取渲染结果并显式回收本次临时浏览器；三项页面检查完成，残留临时
+浏览器容器为0。认证后节点预览、草稿及标签交互以本地60项受控浏览器回归
+验收，未对线上节点、能力或会话执行写入。
+
+remote-release-finish通过，精确回收7个过期受管上下文；保留最近24小时上下文、
+所有实际路径引用及每仓库一个回滚镜像。收尾后revision、健康、服务器配置
+和46个保护容器再次核验通过。无API、迁移或Runtime发布，未push，
+无后续实现切片。
+
+
+### OPS-73 MCP 连接测试、工具目录与历史查询误判修复 — DONE
+
+2026-10-29按用户截图排查内置历史查询不可用，并补齐能力仓库的MCP批量测试。
+正式Platform预检后，校验内置固定版本、digest及blob有效；使用临时零来源授权
+从实际Agent Runtime调用OpenHands正式MCP test，握手和工具发现通过，返回
+read_referenced_conversation，未读取历史正文，临时授权已删除。
+
+进一步以独立临时会话走首条引用的完整创建／注册路径，在send_message边界
+强制拦截，不发送用户消息、不调用模型；真实复现两次probe成功、两次原生配置
+确认false、AGENT_HISTORY_CAPABILITY_UNAVAILABLE。原生响应包含正确Server名称、
+URL、streamable-http及enabled，但不含Authorization。固定source lock
+73e3cd8e的conversation_service._compose_conversation_info先对state作脱敏dump，
+再构建ConversationInfo；MCP SecretStr映射校验会丢弃掩码值。平台误把公开响应
+缺少认证头当作未配置。适配器改为核对具名Server、精确URL、transport及enabled，
+认证仍由正式MCP probe验证，不请求明文凭据，也不跳过真实连接检查。
+同一诊断仅替换此判断后到达READY_TO_SEND，随后按预设拦截并正常删除临时
+原生会话／Binding。部署后仍需核验实际已提交镜像，无OpenHands源码或Runtime
+镜像改动。
+
+能力仓库MCP表格总操作栏新增“测试全部 MCP”；勾选记录时联动为“测试连接(N)”，
+保留跨页选择、原删除保护和全局排序。无选择时测试当前搜索匹配的全部MCP，
+包括内置项；逐个探测，结果即时显示，单项失败不阻塞后续；关闭／Escape停止
+后续检测并取消浏览器在途请求。完成结果按固定version id保留，返回标签不会
+重复已完成探测。表格以连接状态及工具数量替换MCP的无关依赖状态，名称／工具
+入口可只读查看详情；详情新增“工具能力”页，版本间结果隔离。内置项仍禁止
+选择、编辑、删除，可通过测试全部和只读详情检查；会话配置显示内置正式工具名，
+已选普通MCP在探测成功后展示工具目录。只展示原生probe返回的名称，不伪造schema，
+连接成功不宣称所有工具调用均已验证。
+
+复用当前用户Agent Workspace Runtime的既有mcp-readiness入口，返回安全失败分类、
+工具名和检测时间；不启动额外Runtime、不创建会话、不写入工具执行事件。内置
+测试使用60秒、加密且绑定用户／固定版本的catalog-only凭据，仅允许握手、ping和
+列举工具，工具调用一律拒绝；不创建或续期会话历史来源授权。过期、篡改、用户
+失权或配置版本变化均拒绝。正常引用失败提示和日志新增安全原因分类，不包含
+凭据、正文或私有URL。
+
+验证：116项后端回归通过，4项既有可选测试跳过；含真实隔离PostgreSQL的能力
+验证／OAuth和Workspace挂载13项，以及历史权限、MCP协议、初始注册、过期／
+篡改／版本绑定、catalog-only不能调用工具、失败不保留旧工具、临时物化清理等。
+既有Workspace直接调用夹具遗漏tenant上下文，补齐后通过，未放宽业务校验。
+21项Chromium回归通过，覆盖13项能力模块、5项MCP连接测试及3项会话能力／
+历史失败草稿场景；验证多选联动、串行探测、单项超时继续、内置保护、0工具、
+取消、标签返回、75工具内部滚动和1024短屏固定操作。截图人工核对通过。
+一个既有会话sidebar用例在未触及的引用类型键盘步骤失败，未计入通过数。
+Web typecheck、定向ESLint、production build、受影响Python Ruff、git diff及状态
+唯一性核对通过；唯一Alembic head仍为0184_cascade_directory_archives，无CURRENT。
+本片仅Web／Platform，无迁移、SDK、Runtime或服务器配置变更，不含并行CASE改动。
+沿用本会话直接部署授权，发布验收待补记，无后续实现切片。
+
+
+#### OPS-73 Web／Platform 发布验收
+
+2026-10-29正式Platform／Web预检及受管最小上下文准备通过，发布
+`adea43d8fcdcf2769de16485bb01e0d853aa1fa3`。Platform源归档SHA-256为
+`3269640f8b17597e43c206d7a1523a084c4d4cc2e931a1276e4783c836dc5d75`，
+Web源归档SHA-256为
+`76f2a108b6047e38edca14e5ef6fd86efb3a4ea36fe16439ee5b7c3a4d93743f`。
+linux/amd64 Platform镜像ID为
+`sha256:64df36ddb17215a91d8f7aa4c6e4b06633f6b8331d92d8ac320986f18b04b2e2`，
+Web镜像ID为
+`sha256:4496abcc24c4ed699eae01ca227b766617ad1164bc1672440b11511e231bf1e9`。
+核对两项不可变镜像身份并合并构建台账后发布；保留旧镜像回滚tag和服务日志，
+正式migration退出0，数据库保持0184_cascade_directory_archives。同步recreate
+api、stream-api、worker及web，四项revision、健康／readiness和Web入口通过；
+服务器配置哈希及其他43个保护容器的镜像和启动时间不变，Runtime未重建。
+
+运行API镜像内适配器、catalog-only凭据及MCP路由三项源码SHA-256与本地提交
+一致。通过正式Runtime probe实测当前4个MCP全部READY，工具数量分别为
+1（内置）、1、9、5；内置返回read_referenced_conversation。实际catalog-only
+凭据调用tools/call被401拒绝，不读取历史正文、不创建或续期来源授权。
+重新执行临时首条引用注册诊断，这次完全使用已部署适配器：两次probe READY，
+公开状态仍无Authorization但配置确认true，流程到达READY_TO_SEND；按诊断
+门禁拦截发送并清除临时Binding，不发送业务消息、不调用模型。
+
+公网HTML／Agent深层路由、两项入口资源及三项匹配MCP连接／工具页的模块资源
+与运行镜像一致，两项鉴权边界为401。全新Chromium的平台登录、深层路由及根
+登录页通过，本次临时浏览器均回收。原Network helper未通过验收，改为
+有界读取渲染DOM和完整网络事件，并回收自身进程；4211条完整
+网络事件中出现部署前缀鉴权请求，根路径API请求为0。
+
+Platform及Web的remote-release-finish通过，无过期受管上下文候选；保留最近
+24小时上下文、实际路径引用和每仓库一个回滚镜像。收尾后四项revision、健康、
+数据库head、配置哈希及43个保护容器再次核验通过。未push，无后续实现切片。
+
+
+### OPS-74 已归档工作区删除与目录／附件清理 — DONE
+
+2026-10-29在会话管理已归档工作区的“恢复工作区”旁新增“删除工作区”，
+复用主页侧栏既有DELETE工作目录接口。确认框明确说明所有版本目录文件、
+全部会话与上传附件永久删除；删除中冻结操作，失败保留工作区／分页／选择供
+重试，成功回到根工作区并同步管理页、侧栏分页、置顶及活动投影，阻止迟到
+列表响应重新插入已删除项。1024×650短屏保持操作可见、表格内部滚动。
+
+原接口此前只删除版本元数据和会话；现按全部历史版本的显式路径清理物理
+目录，兼容旧单目录版本，缺失多路径版本拒绝猜测。按正式关系纳入临时侧边
+会话，复用OpenHands原生readiness和delete；运行中整批拒绝，只有明确原生
+会话不存在才允许幂等重试。修复附件匹配遗漏用户隔离根的问题，清理已发送、
+待发送UUID owner文件，以及关联草稿／正式会话的附件和工作区文件上传分片。
+事项／调度引用、其他工作区历史路径、其他会话目录及共享附件均先校验；
+平台保留根、符号链接目标和跨用户访问拒绝，不删除其他用户／工作区文件。
+创建、更新与删除使用用户／Workspace级事务锁串行化工作目录路径引用。
+
+文件以不跟随符号链接的目录FD和inode核对暂存到用户私有隔离区，数据库正常
+回滚时恢复文件，提交后清理；持久维护任务仅重试固定隔离区且恢复任务owner，
+不再解析原路径，避免误删同名新目录。暂存前写入权限受限的恢复映射；API
+进程若在暂存后、数据库提交前被强制终止，需据映射人工恢复，未实现该边界
+的自动恢复；OpenHands已完成的原生会话删除不能由数据库回滚撤销。
+
+验证：真实隔离PostgreSQL和临时文件21项通过（含4项既有断点上传回归），
+覆盖多历史版本／侧边会话／附件及分片、活动和归档共用接口、共享路径及旧
+单目录保护、运行中拒绝、普通回滚、原生失败回滚及明确缺失重试、提交清理
+失败后的持久重试／同名目录保护、子符号链接不跟随、跨用户隔离和Worker
+owner上下文。12项Chromium会话管理回归全部通过，含删除确认／取消、分页、
+失败重试和短屏布局，截图人工核对通过。Web typecheck、定向ESLint、production
+build、受影响Python Ruff及git diff检查通过；唯一Alembic head仍为
+0184_cascade_directory_archives，无迁移／Runtime／SDK／服务器配置变更。
+不混入并行CASE开发，沿用本会话直接部署授权；发布验收待补记，无后续实现切片。
+
+
+#### OPS-74 Web／Platform 发布验收
+
+2026-10-29正式Platform／Web预检与受管最小上下文准备通过，发布
+`e12f6778893cc4395a0de825fc0978c61832376c`。Platform源归档SHA-256为
+`b070f28181398937bf758cf482718296dc233598be0820d1c180ba36f20b2520`，
+Web源归档SHA-256为
+`9abbc1fca7cb54b9e2941c8fc9e864cbaaa5c1fea39556a127d81c7ad149ee1f`。
+linux/amd64 Platform镜像ID为
+`sha256:d78bdf1bfdb51a4acae5b7a11c238bd5a94c384a1e60b3334e5a7cb7f4b10e01`，
+Web镜像ID为
+`sha256:33779d66616d8421a8ecff339608b96f8e3eda4737e29b24224da54fe4978df7`。
+保留旧镜像回滚tag及原服务日志，正式migration退出0，数据库仍为
+0184_cascade_directory_archives；同步recreate api、stream-api、worker、web，
+四项revision、健康／readiness及Web入口均通过，Runtime未重建。
+
+实际API镜像内工作目录删除、文件暂存清理、附件匹配、原生删除重试、任务
+handler与Worker共六个源码文件SHA-256与提交一致。公网HTML／Agent深层路由、
+两项入口资源及三个匹配工作区删除文案／操作栏的模块资源与运行镜像一致；
+两项鉴权边界均为401。全新Chromium的平台登录、深层路由和根登录页通过，
+3875条完整网络事件中部署前缀API请求通过，根路径API请求为0，临时浏览器
+均回收。线上只作只读验收，未删除用户实际工作区；删除交互和物理清理分别
+由本地12项浏览器及21项隔离PostgreSQL／文件回归验证。
+
+Platform及Web的remote-release-finish均通过，精确回收4个过期受管发布上下文，
+保留最近24小时上下文、实际路径引用和每仓库一个回滚镜像。收尾后四项revision、
+健康、数据库head、服务器配置哈希及其他43个容器的镜像／启动时间再次核验
+通过；服务器配置未改动。未push，无后续实现切片。
+
+
+### OPS-75 MCP 详情测试与内置项选择 — DONE
+
+2026-10-29在MCP详情的版本信息行新增“测试连接”，测试当前选中的不可变
+version，直接切到工具能力页显示检测进度、结果、检测时间及正式返回的工具名。
+复用当前用户Agent Workspace的既有mcp-readiness接口，不执行工具、不创建会话。
+结果按version id回写原列表缓存；失败替换旧工具目录，支持重试，历史版本结果
+相互隔离。测试中禁用重复提交；关闭详情或切换版本取消浏览器在途请求并忽略
+迟到结果。取消不声称服务端同步工作已立即终止。
+
+内置MCP支持复选框、行内容选择和模块全选，可单独或与普通MCP一起测试；
+任一选择包含内置项时整个批量删除按钮禁用并说明原因，删除handler在确认前
+和重新读取版本后再次拒绝内置项，不会静默只删除普通项。取消勾选内置项后
+恢复普通项删除。保留内置标识及只读底色，选中态可辨认，名称及工具入口可
+查看详情；内置详情标注“系统内置 · 仅供查看与测试”且不提供编辑按钮。
+其他类型内置能力的选择／编辑／删除保护保持原有规则，服务端保护没有放宽。
+
+验证：13项能力模块及10项MCP连接Chromium用例共23项通过，含内置单选／
+混选／全选及删除禁用、独立名称详情入口、详情内测试及防重复、结果回写、
+历史version精确请求、失败清除旧工具及重试、切换和关闭取消／迟到隔离、
+1024与390窄屏75工具列表内部滚动。既有分页、全局排序、普通批删和其他内置
+保护回归通过，截图人工核对。首轮因上轮本地Vite已停止而连接拒绝，恢复
+独立开发服务器后全部重跑通过，未放宽断言。Web typecheck、定向ESLint、
+production build、git diff与任务状态唯一性核对通过；Alembic唯一head仍为
+0184_cascade_directory_archives。仅Web变更，无迁移、Platform、SDK、Runtime
+或服务器配置改动，沿用当前会话直接部署授权，发布验收待补记，无后续实现切片。
+
+
+#### OPS-75 Web 发布验收
+
+2026-10-29正式Web预检与受管最小上下文准备通过，发布
+`47a396aa9009d47916e2907169825c2f3964b041`，源归档SHA-256为
+`690b2d64e409a3becf390434c891524b71958077cc341c38eb31f51583161085`。
+linux/amd64 Web镜像ID为
+`sha256:6c72106e8e66e2ec2ce9a24fa12d0c292dfee62312331eb04493f98af67f1c83`。
+保留旧Web回滚镜像和服务日志，仅定向recreate Web，revision与HTTP健康通过；
+服务器配置哈希及其余47个容器的镜像和启动时间保持。无Platform、迁移、
+SDK或Runtime更新，数据库仍为0184_cascade_directory_archives。
+
+公网HTML／Agent深层路由、两项入口资源及三个包含详情测试、内置删除保护
+文案与按钮样式的模块资源SHA-256与运行镜像一致；两项API鉴权边界为401。
+全新Chromium的平台登录、深层路由和根登录页通过，3978条完整网络事件中
+部署前缀API请求通过，根路径API请求为0，临时浏览器均回收。详情测试及
+内置选择交互由本地23项受控Chromium回归验收，未修改或删除线上能力记录。
+
+Web remote-release-finish通过，无过期受管上下文候选；保留最近24小时上下文、
+实际路径引用及每仓库一个回滚镜像。收尾后Web版本／健康、数据库head、配置
+及47个保护容器再次核验通过。未push，无后续实现切片。
+
+
+### OPS-76 会话管理持久后台批量删除 — DONE
+
+2026-10-29将截图所示会话管理批量删除从浏览器串行同步请求改为一次提交
+最多500项的服务端持久任务。新增用户隔离的deletion-jobs受理／查询入口，
+仅做数据库授权和入队、返回202，不读取Runtime。确认后立即关闭弹窗，搜索、
+切换工作区及页面导航保持可用；以单行轻提示显示工作区、处理／删除／跳过
+计数。刷新或重新打开通过服务端任务恢复进度，不依赖浏览器持续在线执行。
+待处理行显示“待删除”，仅限制同项操作与重复批删，其他记录可继续管理。
+原同步接口及应用helper保留兼容，工作区删除流程不变。
+
+复用BackgroundTask、Worker维护队列及独立心跳，每次执行恢复任务owner；
+该全局任务表的公开查询和Worker处理均显式校验owner、宿主和task_type。
+提交只允许当前用户、指定工作区下正式会话，排除临时侧边会话；同一用户／
+宿主同时最多一个活动批次，使用已有用户级事务锁及幂等键拒绝重复和冲突。
+后台逐项重新校验原scope并复用正式会话删除及OpenHands readiness；运行中
+和scope变化项跳过，不强制中断。每一项删除与进度在同一短提交收口，保存点
+回滚当前失败项，已提交检查点保留；Runtime失败由原有有界任务重试接管，
+Worker重启续跑剩余项。任务行不在Runtime调用期间加锁，进度读取和心跳不会
+等待整个批次。提交前后均校验租约，旧generation不可继续执行下一项。
+原生删除与数据库提交之间的崩溃仍可能需要以明确缺失进行幂等重试，不声称
+跨系统事务原子性。彻底失败保留已完成统计与remaining ids，页面可只重试剩余。
+
+前端复用任务缓存和定向列表／置顶／活动投影同步，删除事实覆盖迟到的列表
+快照，完成后停止轮询；所有结果非阻塞展示，移除原生alert。失败的受理请求
+保持选择及相同幂等键；刷新不重新提交，手动重试创建独立批次并固定原scope，
+不因用户切换工作区而改变目标。任务结果按现有任务保留策略保留，查询最近
+10项；界面优先显示活动项及最近未关闭结果。
+
+验证：真实隔离PostgreSQL／临时文件及Worker任务回归41项通过，包含6项新
+持久删除测试；另3项既有管理scope／用户隔离回归通过，共44项。覆盖120项
+202无Runtime调用、重新建session恢复、逐项检查点及失败续跑、读取／心跳
+并发、运行中和scope变化跳过、用户／幂等／活动任务隔离、过期租约拒绝及
+外层UoW真实handler收口。扩展任务套件6项旧流程测试因模型配置缺失失败；
+用未修改HEAD的独立源码重复运行，相同6项全部复现，未修改其夹具或业务逻辑，
+未计入通过数。13项Chromium回归通过，含317项单次后台受理、页面导航与刷新
+恢复、500项失败只重试剩余400项、幂等受理重试、最终页收缩及既有归档／删除
+保护。截图人工核对、Web typecheck、定向ESLint、production build、受影响Ruff、
+git diff及状态唯一性核对通过。Alembic唯一head仍为0184_cascade_directory_archives，
+无迁移、SDK、Runtime或服务器配置改动。沿用会话部署授权，发布验收待补记，
+无后续实现切片。
+
+
+#### OPS-76 Web／Platform 发布验收
+
+2026-10-29正式Platform／Web预检和受管最小上下文准备通过，发布
+`e62f85aff906e9cffe0293e67d469a2ce2766826`。Platform源归档SHA-256为
+`8877446abcda12c7946568f6963d4007ceb89889e5e7701d9801d54b2ca732ee`，
+Web源归档SHA-256为
+`c9eed75264677fa9c28a94ddf289dcb76796cb2e98e964ec3e9ebeffc24d3cb4`。
+linux/amd64 Platform镜像ID为
+`sha256:15ce5f9e6097cc4ba43b270b1186e04b2cf8bbc76cbc23050d5a2d1c6bfda052`，
+Web镜像ID为
+`sha256:09308418271c102501cb9747cfa6c15a710d351f7267f545b1408d102574cdac`。
+保留旧镜像回滚tag和服务日志，正式migration退出0，数据库仍为
+0184_cascade_directory_archives；同步recreate api、stream-api、worker和web，
+四项revision、健康／readiness及HTTP入口通过；Runtime未重建。
+
+运行API镜像内持久删除任务、HTTP受理／查询路由、任务handler和Worker四项
+源码SHA-256与提交一致；实际镜像中任务位于维护队列，handler已注册。
+公网HTML／Agent深层路由、两项入口资源及三个包含后台进度／重试文案和样式
+的模块资源SHA-256与运行镜像一致。包括新任务查询入口在内的三项API鉴权
+边界均为401。全新Chromium的平台登录、深层路由及根登录页通过；4052条
+完整网络事件中部署前缀API请求通过，根路径API请求为0，临时浏览器均回收。
+线上验收仅只读，不创建删除任务或删除实际用户会话；后台执行、受理与刷新
+交互由本地44项后端及13项浏览器回归验证，六项基线已有失败保持前述记录。
+
+Platform和Web remote-release-finish均通过，无过期受管上下文候选；保留最近
+24小时上下文、实际路径引用及每仓库一个回滚镜像。收尾后四项版本、健康、
+数据库head、服务器配置哈希及其他43个容器的镜像／启动时间再次核验通过，
+服务器配置不变。未push，无后续实现切片。
+
+
+### OPS-77 隐藏工具区保留侧边聊天 — DONE
+
+2026-10-29将工作区工具右上角PanelRight按钮明确为“隐藏工作区工具”，
+分栏与全屏均仅收起工具区，不删除侧边聊天的原生会话、标签或父级绑定状态。
+隐藏后提供独立“显示工作区工具”入口恢复原活动页签；标签自身的×仍显式
+关闭并删除对应临时聊天，终端关闭确认保持。未改动临时聊天的一小时TTL、
+刷新恢复及服务端生命周期契约。
+
+侧边聊天打开请求增加按scope消费一次的requestKey，防止父级重渲染或隐藏
+期间迟到的binding创建回调强行重新展开、聚焦或新增聊天。启动页再次选择
+侧边聊天沿用已创建binding；启动页／浏览器显示时工具内容仅隐藏而不卸载，
+保留已有聊天组件、事件与未发送草稿，文件和终端也继续保持原实例。仅有
+启动页时不额外渲染空工具提示，避免同一网格行形成多余内容。
+
+验证：最终源码12项Chromium回归通过（3项侧边聊天、9项定时会话工具／
+全屏），覆盖跨源隔离、隐藏／显示草稿、创建中隐藏与迟到结果、已暂停原生
+聊天恢复、启动页返回复用、显式×唯一DELETE及既有附件首消息交互。截图
+人工核对；Web typecheck、定向ESLint、production build、git diff与任务状态
+唯一性通过；Alembic唯一head为0184_cascade_directory_archives。同步更新
+按钮可访问名称断言，既有全屏用例改为核对当前“来源”区域，不再要求已隐藏
+的IDE入口。仅Web变更，无Platform、迁移、SDK、Runtime或服务器配置改动。
+沿用当前会话直接部署授权，发布验收待补记，无后续实现切片。
+
+
+#### OPS-77 Web 发布验收
+
+2026-10-29正式Web预检与受管最小上下文准备通过，发布
+`1a8a47f1438f7e6d2acd3c520e0ec03d43c5add0`，源归档SHA-256为
+`06f0635d2431cbbcd7dd7339e70671d90632ee2cfe1f63f37dba6759c368385f`。
+linux/amd64 Web镜像ID为
+`sha256:c8efeea50094d6183c24f958a9f750663140f2adf66d14b9288ed4296f049b36`。
+保留旧Web回滚镜像和服务日志，仅定向recreate Web，revision与HTTP健康通过；
+服务器配置哈希及其余47个容器的镜像和启动时间保持。无Platform、迁移、
+SDK或Runtime更新，数据库仍为0184_cascade_directory_archives。
+
+公网HTML／Agent深层路由、两项入口资源及三个包含隐藏／显示工具文案与
+工具内容样式的模块资源SHA-256与运行镜像一致；两项API鉴权边界为401。
+全新Chromium的平台登录、深层路由和根登录页通过，3859条完整网络事件中
+部署前缀API请求通过，根路径API请求为0，临时浏览器均回收。侧边聊天
+隐藏、草稿保留、迟到创建和显式关闭由本地12项受控Chromium回归验收，
+线上验收未创建或删除实际用户聊天。
+
+Web remote-release-finish通过，无过期受管上下文候选；保留最近24小时上下文、
+实际路径引用及每仓库一个回滚镜像。收尾后Web版本／健康、数据库head、配置
+及47个保护容器再次核验通过。未push，无后续实现切片。
+
+
+### OPS-78 提交阶段暂停取消投递并恢复草稿 — DONE
+
+2026-10-30将已有会话提交中的暂停与投递取消联动；共享工作台覆盖独立Agent
+Workspace和FlowRun节点宿主。点击后立即显示取消反馈，服务端确认尚未进入
+原生投递时移除本次乐观气泡，把文本、附件、会话引用、工作区引用与注释恢复
+为原binding的同一草稿快照；保留用户随后输入的内容。迟到成功／失败回调
+不能再次清空恢复草稿或污染其他会话；重新发送使用新的提交标识。取消请求
+失败显示错误并保留可重试暂停入口，不把网络取消冒充实际撤销。
+
+新增0185_message_submission_cancel及用户隔离AgentMessageSubmission表，只
+存提交UUID、binding、投递前围栏和暂停意图，不存消息、正式event或Runtime
+状态。两宿主入口先按原宿主授权并提交短事务；取消先到时写墓碑，跨API进程
+在真正调用原生send前以条件UPDATE竞争，取消胜出后同步worker即使仍在准备
+也不得投递。取消不提前释放真实worker容量；完成的准备失败才清除可重试围栏。
+RLS、ORM用户隔离、binding删除级联与窄授权共同约束；正式分派前后使用既有
+control连接池的短事务，不扩大连接预算。新API两条契约同步登记，其他契约
+基线不随本次无关schema漂移重生成。
+
+OpenHands原生事件投递已开始后无法保证撤销，竞争失败返回cancelled=false并
+复用既有interrupt；若原生append仍在途，worker在结束后检查持久暂停意图再
+interrupt，避免先暂停后投递重新运行。正式事件保留，不以隐藏已送达消息伪装
+撤回，不自动重发结果不确定的消息。首次bootstrap、历史消息重写和侧边聊天
+独立控件未改变其既有生命周期。
+
+验证：隔离PostgreSQL完整迁移到0185，17项后端回归通过，含9项新取消、
+真实HTTP／阻塞worker取消、墓碑／跨线程分派竞态、失败重试、租户／宿主
+隔离、强制RLS、删除级联、新路由契约以及0184↔0185回退重跑保留原binding。
+既有消息lane、原生guidance及模糊投递回归在绑定测试principal后通过。
+12项不同Chromium回归通过（4项新取消场景、接受确认、侧边聊天及6项定向
+定时会话工具／草稿／队列回归）；额外引用菜单用例缺少“选择引用类型”
+listbox，在未修改HEAD 9103058的独立Web快照同断言复现，未修改或计入通过。
+Web typecheck、定向ESLint、production build、受影响Ruff、git diff与任务状态
+唯一性通过；节点router原有13项E501与HEAD逐项对照保持，未记作完整lint
+通过。唯一Alembic head为0185_message_submission_cancel。无OpenHands源码、
+SDK、Runtime或服务器配置变更；沿用直接部署授权，发布验收待补记，无后续
+实现切片。
+
+
+#### OPS-78 Web／Platform 发布验收
+
+2026-10-30正式Platform／Web预检及受管最小上下文准备通过，发布
+`050a74f674ca6e0b4f65fcd5088a8d7060b1552e`。Platform源归档SHA-256为
+`456419583a4312b1cb605db27f61a2a47e0b0421d13bbb5ef8f35e32f50b3c7e`，
+Web源归档SHA-256为
+`d9b700b3cf63aa7e54a7e127fb27857319ccdce7ae96f09100c31320c2a7a462`。
+linux/amd64 Platform镜像ID为
+`sha256:fbfdedb713d2ff96265f632c6495dffb067e02e245b8e14aa6224e343dc4b0bf`，
+Web镜像ID为
+`sha256:212d3e46af10bd8ca452614b4db2f177aaab0a6adcb5a1f0005281217660b0d0`。
+保留旧镜像回滚tag和服务日志；正式migration退出0，数据库推进到
+0185_message_submission_cancel。同步recreate api、stream-api、worker和web，
+四项revision、健康／readiness及HTTP入口通过，Runtime未重建，服务器配置不变。
+
+实际API镜像中取消围栏、两宿主HTTP入口和模型映射共四项源码SHA-256
+与提交一致；只读核对新增表7列、强制RLS、租户policy和binding级联删除外键
+均存在，两个取消接口已注册。公网HTML／Agent深层路由、两项入口资源以及
+四个包含取消文案／错误码和发送框样式的模块资源SHA-256与运行镜像一致。
+新取消POST在内的API鉴权边界均为401。全新Chromium的平台登录、深层路由
+与根登录页通过，4107条完整网络事件中部署前缀API请求通过，根路径API
+请求为0，临时浏览器全部回收。线上验收只读，未发送或取消用户实际消息；
+提交取消、跨线程竞态及草稿恢复由本地17项后端和12项不同浏览器回归验证，
+已有引用菜单基线失败保持前述记录。
+
+Platform和Web remote-release-finish通过，按正式规则回收4项已过期受管
+上下文；保留最近24小时上下文、实际路径引用及每仓库一个回滚镜像。收尾后
+四项版本／健康、数据库head、服务器配置哈希及其余43个容器镜像／启动时间
+再次核验通过。未push，无后续实现切片。
+
+
+### OPS-79 运行记录节点配置职责分栏 — DONE
+
+2026-10-30将逐步／连续运行记录的节点配置页从四段堆叠、导航仅滚动定位，
+改为真正独立的四个Tab。输入与上下文只含节点输入、启动提示词和大模型
+专属上下文；Agent配置仅含主模型、额度失败备用模型和能力，以统一整行
+摘要和右侧配置操作排列；门禁单独按开始／结束纵向分组；执行记录独立展示
+历史。不改变运行、保存、输入上传、不可变冻结或后端接口语义。
+
+四个面板保持挂载，仅隐藏非活动面板，字段仍由原节点草稿状态管理；保留
+每个Tab的配置区滚动位置，页面与流程图不随内容变长而滚动。导航使用
+正式tablist／tab／tabpanel关联、选中态及roving tabindex，支持左右方向键、
+Home和End。原model／gate字段校验移入所属Tab，保存按钮title指向待补齐
+位置；专属上下文独立配置，移除弹窗中重复的预览与编辑全文，保留只读
+查看和启停状态。各入口与原保存载荷兼容，切换不清空输入、上下文或能力。
+
+验证：运行记录详情完整10项Chromium回归通过，含两种草稿真实Tab互斥、
+模型／备用／能力弹窗、输入URL和附件上传、上下文修改／启用、跨顶层Tab
+保留及原保存载荷断言；24项门禁内部滚动及跨Tab恢复通过。已完成记录
+36项能力、只读详情、运行中人工输入／取消、历史Snapshot、独立记录路由／
+刷新／浏览器返回均回归通过；另1项定时会话草稿迟到失败回归通过，共11项。
+1440与1024宽度截图人工核对，Web typecheck、定向ESLint、production build、
+git diff及任务状态唯一性通过。Alembic唯一head仍为0185_message_submission_cancel，
+无Platform、迁移、OpenHands、SDK、Runtime或服务器配置改动。沿用会话直接
+部署授权，发布验收待补记，无后续实现切片。
+
+
+#### OPS-79 Web 发布验收
+
+2026-10-30正式Web预检与受管最小上下文准备通过，发布
+`576ad6efecdc460ee1ae5aea4ebd26a68dbd2b83`，源归档SHA-256为
+`bb213c61776de361797d9759ac4bf70641437528f43270d764f7dcd0f15a5cb0`。
+linux/amd64 Web镜像ID为
+`sha256:61f3bdbc63671bd3e21bd241334ae31813cc25803e07810afd12066d78e15886`。
+保留旧Web回滚镜像和服务日志，仅定向recreate Web，revision与HTTP健康通过；
+服务器配置哈希及其余47个容器的镜像和启动时间保持。无Platform、迁移、
+SDK或Runtime更新，数据库仍为0185_message_submission_cancel。
+
+公网HTML／Agent深层路由、两项入口资源及三个包含节点上下文新文案与
+配置样式的模块资源SHA-256与运行镜像一致，两项API鉴权边界为401。全新
+Chromium的平台登录、深层路由和根登录页通过；4055条完整网络事件中
+部署前缀API请求通过，根路径API请求为0，临时浏览器均回收。实际节点
+配置与保存交互由本地11项受控Chromium回归及1440／1024截图验收，
+线上只读验收未修改实际运行记录。
+
+Web remote-release-finish通过，无过期受管上下文候选；保留最近24小时上下文、
+实际路径引用及每仓库一个回滚镜像。收尾后Web版本／健康、数据库head、
+服务器配置与47个保护容器再次核验通过。未push，无后续实现切片。
+
+
+### OPS-80 已执行节点只读会话配置视图 — DONE
+
+2026-10-30将已执行节点概览的“上下文与能力”入口改为会话配置样式的只读
+快照视图，保留概览紧凑摘要。复用Agent会话配置的分类顺序、图标、类型名称
+与列表样式；将公共展示元数据提取为capabilityPresentation，两处共同消费，
+现有可编辑会话的选中、保存、注册和检测逻辑不变。新弹窗标记“会话配置 ·
+只读”，all／plugin／MCP／skill／context／agent／hook筛选、名称／类型／
+版本搜索、只看已装配和两行列表独立工作；仅列表内部滚动。
+
+数据仅取当前Attempt历史Snapshot的节点上下文、frozen_session_contexts和
+frozen_agent_capabilities，按版本ID合并重复Context，保留未应用状态并修正
+摘要计数。列表不会读取当前能力仓库、认证目录或MCP readiness，也不补入
+快照未记录的内置能力。点击行查看冻结版本ID、digest、来源、装配状态和
+已提供的正文；节点自由文本使用配置标识，缺正文明确标注，不伪造内容。
+所有类型均无勾选、同步、注册、测试或保存动作；Context可在同一个弹窗
+查看冻结原文并返回筛选结果。支持Escape、外部点击关闭、焦点圈定、详情
+返回原行及关闭返回入口，390px与1024px布局无横向溢出。
+
+验证：运行记录详情完整13项Chromium通过，含逐步／连续只读分类、全部
+能力类型详情、冻结正文、未应用项、搜索／空结果／空快照、36项列表及
+焦点恢复，并断言查看全程无写入和实时目录／探针请求；既有编辑草稿、
+冻结配置、人工输入／取消、历史Snapshot和独立路由回归通过。另2项Agent
+会话列表选择／紧凑样式通过，共15项。扩展会话测试3项内置MCP用例在旧
+说明文本的严格断言失败；未修改HEAD f3cf378的独立Web快照同样3项同位置
+复现，未修改断言或计入通过。截图人工核对、Web typecheck、定向ESLint、
+production build、git diff和任务状态唯一性通过；唯一Alembic head仍为
+0185_message_submission_cancel。仅Web变更，无Platform、迁移、OpenHands、
+SDK、Runtime或服务器配置改动。沿用直接部署授权，发布验收待补记，无后续
+实现切片。
+
+
+#### OPS-80 Web 发布验收
+
+2026-10-30正式Web预检与受管最小上下文准备通过，发布
+`2e5e3b7c90f7be0b23bf8508ae02bee03fec1964`，源归档SHA-256为
+`6062b30302dd95a028e44e2bd3107d78e5c753eead50edfa531ff947a3f2efd2`。
+linux/amd64 Web镜像ID为
+`sha256:0b130c34f937fbfcb7639bd12fbb1eda7673aab445deeee8f13e53aebb36c640`。
+保留旧Web回滚镜像和服务日志，仅定向recreate Web，revision与HTTP健康通过；
+服务器配置哈希及其余47个容器的镜像和启动时间保持。无Platform、迁移、
+SDK或Runtime更新，数据库仍为0185_message_submission_cancel。
+
+公网HTML／Agent深层路由、两项入口资源及三个包含只读会话配置文案与
+样式的模块资源SHA-256与运行镜像一致，API鉴权边界通过。全新Chromium
+的平台登录、深层路由和根登录页通过；3870条完整网络事件中部署前缀API
+请求通过，根路径API请求为0，临时浏览器均回收。线上验收只读，未修改
+实际节点、运行记录或能力。交互由本地15项Chromium回归与截图验证；
+三项既有内置MCP旧说明文本断言失败已在未修改版本复现，保持前述记录。
+
+Web remote-release-finish通过，无过期受管上下文候选；保留最近24小时上下文、
+实际路径引用及每仓库一个回滚镜像。收尾后Web版本／健康、数据库head、
+服务器配置与47个保护容器再次核验通过。未push，无后续实现切片。
+
+
+### OPS-81 MCP 可选用户认证绑定 — DONE
+
+2026-10-30为远程 MCP 增加当前账号可选的无额外认证／Bearer Token 绑定。
+新建与版本编辑表单复用 LaunchOptionMenu，匹配认证管理中的 Token 条目；
+详情增加独立认证 Tab，切换 Tab 保留未保存选择。保持版本历史与内容左右
+布局、内部滚动、紧凑两列表单；支持键盘、Escape、外部点击收起和390px布局。
+认证单独修改不发布能力版本；配置发布与认证引用写入同一事务，失败整体
+回滚。保留 stdio、内置 MCP、原有 OAuth／Header 配置及历史版本编辑行为。
+
+新增0186_mcp_authentication迁移，为用户认证默认绑定和原生创建使用审计
+建立两张强制RLS表。只保存版本、credential引用／row_version、消费者及
+服务地址digest，不保存明文Token。共享能力和JSON内容不随用户认证改变；
+后端校验当前用户、Token类型、主机／显式端口／目录边界及编码路径，保存
+采用乐观锁；装配与测试重新校验已删除或改过范围的认证。
+
+Agent新建、既有会话首次动态装配、FlowRun节点会话和节点执行在正式调用
+边界共用认证解析。Token经OpenHands原生Secret Registry注入，MCP使用原生
+bearer变量引用；能力物化文件仅保存引用。创建时记录非敏感使用快照，默认
+认证后续变更不能静默改写既有消费者。当前固定SDK的同名工具替换有冲突
+保护，未新增不可用的原位重连按钮；更新认证后使用新会话，原连接继续保留。
+
+详情／批量连接测试携带当前账号认证，经原生MCP探针获取工具目录；详情
+支持用户显式指定只读工具及JSON参数进一步验证，结果只投影调用状态和
+数字业务码，不回传文档正文或凭据。内置历史MCP继续仅检测工具目录。
+同步补充能力Skill的Bearer绑定、测试及既有连接边界说明。
+
+验证：真实PostgreSQL定向后端共40项不同用例通过，覆盖认证隔离、CAS、
+原子发布、URL范围、原生创建／动态装配／探针、冻结引用、实际非超级用户
+RLS隔离、正式迁移完整链与0185／0186往返；既有OAuth、Runtime MCP和会话
+装配回归通过。浏览器15项不同用例通过，含新建／保存、只读工具验证、
+Tab保留、键盘和外部关闭、390／1440截图、历史编辑及原批量／内置检测。
+Web typecheck、定向ESLint、production build、受影响Python Ruff、diff检查
+通过，唯一Alembic head为0186_mcp_authentication。固定实际镜像探针完成
+原生Secret展开、Bearer保护的工具发现及只读调用、公开序列化脱敏；实际
+四包1.54.0，provenance源码73e3cd8e4d74ff30c9ed794baf72d977800509d7及归档
+5fcd3fc5e628572a7e223c954e8fd792b78d768f1d8eba9419a4d88d6490308a与source lock一致。
+无OpenHands、SDK、Runtime基线或服务器配置改动。沿用直接部署授权，
+发布验收待补记；未操作实际金山账号或文档，无后续实现切片。
+
+
+#### OPS-81 Platform／Web 发布验收
+
+2026-10-30正式Platform与Web预检、受管最小上下文准备通过，发布
+`aafb2dcf7733321ecf3a88facebae6206ba9f3be`。Platform源归档SHA-256为
+`b8cb80696bda8c717e524dbab836b846db565f8a21be847cf02fc62188295925`，
+Web为`50d93b4bf57cae3a31b896ab64321200f703f878a2cdbc5a3bf29c09b861fb41`。
+linux/amd64平台镜像ID为
+`sha256:fc13698215374e45aa984ec40261611c64b04b7e1b67789a7ed04907cfc6e359`，
+Web为`sha256:182401d0873d61b201a7d6f2b7692119d06c8576de2c4e97bb375121c49c3bdb`。
+
+保留旧镜像回滚tag及服务日志；正式migration退出0，数据库由0185推进至
+0186_mcp_authentication。同步recreate api、stream-api、worker和web，四项
+revision、健康／readiness及HTTP入口通过；服务器配置哈希与其余43个容器
+镜像／启动时间保持。未重建Runtime Provider、独立Agent Runtime或既有
+FlowRun容器，未改变SDK／OpenHands基线。
+
+实际平台镜像中六项认证解析、宿主与配置相关源码SHA-256与提交一致；
+GET／PUT认证接口已注册，两张新增表的字段、强制RLS、租户policy、唯一键
+与版本删除级联外键经只读核验通过。现有登录身份读取已发布远程MCP的
+认证绑定接口通过，响应只含引用和状态；未写入实际用户资源或调用金山工具。
+
+公网HTML／Agent深层路由、两项入口资源及三个包含认证表单、说明和样式
+的模块资源SHA-256与运行镜像一致，API鉴权边界通过。全新Chromium的平台
+登录、深层路由和根登录页通过；4061条完整网络事件中部署前缀API请求通过，
+根路径API请求为0，临时浏览器全部回收。真实Bearer握手和只读调用由本地
+固定实际镜像的受控MCP服务验证，金山真实账号与文档未参与验收。
+
+Platform与Web remote-release-finish通过，无过期受管上下文候选；保留最近
+24小时上下文、实际路径引用及每仓库一个回滚镜像。收尾后四项版本／健康、
+数据库head、服务器配置及43个保护容器再次核验通过。未push，无后续实现切片。
+
+
+### OPS-82 顶栏固定导航收起与临时标签溢出 — DONE
+
+依赖 OPS-81 DONE。固定导航通过细小边界按钮平滑收起为单页宽度的自定义
+下拉入口；临时标签保持宽度，优先显示最新打开／从隐藏区提升的标签，
+悬停或键盘打开右侧溢出菜单，选中后移到最左侧，关闭后补入隐藏标签。
+仅变更顶栏展示与导航顺序，保留页面挂载、权限及运行／设置标签路由。
+
+固定导航边界使用低对比小箭头，280ms平滑收起为132px自定义菜单，支持
+再次展开；偏好按账号隔离。临时标签固定168px，以最新打开或显式提升的
+顺序展示，空间不足由右侧双箭头菜单承载；选择隐藏项移至首位，关闭后
+依次补位。混合设置／运行标签按实际显示顺序选择右邻、否则左邻；保留
+正式运行路由、权限过滤、页面挂载与筛选状态。旧sessionStorage顺序迁移
+至v2，刷新不改变提升顺序。菜单支持键盘、Escape、外部关闭与视口边界。
+
+验证：14项定向浏览器用例通过，覆盖动画收起／展开、完整宽度、悬停／
+键盘菜单、隐藏项提升／补位／逐项关闭、1024视口、页面状态保留、刷新、
+账号权限／存储容错、混合标签关闭、记录深链与历史、节点会话归属。
+Web typecheck、定向ESLint、production build及diff检查通过；构建仅有既有
+大chunk提示。1024／1180／1440截图检查通过。唯一Alembic head保持
+0186_mcp_authentication。仅Web变更，无API、SDK、Runtime或服务器配置
+改动；沿用直接部署授权，发布验收待补记，无后续实现切片。
+
+
+#### OPS-82 Web 发布验收
+
+2026-10-30正式Web预检与commit绑定的受管最小上下文准备通过，发布
+`b0ab780347189d24fb9b0232b6ae7241092df4fd`。源码归档SHA-256为
+`f08639b77c6c91ce7bd2536cb2db311ee71edf42aaee233eedbda2d29fc9b22b`，
+linux/amd64 Web镜像ID为
+`sha256:cfe41bdae443a8477c5c5b9997844ef5a1b246db46bab5477e8235ac6012d7ff`。
+
+保留旧Web回滚镜像及服务日志，仅recreate Web；实际revision、健康和HTTP
+入口通过。服务器配置哈希及其余47个容器的镜像／启动时间保持，数据库
+head仍为0186_mcp_authentication；API／stream-api／worker、Provider与既有
+Runtime均未更新。
+
+公网HTML与Agent深层路由一致，两项入口资源和三项顶栏JS／CSS模块资源
+SHA-256与运行镜像一致，API鉴权边界通过。全新Chromium的平台登录、
+深层路由和根登录页通过；4783条完整网络事件中部署前缀API请求通过，
+根路径API请求为0，临时浏览器全部回收。另以隔离账号API夹具加载实际
+已发布静态资源，验证固定菜单收起／展开、隐藏标签提升、168px宽度、
+Escape及关闭补位；无JavaScript错误或根API请求，未写入实际用户资源。
+
+remote-release-finish成功，回收两项超过保留期限且无引用的受管上下文；
+保留最近24小时上下文、实际路径引用及每仓库一个回滚镜像。收尾后再次
+核验Web版本／健康、数据库head、服务器配置与47个保护容器通过。未push，
+无后续实现切片。
+
+
+### OPS-83 运行配置校验、节点状态与页面状态保留 — DONE
+
+依赖 OPS-82 DONE。定位必填配置并就地提示、统一保存／启动布局与启动门控，
+区分当前流转与可提前编辑节点；保留目录和临时运行页的选择／筛选／滚动，
+收窄节点配置侧栏，复用 Agent 会话的能力选择与图标。
+
+逐步草稿与连续计划共用严格可写Agent／Gate投影，移除只读capabilities、
+Gate ID与hash等审计字段，保留备用模型；修复已保存配置再次保存被拒绝。
+必填／长度／备用模型和门禁校验在提交前定位到所属Tab及模块，设置
+aria-invalid与就地提示；服务端字段错误也定位到模块，输入弹窗逐项校验
+URL／文件、聚焦首个缺项，普通网络或服务错误仍保留真实反馈。
+
+保存按钮改为“保存”，与启动按钮统一高度和垂直对齐；未满足已保存配置、
+必需输入、前驱接受、运行环境及无未保存编辑时，启动保持可见并置灰。
+修复undefined ID相等导致所有未执行节点均显示当前标记，流转位置只按
+正式NodeRun及已接受前驱解析；其他节点保持灰色且可提前编辑、保存。
+节点侧栏固定350px，四个配置Tab完整可见，保留表单独立滚动。
+
+每个临时记录独立保留执行选择，Activity重新连接不重置配置Tab及目录
+滚动／信息展开状态；返回目录保留筛选、多选和分组位置。节点能力选择
+直接复用Agent CapabilityManager，以能力草稿模式展示相同图标、复选框、
+类型／组合筛选与键盘交互；门户渲染避免节点表单样式污染共享弹窗。
+取消／关闭保留本节点前端选择，只有外层保存才提交。不新增认证语义或
+Runtime执行协议。运行端口选择器同步使用既有自定义组件。
+
+验证：42项不同的定向浏览器用例通过，覆盖字段定位、本地／服务端错误、
+严格保存载荷、编辑后禁用启动及保存后正式binding路由、前驱运行期间的
+后继编辑、已接受前驱的后继启动、唯一流转标记、1024／1440布局、Tab／
+目录完整状态保留，以及Agent／定时会话共享能力、内置MCP、过滤／多选、
+顶栏溢出和只读历史回归。截图人工核验通过。Web typecheck、定向ESLint、
+production build与diff检查通过；构建仅有既有大chunk提示。唯一Alembic
+head保持0186_mcp_authentication，无Platform、SDK或Runtime变更。沿用
+直接部署授权，仅发布Web；发布验收待补记，无后续实现切片。
+
+
+#### OPS-83 Web 发布验收
+
+2026-10-30正式Web预检、最小上下文与发布收尾通过，发布
+`11af11f0e9206083376284863ba042608fcbfd49`。源码归档SHA-256为
+`f38e4b2bc3cd8e28cd7fab1a097f7146aebbba4b7d40b9cb1d3eb7b4e71fd6ed`，
+linux/amd64 Web镜像ID为
+`sha256:123921f080581725c7f9fde5a06f3380844483b3c62f6470a37fe54b04f42fa4`。
+仅recreate Web，回滚镜像与服务日志保留；版本／健康、数据库head
+0186_mcp_authentication及47个保护容器镜像／启动时间通过，服务器配置
+哈希保持。公网HTML／Agent深层路由、两项入口资源与三项节点配置模块
+SHA-256一致，API鉴权边界及全新Chromium三种登录／深链入口通过。
+4097条完整网络事件中根API请求为0；临时浏览器回收通过。
+
+隔离账号API夹具加载实际已发布静态资源，验证350px侧栏、启动禁用、
+字段定位、共享能力图标与选择、严格保存载荷、临时Tab状态及返回目录，
+无JavaScript错误及根API请求；未写入真实用户资源。受管收尾上下文候选
+为10项；保留24小时上下文、实际引用及每仓库一个回滚镜像。收尾后再次
+核验Web健康／版本、配置和47个保护容器通过，未push。
+
+### OPS-BL1582 OpenHands baseline 1.58.2 Runtime 同步与 ask_user 发布 — DONE
+
+2026-11-05。代码 commit `c03c724eb2d173af92d8f1cbadf3a4e6e3363a8b`（含 `9b83efa5`），
+source commit `536244f6e26617a3932ae9ac49cadc65039effd2`，上游锚点
+`ce5716a3c0a955a85bb0cc4dcfaa94d5fefcda50`，四包 1.58.2，归档 SHA-256
+`8c32a625ee056641e270b3fc8c641aee61e702f7cf0de3a70db3e1f34aadef76`。
+
+SDK 侧在 `baseline` 追加 `AskUserTool`／`AskUserAction`／`AskUserObservation` 与
+`ConversationExecutionStatus.WAITING_FOR_USER_INPUT`（无提问次数上限）；平台新增
+`pending-question` 路由和 `WAITING_USER_INPUT`，Case 以 ask_user 取代 `ASK_HUMAN`，
+Web 新增问题卡片与侧栏“需要用户输入”标识。
+
+镜像：服务器侧 linux/amd64 构建，Runtime `flowweave-openhands-runtime:1` 现指向
+`sha256:ca43f7fbef507032ab967d49f19478b4698302b8cd25b1fe1786d7c3e2b1aa59`（旧镜像
+保留为 `rollback-bl1582-pre`，digest `6939d9a0afe5`）；平台
+`sha256:b1b29786171cb…`，Web `sha256:e0f455a82e565…`，均带 revision 标签。
+`contract_check.py` 在构建中暴露三处针对旧上游的断言并随 1.58 更新：tmux 套接字锁参数化、
+清理／tmpdir 实现、Agent Profile schema 3→4；其余契约未改。
+
+门禁：平台投影无运行会话；原生 331 个会话为 finished 302／paused 8／error 16／idle 2／
+stuck 3，无 running/starting/executing/stopping。服务器侧先备份 `state/`（2.3GB，权限 600），
+再执行 `runtime-replace`（RECOVERING→ACTIVE）。替换后容器 digest、`build_git_sha`、四包
+版本、provenance 与 source lock 一致；原生会话 331 个且状态分布不变；`AskUserTool` 可解析；
+migration 退出码 0（无新迁移）。Agent 会话容器、终端环境 setup、插件解析和环境构建均引用同一
+`:1` 镜像。公网首页、`/agent`、`/agent/schedules` 为 200，`pending-question` 路由对非等待会话返回
+`pending=false`。受管收尾已执行，未 push。
+
+未完成项：尚未用真实模型触发一次 ask_user 的端到端问答（未创建测试会话）；
+FR 之外既有的 32 项架构／环境测试失败为发布前即存在，未在本次处理。
+
+### OPS-BL1582b ask_user 不再暂停运行与 baseline e934488e5 Runtime 同步 — DONE
+
+2026-11-05。代码 commit `768dce932cb518a5a4bdc5bdc25bce3f45aefc65`（含 `b5c73975`），
+source commit `e934488e53a97377f8b35d1b564086a1092a6bfa`，上游锚点不变，四包 1.58.2，归档
+SHA-256 `55d2f19690ae2a3e7ec7993db697626a829f71b8ab754358549e75845026e4fd`。
+
+行为：`ask_user` 支持 `questions`（至多 3 个），调用后不改变原生执行状态；模型决定继续工作或
+以一条总结收尾。开放问题＝活动分支上最新 ask_user ActionEvent 之后无用户消息。用户回复通过
+V5 消息信封的 `answered_question` 携带被回答问题，前端以单行引用展示。
+
+镜像：服务器侧 linux/amd64 构建，Runtime `flowweave-openhands-runtime:1` 现指向
+`sha256:545557289c5761bc05dc8feb2b3595bea4aad48ac27453dce0cb2d0bc9afc243`（旧镜像保留为
+`rollback-e934488e-pre`，`ca43f7fbef50`）；平台 `sha256:66793ea87a50…`，Web
+`sha256:f2a9e0974d50…`。镜像内 `contract_check.py` status ok。
+
+门禁与切换：原生会话 336 个，error 16／finished 307／idle 2／paused 8／stuck 3，无
+running/starting/executing/stopping；服务器侧先备份 `state/`（压缩包权限 600，gzip 校验通过；
+备份期间仅一个已 finished 的历史会话目录被读到变化）。migration 退出码 0，随后重建
+runtime-provider／api／stream-api／worker，再执行 `runtime-replace`（RECOVERING→ACTIVE）。
+新 generation 容器 digest、`/server_info.build_git_sha`、四包版本与 source lock 一致，`AskUserTool`
+可解析，原生会话数量与状态分布不变。公网首页、`/agent`、`/agent/schedules` 为 200。受管收尾已执行。
+
+未完成项：尚未用真实模型触发一次“ask_user 后继续工作”的端到端问答（未创建测试会话）；
+`tests/architecture` 既有 11 项失败与发布前一致。
+
+### OPS-BL1583 ask_user 真实阻塞等待与 baseline b2131e0ef Runtime 同步 — DONE
+
+2026-11-05。代码 commit `d7ee30ead23c266db03a30cc35c5a1bb81e7f624`（含 `2aa3d164`），source commit
+`b2131e0ef31a459486f6bd716e150c7e710c8a78`，上游锚点不变，四包 1.58.2，归档 SHA-256
+`a7defbd65c78ba5e1fa26b4dd5eca3f7ddc9a546a02fc5a4873f6cb3e3e12f9a`。
+
+行为：`ask_user` 调用后会话进入原生 `WAITING_FOR_USER_INPUT` 并停止（同批含 finish 除外）。跳过不发送任何消息、
+保持等待；会话区的提问行提供“回答问题”重新打开卡片。运行中提交为追加消息，等待／暂停时提交为新消息。
+下一条用户消息是否构成答复由模型判断（未回答则重新提问）。
+
+镜像：Runtime `flowweave-openhands-runtime:1` 现为 `sha256:d48c26d42c72…`（旧镜像保留为
+`rollback-e934488e-pre2`，`545557289c57`）；平台 `sha256:29de7e1786b5…`，Web `sha256:8333c017ba62…`。
+门禁：原生会话 355 个，error 16／finished 321／idle 2／paused 13／stuck 3，无运行态；服务器侧先备份 `state/`
+（权限 600，gzip 校验通过；仅一个历史 finished 会话目录在备份期间变化）。migration 退出码 0，随后重建
+runtime-provider／api／stream-api／worker／web，再执行 `runtime-replace`（RECOVERING→ACTIVE）。新容器 digest、
+`build_git_sha`、四包版本与 source lock 一致，会话数量与状态分布不变，`/flowweave/`、`/agent`、`/agent/schedules` 为 200。
+
+未完成项：尚未用真实模型端到端触发一次 ask_user 阻塞问答（未创建测试会话）；`tests/architecture` 既有 11 项失败与发布前一致。
+
+### OPS-BL1584 ask_user 部分回答后仅重问未答问题与 baseline 89dd0d1b0 同步 — DONE
+
+SDK `baseline` 提交 `89dd0d1b0c9bccdee8bbae4eb710500d12115455`：`ask_user` 描述要求模型在用户只回答部分问题时先回应已答内容，再仅对未答问题重新调用 `ask_user`。归档 SHA-256 `63b3aebec0a76e305961040a68452a7e05e99e578b6cbf83c96072b656c32b0f`。Web 端仅发送已答问题（`ec3e5a50`）。2026-11-05 以 commit `5bf11a77d330ecd9ac36697247eb6bca18429ede` 完成 runtime 范围发布：Runtime `flowweave-openhands-runtime:1` 现为 `sha256:848f9d5f5c0a…`（旧镜像保留为 `rollback-b2131e0e-pre`，`d48c26d42c72`）；平台 `sha256:177c6ad06108…`，Web `sha256:37c2d3713bb8…`。门禁：原生会话 357 个，error 16／finished 321／idle 2／paused 15／stuck 3，无运行态；服务器侧先备份 `state/`（权限 600，gzip 校验通过；一个历史会话目录在备份期间变化）。migration 退出码 0，随后重建 runtime-provider／api／stream-api／worker／web，再执行 `runtime-replace`。新容器 digest、`build_git_sha=89dd0d1b0…`、四包 1.58.2 与 source lock 一致，`ask_user.py` 含新描述，公网首页、`/agent`、`/agent/schedules` 为 200。
+
+未完成项：尚未用真实模型端到端验证“只答部分问题后模型回应并重新提问”；`tests/architecture` 既有 11 项失败与发布前一致。
+
+### OPS-BL1585 ask_user 先处理已答问题再重问与 baseline 805bb3fe0 同步 — DONE（已部署 7c1e7604）
+
+SDK `baseline` 提交 `805bb3fe0a57cdc3e383e26019fa216a6892e608`，归档 SHA-256 `eaf4322c182d2ea80202840b43834cb72697371e479eca91aaf03dc458adb208`。线上试验（`89dd0d1b0`）发现模型在用户只答一题后立即重新调用 `ask_user`，没有先做已答问题对应的实际工作；描述改为：先依据已答内容完成实际工作并汇报，再仅对未答问题重问。Web：提问卡片出现导致会话容器变矮时，跟随最新内容的会话保持贴底，不被卡片遮挡。已随合并提交 `7c1e76046f5bc99e36951feb48145b9e2eb72b4b` 发布（含远程 origin 的 `1ee81f3b` 与另一会话的 Git 分支功能）：Runtime 镜像 `flowweave-openhands-runtime:1` = `bl-805bb3fe`（sha256:7ed73c05…），platform/web 镜像带 revision 标签，migration 退出码 0，runtime-provider/api/stream-api healthy，`runtime-replace` 后 `/server_info.build_git_sha=805bb3fe…`，公网 `/flowweave/`、`/agent`、`/agent/schedules` 均 200；发布前备份了 Agent 工作区 state。回退锚点：`rollback-89dd0d1b-pre` 标签。

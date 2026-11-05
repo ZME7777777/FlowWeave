@@ -1,11 +1,13 @@
 import type { AuthUser } from '../types';
+import { flowRunLocationFromState, flowRunPath, flowRunTabId, flowRunTabLabel, parseFlowRunPath } from '../flowRunNavigation';
 
 export type SettingsView = 'environments' | 'credentials' | 'models' | 'ldap-users';
 export type FlowRunTab = { id: string; label: string; path: string; state: unknown };
 export type ContextTab = { kind: 'settings'; view: SettingsView } | { kind: 'flow-run'; id: string };
+export const contextTabKey = (tab: ContextTab) => tab.kind === 'settings' ? `settings:${tab.view}` : `flow-run:${tab.id}`;
 type ContextTabsSnapshot = { settings: SettingsView[]; runs: FlowRunTab[]; order: ContextTab[] };
 
-const storageKey = (userId: string) => `flowweave.context-tabs.v1:${userId}`;
+const storageKey = (userId: string) => `flowweave.context-tabs.v2:${userId}`;
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object'
   ? value as Record<string, unknown>
   : {};
@@ -14,10 +16,12 @@ const record = (value: unknown): Record<string, unknown> => value && typeof valu
 // or page data. The route still performs its normal server authorization on open.
 function navigationState(value: unknown) {
   const source = record(record(value).flowweaveFlowRun);
-  if (typeof source.runId !== 'string' || typeof source.nodeRunId !== 'string' || typeof source.attemptId !== 'string') return {};
+  if (typeof source.runId !== 'string') return {};
   return {
     flowweaveFlowRun: {
-      runId: source.runId, nodeRunId: source.nodeRunId, attemptId: source.attemptId,
+      runId: source.runId,
+      nodeRunId: typeof source.nodeRunId === 'string' ? source.nodeRunId : undefined,
+      attemptId: typeof source.attemptId === 'string' ? source.attemptId : undefined,
       mode: source.mode === 'AUTOMATIC' ? 'AUTOMATIC' : 'MANUAL',
       automaticRecordId: typeof source.automaticRecordId === 'string' ? source.automaticRecordId : undefined,
       stepwiseRecordId: typeof source.stepwiseRecordId === 'string' ? source.stepwiseRecordId : undefined,
@@ -28,10 +32,11 @@ function navigationState(value: unknown) {
 export function readContextTabs(user: AuthUser): ContextTabsSnapshot {
   const snapshot: ContextTabsSnapshot = { settings: [], runs: [], order: [] };
   try {
-    const saved: unknown = JSON.parse(sessionStorage.getItem(storageKey(user.id)) ?? 'null');
+    const current = sessionStorage.getItem(storageKey(user.id));
+    const saved: unknown = JSON.parse(current ?? sessionStorage.getItem(`flowweave.context-tabs.v1:${user.id}`) ?? 'null');
     if (!Array.isArray(saved)) return snapshot;
     const seen = new Set<string>();
-    for (const value of saved) {
+    for (const value of current === null ? [...saved].reverse() : saved) {
       const tab = record(value);
       if (tab.kind === 'settings') {
         const view = tab.view;
@@ -41,22 +46,29 @@ export function readContextTabs(user: AuthUser): ContextTabsSnapshot {
         snapshot.settings.push(view);
         snapshot.order.push({ kind: 'settings', view });
       } else if (tab.kind === 'flow-run' && typeof tab.id === 'string' && tab.id) {
-        if (seen.has(`flow-run:${tab.id}`)) continue;
-        seen.add(`flow-run:${tab.id}`);
-        const root = `/flow-runs/${encodeURIComponent(tab.id)}`;
         const state = navigationState(tab.state);
-        const path = typeof tab.path === 'string' ? tab.path : root;
+        const path = typeof tab.path === 'string' ? tab.path : `/flow-runs/${encodeURIComponent(tab.id)}`;
+        const route = parseFlowRunPath(path);
+        const savedLocation = flowRunLocationFromState(state);
+        const location = route?.recordId ? route : savedLocation ?? route;
+        if (!location) continue;
+        const id = flowRunTabId(location);
+        if (seen.has(`flow-run:${id}`)) continue;
+        seen.add(`flow-run:${id}`);
+        const root = flowRunPath(location);
         const leaf = path.match(/^\/flow-runs\/([^/]+)\/nodes\/([^/]+)\/attempts\/([^/]+)\/agent-sessions(?:\/[^/?#]+)?$/);
         const source = 'flowweaveFlowRun' in state ? state.flowweaveFlowRun : undefined;
-        const validLeaf = leaf && (source
-          ? source.runId === tab.id && encodeURIComponent(source.nodeRunId) === leaf[2] && encodeURIComponent(source.attemptId) === leaf[3]
-          : leaf[1] === encodeURIComponent(tab.id));
+        const validLeaf = leaf && (source?.nodeRunId && source.attemptId
+          ? source.runId === location.runId && encodeURIComponent(source.nodeRunId) === leaf[2] && encodeURIComponent(source.attemptId) === leaf[3]
+          : leaf[1] === encodeURIComponent(location.runId));
+        const savedLabel = typeof tab.label === 'string' && tab.label ? tab.label : '正在打开运行…';
+        const runNo = savedLabel.match(/^Run #(\d+)(?:_.*)?$/)?.[1];
         snapshot.runs.push({
-          id: tab.id, label: typeof tab.label === 'string' && tab.label ? tab.label : '正在打开运行…',
-          path: path === root || validLeaf ? path : root,
-          state: path === root || validLeaf ? state : {},
+          id, label: runNo ? flowRunTabLabel(Number(runNo), location) : savedLabel,
+          path: validLeaf ? path : root,
+          state: route || validLeaf ? state : {},
         });
-        snapshot.order.push({ kind: 'flow-run', id: tab.id });
+        snapshot.order.push({ kind: 'flow-run', id });
       }
     }
   } catch { /* Missing, corrupt or unavailable storage starts with no tabs. */ }
@@ -74,5 +86,5 @@ export function saveContextTabs(userId: string, order: ContextTab[], runs: FlowR
 }
 
 export function clearContextTabs(userId: string) {
-  try { sessionStorage.removeItem(storageKey(userId)); } catch { /* storage is unavailable */ }
+  try { sessionStorage.removeItem(storageKey(userId)); sessionStorage.removeItem(`flowweave.context-tabs.v1:${userId}`); } catch { /* storage is unavailable */ }
 }

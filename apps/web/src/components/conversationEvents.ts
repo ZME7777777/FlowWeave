@@ -11,12 +11,21 @@ export function isFlowWeaveInternalProtocolMessage(value: string): boolean {
   return INTERNAL_PROTOCOL_MARKER.test(value.trimStart());
 }
 
+const APPENDED_PROTOCOL_MARKER = /\n\s*\[FLOWWEAVE_[A-Z0-9_]+\](?:\r?\n|$)/;
+
 export function projectFlowWeaveMessageContext(event: OpenHandsConversationEvent): OpenHandsConversationEvent {
   const content = event.payload.content;
   if (event.event_type !== 'MESSAGE' || typeof content !== 'string') return event;
+  // Startup requests append platform gate/result contracts after the real prompt;
+  // show only the prompt and keep the raw event untouched.
+  const source = String(event.payload.source ?? '').toLowerCase();
+  const appended = APPENDED_PROTOCOL_MARKER.exec(content);
+  if ((source === 'user' || source === 'human') && appended && appended.index > 0 && typeof event.payload.display_content !== 'string') {
+    const visible = content.slice(0, appended.index).trim();
+    if (visible) return { ...event, payload: { ...event.payload, display_content: visible } };
+  }
   const marker = MESSAGE_CONTEXT_MARKER.exec(content);
   if (!marker) return event;
-  const source = String(event.payload.source ?? '').toLowerCase();
   const displayContent = event.payload.display_content;
   if (
     (source !== 'user' && source !== 'human')
@@ -76,11 +85,16 @@ export function orderOpenHandsConversationEvents(events: OpenHandsConversationEv
   }
   const output: OpenHandsConversationEvent[] = [];
   const seen = new Set<string>();
-  const visit = (event: OpenHandsConversationEvent) => {
-    if (seen.has(event.id)) return;
-    seen.add(event.id);
-    output.push(event);
-    for (const child of children.get(event.id) ?? []) visit(child);
+  const visit = (root: OpenHandsConversationEvent) => {
+    const pending = [root];
+    while (pending.length) {
+      const event = pending.pop()!;
+      if (seen.has(event.id)) continue;
+      seen.add(event.id);
+      output.push(event);
+      const descendants = children.get(event.id) ?? [];
+      for (let index = descendants.length - 1; index >= 0; index -= 1) pending.push(descendants[index]);
+    }
   };
   for (const event of roots) visit(event);
   for (const event of events) visit(event);
@@ -94,6 +108,38 @@ export function isOpenHandsAgentReply(event: OpenHandsConversationEvent): boolea
     && event.payload.final_reply !== false
     && typeof event.payload.content === 'string'
     && event.payload.content.trim().length > 0;
+}
+
+export function projectHistoricalAgentReplies(events: OpenHandsConversationEvent[]): OpenHandsConversationEvent[] {
+  // Match the API's terminal_assistant_message_ids rule across the browser's
+  // merged windows. A stream marks every assistant message non-final; a later
+  // bounded REST window can omit the preceding reply entirely. The next formal
+  // user event still proves its identity through the native parent chain.
+  const byId = new Map(events.map(event => [event.id, event]));
+  const replyIds = new Set<string>();
+  for (const event of events) {
+    if (event.event_type !== 'MESSAGE'
+      || !['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase())) continue;
+    const visited = new Set<string>();
+    let parentId = event.payload.parent_id;
+    while (parentId && parentId !== '__root__' && !visited.has(parentId)) {
+      visited.add(parentId);
+      const parent = byId.get(parentId);
+      if (!parent) break;
+      if (parent.event_type === 'MESSAGE') {
+        const source = String(parent.payload.source ?? '').toLowerCase();
+        if (['agent', 'assistant'].includes(source)) {
+          replyIds.add(parent.id);
+          break;
+        }
+        if (['user', 'human'].includes(source)) break;
+      }
+      parentId = parent.payload.parent_id;
+    }
+  }
+  return events.map(event => replyIds.has(event.id) && event.payload.final_reply === false
+    ? { ...event, payload: { ...event.payload, final_reply: true } }
+    : event);
 }
 
 export function isOpenHandsConversationTerminalError(event: OpenHandsConversationEvent): boolean {

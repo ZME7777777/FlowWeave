@@ -31,6 +31,7 @@ from flowweave.modules.agent_sessions.application.ide import ssh_remote_descript
 from flowweave.modules.agent_sessions.public import AgentConversationMessageAttachment
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.sandboxes import public as sandboxes
+from flowweave.runtime.base import RuntimeHandle
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import NodeAttempt
 from flowweave.shared.observability import current_metrics
@@ -307,14 +308,23 @@ def _directory_cursor(kind: str, name: str) -> str:
 
 
 def _authorized_directory(
-    project_root: Path, runtime_root: PurePosixPath, roots: tuple[str, ...], parent_path: str
+    project_root: Path,
+    runtime_root: PurePosixPath,
+    roots: tuple[str, ...],
+    parent_path: str,
+    *,
+    include_hidden: bool = False,
 ) -> Path:
     parsed = PurePosixPath(parent_path)
     if (
         not parsed.is_absolute()
         or not parsed.is_relative_to(runtime_root)
         or parsed.as_posix() != parent_path
-        or any(part in {"", ".", ".."} or part.startswith(".") for part in parsed.parts)
+        or any(
+            part in {"", ".", "..", ".flowweave", ".git", ".openhands"}
+            or (part.startswith(".") and not include_hidden)
+            for part in parsed.parts
+        )
         or not any(
             parent_path == root or parent_path.startswith(root.rstrip("/") + "/") for root in roots
         )
@@ -347,6 +357,7 @@ def list_directory(
     parent_path: str | None = None,
     cursor: str | None = None,
     limit: int = 100,
+    include_hidden: bool = False,
 ) -> dict[str, Any]:
     """Read only one scope-authorized FlowRun directory page."""
 
@@ -363,7 +374,13 @@ def list_directory(
     )
     _validate_scope_roots(project_root, runtime_root, roots)
     selected_parent = parent_path or working_directory
-    parent = _authorized_directory(project_root, runtime_root, roots, selected_parent)
+    parent = _authorized_directory(
+        project_root,
+        runtime_root,
+        roots,
+        selected_parent,
+        include_hidden=include_hidden,
+    )
     after = _decode_directory_cursor(cursor)
     started_at = time.monotonic()
     outcome = "error"
@@ -376,7 +393,9 @@ def list_directory(
                 "FLOW_RUN_WORKSPACE_UNAVAILABLE", "FlowRun 工作区当前不可用", 503
             ) from exc
         for child in children:
-            if child.name.startswith("."):
+            if child.name in {".flowweave", ".git", ".openhands"} or (
+                child.name.startswith(".") and not include_hidden
+            ):
                 continue
             try:
                 metadata = child.lstat()
@@ -429,14 +448,23 @@ def list_directory(
 
 
 def _host_file(
-    project_root: Path, runtime_root: PurePosixPath, path: str, roots: tuple[str, ...]
+    project_root: Path,
+    runtime_root: PurePosixPath,
+    path: str,
+    roots: tuple[str, ...],
+    *,
+    include_hidden: bool = False,
 ) -> Path:
     parsed = PurePosixPath(path)
     if (
         not parsed.is_absolute()
         or not parsed.is_relative_to(runtime_root)
         or parsed.as_posix() != path
-        or any(part in {"", ".", ".."} or part.startswith(".") for part in parsed.parts)
+        or any(
+            part in {"", ".", "..", ".flowweave", ".git", ".openhands"}
+            or (part.startswith(".") and not include_hidden)
+            for part in parsed.parts
+        )
         or not any(path == root or path.startswith(root.rstrip("/") + "/") for root in roots)
     ):
         raise DomainError("FLOW_RUN_WORKSPACE_PATH_INVALID", "文件路径不在当前工作区范围内", 422)
@@ -610,6 +638,83 @@ def git_repositories(
     ]
 
 
+def _git_runtime_handle(db: Session, flow_run_id: str, attempt_id: str) -> RuntimeHandle:
+    name, resource_id, directory = flow_node_conversations.node_draft_terminal_resource_details(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+    )
+    return RuntimeHandle(
+        job_id=f"env-exec:{name}",
+        conversation_id="",
+        runtime_resource_id=resource_id,
+        runtime_resource_name=name,
+        workspace_root=directory,
+    )
+
+
+def list_git_branches(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    repository_path: str,
+    binding_id: str | None = None,
+    work_directory_id: str | None = None,
+) -> dict[str, Any]:
+    project_root, runtime_root, _, _ = _authorize_entry(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id
+    )
+    _, _, roots = _scope(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        work_directory_id=work_directory_id,
+        runtime_root=runtime_root,
+    )
+    _validate_scope_roots(project_root, runtime_root, roots)
+    return agent_workspace_host.git_branches(
+        project_root, str(runtime_root), roots, repository_path
+    )
+
+
+def switch_git_branch(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    repository_path: str,
+    ref: str,
+    expected_head: str,
+    expected_ref: str,
+    binding_id: str | None = None,
+    work_directory_id: str | None = None,
+) -> dict[str, Any]:
+    project_root, runtime_root, _, _ = _authorize_entry(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id
+    )
+    _, _, roots = _scope(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        work_directory_id=work_directory_id,
+        runtime_root=runtime_root,
+    )
+    _validate_scope_roots(project_root, runtime_root, roots)
+    return agent_workspace_host.runtime_git_switch(
+        _git_runtime_handle(db, flow_run_id, attempt_id),
+        project_root,
+        str(runtime_root),
+        roots,
+        repository_path,
+        ref,
+        expected_head,
+        expected_ref,
+    )
+
+
 def git_history(
     db: Session,
     *,
@@ -631,7 +736,17 @@ def git_history(
         runtime_root=runtime_root,
     )
     _validate_scope_roots(project_root, runtime_root, roots)
-    return agent_workspace_host.git_log(project_root, str(runtime_root), roots, repository_path)
+    try:
+        handle = _git_runtime_handle(db, flow_run_id, attempt_id)
+    except DomainError:
+        return agent_workspace_host.git_log(project_root, str(runtime_root), roots, repository_path)
+    return agent_workspace_host.runtime_git_history(
+        handle,
+        project_root,
+        str(runtime_root),
+        roots,
+        repository_path,
+    )
 
 
 def sync_git_repository(
@@ -655,7 +770,13 @@ def sync_git_repository(
         runtime_root=runtime_root,
     )
     _validate_scope_roots(project_root, runtime_root, roots)
-    return agent_workspace_host.git_sync(project_root, str(runtime_root), roots, repository_path)
+    return agent_workspace_host.runtime_git_sync(
+        _git_runtime_handle(db, flow_run_id, attempt_id),
+        project_root,
+        str(runtime_root),
+        roots,
+        repository_path,
+    )
 
 
 def git_changes(
@@ -778,6 +899,7 @@ def read_file(
     draft_attachment_owner_id: str | None = None,
     preview: bool = False,
     offset: int = 0,
+    include_hidden: bool = False,
 ) -> tuple[bytes, str, str, int | None, int | None]:
     project_root, runtime_root, _, _ = _authorize_entry(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id
@@ -807,6 +929,7 @@ def read_file(
         runtime_root,
         path,
         (str(runtime_root / "uploads"),) if is_draft_attachment else roots,
+        include_hidden=include_hidden,
     )
     try:
         size = candidate.stat().st_size

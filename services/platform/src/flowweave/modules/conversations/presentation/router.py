@@ -51,6 +51,9 @@ def _project_stream_event(event: dict[str, Any]) -> dict[str, Any]:
     projected_payload = dict(payload)
     if str(payload.get("source") or "").lower() in {"user", "human"}:
         projected_payload["display_content"] = display_content
+    answered = conversations.project_answered_question(payload["content"])
+    if answered and str(payload.get("source") or "").lower() in {"user", "human"}:
+        projected_payload["answered_question"] = answered
     if references:
         projected_payload["conversation_references"] = list(references)
     if workspace_references:

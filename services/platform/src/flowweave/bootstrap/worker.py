@@ -22,6 +22,7 @@ from flowweave.modules.agent_workspaces.application.service import (
     ensure_default_agent_workspace,
     recover_default_agent_workspace_runtime_task,
 )
+from flowweave.modules.cases.application.feedback import recover_feedback
 from flowweave.modules.environments.public import (
     expire_setup_sessions,
     recover_environment_cleanup_tasks,
@@ -34,8 +35,10 @@ from flowweave.modules.sandboxes.public import reconcile_managed_sandboxes
 from flowweave.modules.tasks.application.handlers import handle, record_terminal_failure
 from flowweave.modules.tasks.application.service import (
     Lease,
+    TaskDeferred,
     claim,
     cleanup_terminal,
+    defer,
     fail,
     heartbeat,
     recover_expired,
@@ -98,6 +101,8 @@ _MAINTENANCE_TASK_TYPES = frozenset(
         "CLEANUP_ENVIRONMENT_CREDENTIALS",
         "CLEANUP_CAPABILITY_IMPORT",
         "CLEANUP_DRAFT_ATTACHMENT",
+        "CLEANUP_AGENT_WORK_DIRECTORY",
+        "DELETE_MANAGED_AGENT_CONVERSATIONS",
         "EXPIRE_PLUGIN_SOURCE",
         "EXPIRE_AGENT_SIDEBAR_CONVERSATION",
     }
@@ -110,6 +115,8 @@ _DELIVERY_TASK_TYPES = frozenset(
         "START_AUTOMATIC_ATTEMPT",
         "ADVANCE_AUTOMATIC_ATTEMPT",
         "DELIVER_AGENT_CONVERSATION_SCHEDULE",
+        "BOOTSTRAP_CASE_CONTROL_ROUND",
+        "DELIVER_CASE_FEEDBACK",
         "WATCH_AGENT_TASK_TIMEOUT",
         "CONFIRM_AGENT_TASK_TIMEOUT",
         "RESUME_AGENT_TASK_TIMEOUT",
@@ -279,7 +286,11 @@ class TaskWorker:
             "DELETE_NODE_RUN_RECORD",
             "DELETE_AUTOMATIC_RUN_RECORD",
             "CLEANUP_DELETED_CONVERSATION_ATTACHMENTS",
+            "CLEANUP_AGENT_WORK_DIRECTORY",
+            "DELETE_MANAGED_AGENT_CONVERSATIONS",
             "DELIVER_AGENT_CONVERSATION_SCHEDULE",
+            "BOOTSTRAP_CASE_CONTROL_ROUND",
+            "DELIVER_CASE_FEEDBACK",
             "WATCH_AGENT_TASK_TIMEOUT",
             "CONFIRM_AGENT_TASK_TIMEOUT",
             "RESUME_AGENT_TASK_TIMEOUT",
@@ -304,6 +315,7 @@ class TaskWorker:
                         await session.run_sync(
                             lambda db: (mark_uow_owned(db), recover_runtime_deliveries(db))[1]
                         )
+                        await session.run_sync(recover_feedback)
                         await session.run_sync(
                             lambda db: (mark_uow_owned(db), scan_due_flow_run_schedules(db))[1]
                         )
@@ -426,8 +438,13 @@ class TaskWorker:
                 with session_factory() as session:
                     mark_uow_owned(session)
                     try:
-                        handle(session, task, lease)
-                        if not succeed(session, lease, commit=False):
+                        try:
+                            handle(session, task, lease)
+                        except TaskDeferred as waiting:
+                            completed = defer(session, lease, waiting, commit=False)
+                        else:
+                            completed = succeed(session, lease, commit=False)
+                        if not completed:
                             session.rollback()
                             run_rollback_actions(session)
                             return False
@@ -519,6 +536,7 @@ class TaskWorker:
                         await session.run_sync(
                             lambda db: (mark_uow_owned(db), recover_runtime_deliveries(db))[1]
                         )
+                        await session.run_sync(recover_feedback)
                         await session.run_sync(
                             lambda db: (mark_uow_owned(db), scan_due_flow_run_schedules(db))[1]
                         )

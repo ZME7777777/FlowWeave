@@ -19,11 +19,16 @@ from flowweave.modules.agent_sessions import public as agent_sessions
 from flowweave.modules.agent_sessions.application import (
     child_activity,
     child_sessions,
+    message_submissions,
     resumable_attachments,
 )
 from flowweave.modules.agent_sessions.application import usage as usage_projection
 from flowweave.modules.agent_sessions.application.activity_reconciliation import (
     read_activity_completion,
+)
+from flowweave.modules.agent_sessions.application.capability_versions import (
+    current_capabilities,
+    validate_skill_upgrade,
 )
 from flowweave.modules.agent_sessions.application.child_relations import (
     guard_main_route,
@@ -48,6 +53,7 @@ from flowweave.modules.agent_sessions.application.conversations import (
     initial_user_event_id,
     message_payload,
     normalized_first_sentence,
+    project_answered_question,
     project_conversation_references,
     record_message_attachments,
     resolve_conversation_references,
@@ -100,6 +106,10 @@ from flowweave.modules.agent_sessions.public import (
     AgentConversationMessageAttachment,
 )
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
+from flowweave.modules.catalog.application import mcp_authentication
+from flowweave.modules.catalog.application.platform_capabilities import (
+    require_user_configurable_capability,
+)
 from flowweave.modules.catalog.public import resolve_version
 from flowweave.modules.credentials.application.service import credentials_for_agent
 from flowweave.modules.environments.public import (
@@ -566,6 +576,16 @@ def _binding_for_attempt(
     return item
 
 
+def authorize_node_message_submission(
+    db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str,
+) -> None:
+    binding = _binding_for_attempt(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id,
+    )
+    if binding.owner_user_id != current_user_id():
+        raise not_found("flow_run_conversation_binding", binding_id)
+
+
 def node_conversation_binding(
     db: Session,
     *,
@@ -633,10 +653,12 @@ def _node_session_dict(db: Session, item: AgentConversationBinding) -> dict[str,
                 "capability_key": capability.capability_key,
                 "digest": capability.digest,
             }
-            for capability in db.scalars(
-                select(AgentConversationCapability)
-                .where(AgentConversationCapability.binding_id == item.id)
-                .order_by(AgentConversationCapability.position)
+            for capability in current_capabilities(
+                db.scalars(
+                    select(AgentConversationCapability)
+                    .where(AgentConversationCapability.binding_id == item.id)
+                    .order_by(AgentConversationCapability.position)
+                )
             )
         ],
         "streaming_callback_ready": item.streaming_callback_ready,
@@ -743,7 +765,7 @@ def _node_session_page_dicts(
                 AgentConversationCapability.position,
             )
         )
-        for capability in capabilities:
+        for capability in current_capabilities(capabilities):
             capabilities_by_binding[capability.binding_id].append(
                 {
                     "id": capability.capability_version_id,
@@ -1575,7 +1597,7 @@ def _create_native_conversation(
         runtime_sandbox_id=connection.managed_runtime_id,
         runtime_resource_name=connection.resource_name,
         runtime_base_url=f"http://{connection.resource_name}:8000",
-        conversation_secrets=conversation_secrets,
+        conversation_secrets={**request.conversation_secrets, **conversation_secrets},
     )
     if environment.runtime_protocol_profile == "OH_FW_V4":
         db.commit()
@@ -1805,7 +1827,7 @@ def _activate_node_bootstrap(
     *,
     binding: AgentConversationBinding,
     command: AgentConversationCommand,
-    initial_event_id: str,
+    initial_event_id: str | None,
     content: str,
     attachments: tuple[dict[str, str | int], ...],
 ) -> dict[str, Any]:
@@ -1819,7 +1841,8 @@ def _activate_node_bootstrap(
     binding.updated_at = activated_at
     command.state = "SUCCEEDED"
     command.updated_at = binding.updated_at
-    record_message_attachments(db, binding, initial_event_id, content, attachments)
+    if initial_event_id is not None:
+        record_message_attachments(db, binding, initial_event_id, content, attachments)
     enqueue_title_task(db, binding, content)
     db.add(
         HumanAction(
@@ -1836,6 +1859,7 @@ def _activate_node_bootstrap(
         "conversation": _node_session_dict(db, binding),
         "accepted": True,
         "cursor": initial_event_id,
+        "event_id": initial_event_id,
     }
 
 
@@ -1993,7 +2017,7 @@ def _create_or_reload_node_bootstrap(
         runtime_sandbox_id=connection.managed_runtime_id,
         runtime_resource_name=connection.resource_name,
         runtime_base_url=f"http://{connection.resource_name}:8000",
-        conversation_secrets=conversation_secrets,
+        conversation_secrets={**request.conversation_secrets, **conversation_secrets},
     )
     if environment.runtime_protocol_profile == "OH_FW_V4":
         db.commit()
@@ -2015,6 +2039,7 @@ def bootstrap_node_conversation(
     references: tuple[dict[str, str], ...] = (),
     workspace_references: tuple[dict[str, str], ...] = (),
     annotations: tuple[dict[str, Any], ...] = (),
+    goal_objective: str | None = None,
     legacy_image_urls: tuple[str, ...] = (),
     conversation_id: str | None,
     work_directory_id: str | None,
@@ -2024,6 +2049,17 @@ def bootstrap_node_conversation(
     """Lazily create a node Conversation and durably reconcile its first event."""
 
     text = content.strip()
+    normalized_goal_objective = goal_objective.strip() if goal_objective else None
+    if normalized_goal_objective and (
+        attachments or references or workspace_references or annotations or legacy_image_urls
+    ):
+        raise DomainError(
+            "AGENT_GOAL_CONTEXT_UNSUPPORTED",
+            "目标模式暂不支持附件、引用或批注；请先移除这些内容后启动",
+            422,
+        )
+    if normalized_goal_objective and text != normalized_goal_objective:
+        raise DomainError("AGENT_GOAL_OBJECTIVE_MISMATCH", "目标内容必须与首条消息一致", 422)
     if references:
         raise DomainError(
             "AGENT_CONVERSATION_REFERENCE_UNAVAILABLE",
@@ -2071,11 +2107,14 @@ def bootstrap_node_conversation(
         idempotency_key=idempotency_key,
     )
     if binding is not None and command is not None:
-        if binding.lifecycle == "ACTIVE" and binding.initial_user_event_id is not None:
+        if binding.lifecycle == "ACTIVE" and (
+            binding.initial_user_event_id is not None or normalized_goal_objective is not None
+        ):
             return {
                 "conversation": _node_session_dict(db, binding),
                 "accepted": True,
                 "cursor": binding.initial_user_event_id,
+                "event_id": binding.initial_user_event_id,
             }
         if command.state == "AMBIGUOUS":
             try:
@@ -2183,6 +2222,35 @@ def bootstrap_node_conversation(
         raise
 
     runtime = get_runtime()
+    if normalized_goal_objective:
+        try:
+            runtime.start_goal(handle, normalized_goal_objective, 3)
+        except DomainError:
+            try:
+                context = sandboxes.node_attempt_workspace_context(
+                    db, flow_run_id=flow_run_id, node_attempt_id=attempt_id
+                )
+                delete_owned_attachment_files(
+                    context.host_working_directory,
+                    str(context.runtime_working_directory),
+                    binding.id,
+                )
+            except DomainError:
+                pass
+            try:
+                runtime.delete_conversation(handle)
+            except DomainError:
+                pass
+            _delete_node_bootstrap_reservation(db, binding, command)
+            raise
+        return _activate_node_bootstrap(
+            db,
+            binding=binding,
+            command=command,
+            initial_event_id=None,
+            content=normalized_goal_objective,
+            attachments=(),
+        )
     try:
         delivered = runtime.send_message(handle, prompt, image_urls)
     except DomainError as exc:
@@ -2363,7 +2431,9 @@ def _capture_binding_usage(db: Session, binding: AgentConversationBinding) -> No
 
     try:
         batch = get_runtime().read_active_events(_handle(db, binding.id))
-        usage_projection.capture(db, binding, batch.usage)
+        usage_projection.capture(
+            db, binding, batch.usage, stored_event_count=batch.stored_event_count
+        )
     except Exception:
         # Runtime replacement or a transient transport failure must not make
         # a read-only locator unavailable. The next event read retries it.
@@ -2966,6 +3036,7 @@ def _event_batch_dict(
             batch.events,
             conversation_completed=bool(batch.result and batch.result.status == "COMPLETED"),
             terminal_event_missing=terminal_event_missing,
+            execution_status=execution_status,
         ),
     }
 
@@ -3234,7 +3305,7 @@ def dispatch_running_node_message(
         )
     try:
         return (
-            runtime.send_message(prepared.handle, prompt, image_urls),
+            message_submissions.dispatch(runtime, prepared.handle, prompt, image_urls),
             queued_during_turn,
             compacted,
         )
@@ -3304,6 +3375,7 @@ def finalize_running_node_message(
     return {
         "accepted": True,
         "cursor": result.cursor,
+        "event_id": result.cursor,
         "compacted": compacted,
         "queued_during_turn": queued_during_turn,
     }
@@ -3397,6 +3469,7 @@ def send_node_message(
     return {
         "accepted": True,
         "cursor": result.cursor,
+        "event_id": result.cursor,
         "compacted": compacted,
         "queued_during_turn": queued_during_turn,
     }
@@ -3781,6 +3854,7 @@ def register_node_conversation_capabilities(
         if version_id in seen_versions:
             raise DomainError("AGENT_CONVERSATION_CAPABILITY_DUPLICATE", "能力不能重复选择", 422)
         published = resolve_version(db, version_id)
+        require_user_configurable_capability(published)
         capability_type = published.package.capability_type
         if capability_type not in {"SKILL", "MCP", "PLUGIN"}:
             raise DomainError("AGENT_CAPABILITY_INVALID", "该能力不能加载到 Agent 会话", 422)
@@ -3800,9 +3874,12 @@ def register_node_conversation_capabilities(
             )
         )
     )
-    existing_versions = {reference.capability_version_id for reference in existing}
-    existing_names = {
-        (reference.capability_type, reference.capability_key) for reference in existing
+    existing_versions = {
+        reference.capability_version_id for reference in current_capabilities(existing)
+    }
+    existing_by_name = {
+        (reference.capability_type, reference.capability_key): reference
+        for reference in current_capabilities(existing)
     }
     pending: list[tuple[Any, str]] = []
     already_loaded: list[str] = []
@@ -3811,12 +3888,10 @@ def register_node_conversation_capabilities(
         if version_id in existing_versions:
             already_loaded.append(version_id)
             continue
-        if (capability_type, published.package.capability_key) in existing_names:
-            raise DomainError(
-                "AGENT_CONVERSATION_CAPABILITY_CONFLICT", "同类型同名称能力已加载其他版本", 409
-            )
+        previous = existing_by_name.get((capability_type, published.package.capability_key))
+        if previous is not None:
+            validate_skill_upgrade(db, previous, published)
         pending.append((published, capability_type))
-        existing_names.add((capability_type, published.package.capability_key))
 
     if not pending:
         return {
@@ -3852,8 +3927,15 @@ def register_node_conversation_capabilities(
     for published, capability_type in pending:
         version_id = published.version.id
         try:
-            plugin_name = materialize_agent_workspace_capability_marketplace(
+            material, auth_secrets = mcp_authentication.prepare_material(
+                db,
                 frozen_runtime_capability(db, published, capability_type),
+                f"conversation:{binding.id}",
+            )
+            if auth_secrets:
+                runtime.update_conversation_secrets(handle, auth_secrets)
+            plugin_name = materialize_agent_workspace_capability_marketplace(
+                material,
                 host_root=host_root,
                 runtime_root=runtime_root,
                 marketplace_name=marketplace_name,
@@ -4122,7 +4204,11 @@ def rerun_node_message(
     binding.last_connected_at = activity_at
     binding.updated_at = activity_at
     finish(db)
-    return {"accepted": True, "cursor": result.cursor}
+    return {
+        "accepted": True,
+        "cursor": result.cursor,
+        "event_id": result.cursor,
+    }
 
 
 def fork_node_conversation(
@@ -4740,14 +4826,28 @@ def resume_node_conversation(
 
 def control_goal(
     db: Session,
-    binding_id: str,
     *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
     action: str,
     objective: str | None,
     max_iterations: int,
-) -> dict[str, Any]:
+) -> dict[str, bool]:
+    _assert_node_session_writable(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
+    _binding_for_attempt(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        lock=True,
+    )
     runtime = get_runtime()
-    handle = _handle(db, binding_id)
+    handle = _node_handle(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
+    )
     if action == "START":
         runtime.start_goal(handle, objective or "", max_iterations)
     elif action == "STOP":
@@ -4778,6 +4878,7 @@ __all__ = (
     "control_goal",
     "create_conversation",
     "create_flow_run_conversation",
+    "project_answered_question",
     "create_node_conversation",
     "bootstrap_node_conversation",
     "flow_run_runtime_stream_details",

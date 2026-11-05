@@ -1,0 +1,119 @@
+import { ArrowDown, ArrowUp, LoaderCircle, Search, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import type { OpenHandsConversationEvent } from '../../types';
+import { conversationSearchPattern, conversationSearchText } from '../conversationSearch';
+import { isFlowWeaveInternalProtocolMessage, isOpenHandsAgentReply } from '../conversationEvents';
+
+interface SearchHit {
+  eventId: string;
+  content: string;
+}
+
+function searchableContent(event: OpenHandsConversationEvent): SearchHit | undefined {
+  if (event.event_type !== 'MESSAGE' && event.event_type !== 'COMPLETED') return undefined;
+  const source = String(event.payload.source ?? '').toLowerCase();
+  const content = event.event_type === 'MESSAGE'
+    ? (typeof event.payload.display_content === 'string' ? event.payload.display_content : event.payload.content)
+    : event.payload.content;
+  if (typeof content !== 'string' || !content.trim()) return undefined;
+  if (event.event_type === 'MESSAGE' && (source === 'user' || source === 'human')) {
+    return isFlowWeaveInternalProtocolMessage(content) ? undefined : { eventId: event.id, content };
+  }
+  return event.event_type === 'COMPLETED' || isOpenHandsAgentReply(event)
+    ? { eventId: event.id, content }
+    : undefined;
+}
+
+export interface InConversationSearchHit {
+  eventId: string;
+  query: string;
+  matchIndex: number;
+  eventIds: string[];
+  navigationId: number;
+}
+
+export function InConversationSearch({ events, onLocate }: {
+  events: OpenHandsConversationEvent[];
+  onLocate: (hit: InConversationSearchHit | undefined) => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [submittedQuery, setSubmittedQuery] = useState('');
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [navigationId, setNavigationId] = useState(0);
+  const [searching, setSearching] = useState(false);
+  const searchTimer = useRef<number | undefined>(undefined);
+  const hasQuery = Boolean(submittedQuery);
+  const searchableEvents = useMemo(() => hasQuery ? events.flatMap(event => {
+    const hit = searchableContent(event);
+    return hit ? [{ ...hit, content: conversationSearchText(hit.content) }] : [];
+  }) : [], [events, hasQuery]);
+  const hits = useMemo(() => {
+    if (!submittedQuery) return [];
+    const knownIds = new Set<string>();
+    return searchableEvents.flatMap(hit => {
+      if (knownIds.has(hit.eventId)) return [];
+      knownIds.add(hit.eventId);
+      return Array.from(hit.content.matchAll(conversationSearchPattern(submittedQuery)), (_, matchIndex) => ({ eventId: hit.eventId, matchIndex }));
+    });
+  }, [searchableEvents, submittedQuery]);
+  const eventIds = useMemo(() => [...new Set(hits.map(hit => hit.eventId))], [hits]);
+  useEffect(() => () => {
+    if (searchTimer.current !== undefined) window.clearTimeout(searchTimer.current);
+  }, []);
+  useEffect(() => {
+    setActiveIndex(index => hits.length ? Math.min(index, hits.length - 1) : 0);
+  }, [hits.length]);
+  const activeHit = hits[Math.min(activeIndex, hits.length - 1)];
+  useEffect(() => {
+    onLocate(activeHit ? { ...activeHit, query: submittedQuery, eventIds, navigationId } : undefined);
+  }, [activeHit, eventIds, navigationId, onLocate, submittedQuery]);
+  const submit = (event?: FormEvent<HTMLFormElement>) => {
+    event?.preventDefault();
+    if (searchTimer.current !== undefined) window.clearTimeout(searchTimer.current);
+    const nextQuery = query.trim();
+    if (!nextQuery) {
+      setSubmittedQuery('');
+      setActiveIndex(0);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    if (searchTimer.current !== undefined) window.clearTimeout(searchTimer.current);
+    searchTimer.current = window.setTimeout(() => {
+      setSubmittedQuery(nextQuery);
+      setActiveIndex(0);
+      setNavigationId(value => value + 1);
+      setSearching(false);
+    }, 180);
+  };
+  const move = (direction: -1 | 1) => {
+    if (!hits.length) return;
+    const nextIndex = (activeIndex + direction + hits.length) % hits.length;
+    setActiveIndex(nextIndex);
+    setNavigationId(value => value + 1);
+  };
+  const clear = () => {
+    if (searchTimer.current !== undefined) window.clearTimeout(searchTimer.current);
+    setQuery('');
+    setSubmittedQuery('');
+    setActiveIndex(0);
+    setSearching(false);
+  };
+  return <form className={`agent-in-conversation-search${hasQuery ? ' has-results' : ''}`} role="search" onSubmit={submit}>
+    {searching ? <LoaderCircle className="agent-in-conversation-search-spinner" size={15} aria-label="正在搜索"/> : <Search size={15}/>}<input aria-label="搜索当前会话" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索聊天…" onKeyDown={event => {
+      if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        if (query.trim() === submittedQuery && submittedQuery && !searching) move(event.shiftKey ? -1 : 1);
+        else submit();
+      }
+      if (event.key === 'Escape' && (query || submittedQuery)) {
+        event.preventDefault();
+        clear();
+      }
+    }}/>
+    {hasQuery && <output aria-live="polite">{hits.length ? `${activeIndex + 1} 个结果，共 ${hits.length} 个结果` : '0 个结果'}</output>}
+    {hasQuery && <span className="agent-in-conversation-search-navigation"><button type="button" aria-label="上一个搜索结果" title="上一个结果（Shift+Enter）" disabled={!hits.length} onClick={() => move(-1)}><ArrowUp size={15}/></button><button type="button" aria-label="下一个搜索结果" title="下一个结果（Enter）" disabled={!hits.length} onClick={() => move(1)}><ArrowDown size={15}/></button></span>}
+    <button type="button" className="agent-in-conversation-search-close" aria-label={hasQuery || query ? '清除搜索' : '关闭搜索'} onClick={clear}><X size={14}/></button>
+  </form>;
+}

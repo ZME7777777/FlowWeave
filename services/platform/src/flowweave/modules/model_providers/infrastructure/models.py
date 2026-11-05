@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     JSON,
@@ -30,6 +31,7 @@ class ModelProvider(Base):
     base_url: Mapped[str] = mapped_column(Text)
     auth_type: Mapped[str] = mapped_column(String(30), default="API_KEY")
     api_protocol: Mapped[str] = mapped_column(String(30), default="CHAT_COMPLETIONS")
+    usage_query_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     encrypted_api_key: Mapped[bytes | None] = mapped_column(LargeBinary)
     api_key_hint: Mapped[str | None] = mapped_column(String(20))
     encrypted_oauth_access_token: Mapped[bytes | None] = mapped_column(LargeBinary)
@@ -42,6 +44,8 @@ class ModelProvider(Base):
     oauth_device_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     oauth_poll_interval: Mapped[int | None] = mapped_column(Integer)
     connection_state: Mapped[str] = mapped_column(String(30), default="UNTESTED")
+    # At most one provider per user is primary; conversations default to it.
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
     row_version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
@@ -64,6 +68,8 @@ class ProviderModel(Base):
     model_name: Mapped[str] = mapped_column(String(240))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    # ``None`` means automatic: the protocol is derived from the model name.
+    protocol: Mapped[str | None] = mapped_column(String(30))
     default_reasoning_effort: Mapped[str | None] = mapped_column(String(30))
     supported_reasoning_efforts: Mapped[list[str]] = mapped_column(JSON, default=list)
     discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

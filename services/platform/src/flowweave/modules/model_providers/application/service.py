@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 
@@ -9,6 +9,13 @@ from cryptography.fernet import Fernet
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
+from flowweave.modules.model_providers.domain.protocols import (
+    ANTHROPIC_VERSION,
+    ModelProtocol,
+    openai_base_url,
+    resolve_model_protocol,
+)
+from flowweave.modules.model_providers.domain.usage_query import ProviderUsageQuery
 from flowweave.modules.model_providers.infrastructure.codex_oauth import (
     CODEX_BASE_URL,
     CodexModelProfile,
@@ -18,7 +25,7 @@ from flowweave.modules.model_providers.infrastructure.codex_oauth import (
 )
 from flowweave.runtime.model_catalog import declared_context_window
 from flowweave.shared.application.transactions import finish
-from flowweave.shared.errors import conflict, not_found
+from flowweave.shared.errors import DomainError, conflict, not_found
 from flowweave.shared.models import (
     AgentConversationBinding,
     FlowRun,
@@ -27,6 +34,7 @@ from flowweave.shared.models import (
 )
 from flowweave.shared.schemas import (
     ModelProviderDiscoveryWrite,
+    ModelProviderUsagePreviewWrite,
     ModelProviderWrite,
     ProviderModelWrite,
 )
@@ -132,11 +140,50 @@ def _fernet() -> Fernet:
     return Fernet(configured or _DEVELOPMENT_CREDENTIALS_KEY)
 
 
+def provider_api_key(item: ModelProvider) -> str:
+    return _fernet().decrypt(item.encrypted_api_key).decode() if item.encrypted_api_key else ""
+
+
 def provider_auth_headers(item: ModelProvider) -> dict[str, str]:
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
     if item.encrypted_api_key:
-        headers["Authorization"] = f"Bearer {_fernet().decrypt(item.encrypted_api_key).decode()}"
+        headers["Authorization"] = f"Bearer {provider_api_key(item)}"
     return headers
+
+
+def _dual_auth_headers(api_key: str) -> dict[str, str]:
+    """Headers for provider-level probes that cannot know the model protocol.
+
+    Model lists and budget endpoints are served by gateways that accept either
+    the Bearer or the Anthropic ``x-api-key`` form; sending both lets one probe
+    work for every protocol the provider multiplexes.
+    """
+
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+        headers["x-api-key"] = api_key
+        headers["anthropic-version"] = ANTHROPIC_VERSION
+    return headers
+
+
+def model_protocol(model: ProviderModel) -> ModelProtocol:
+    return resolve_model_protocol(model.model_name, model.protocol)
+
+
+def infer_protocols(model_names: list[str]) -> dict[str, ModelProtocol]:
+    """Automatic protocol per model name, shown to the user before saving."""
+
+    return {name: resolve_model_protocol(name, None) for name in model_names}
+
+
+def provider_model_protocol(db: Session, provider_id: str, model_name: str) -> ModelProtocol:
+    row = db.scalar(
+        select(ProviderModel).where(
+            ProviderModel.provider_id == provider_id, ProviderModel.model_name == model_name
+        )
+    )
+    return resolve_model_protocol(model_name, row.protocol if row is not None else None)
 
 
 def provider_dict(db: Session, item: ModelProvider) -> dict[str, Any]:
@@ -151,6 +198,8 @@ def provider_dict(db: Session, item: ModelProvider) -> dict[str, Any]:
         "base_url": item.base_url,
         "auth_type": item.auth_type,
         "api_protocol": item.api_protocol,
+        "protocols": sorted({model_protocol(x) for x in models if x.enabled}),
+        "usage_query": item.usage_query_json,
         "has_api_key": item.encrypted_api_key is not None,
         "api_key_hint": item.api_key_hint,
         "connection_state": item.connection_state,
@@ -165,10 +214,13 @@ def provider_dict(db: Session, item: ModelProvider) -> dict[str, Any]:
         "available_for_nodes": item.connection_state == "CONNECTED"
         and provider_has_runtime_credentials(item)
         and any(model.enabled and model.is_default for model in models),
-        "available_for_prompt_gates": item.auth_type != "ANTHROPIC_API_KEY"
-        and item.connection_state == "CONNECTED"
+        "available_for_prompt_gates": item.connection_state == "CONNECTED"
         and provider_has_runtime_credentials(item)
-        and any(model.enabled and model.is_default for model in models),
+        and any(
+            model.enabled and model.is_default and model_protocol(model) != "ANTHROPIC"
+            for model in models
+        ),
+        "is_primary": item.is_primary,
         "row_version": item.row_version,
         "models": [
             {
@@ -176,6 +228,8 @@ def provider_dict(db: Session, item: ModelProvider) -> dict[str, Any]:
                 "model_name": x.model_name,
                 "enabled": x.enabled,
                 "is_default": x.is_default,
+                "protocol": x.protocol,
+                "effective_protocol": model_protocol(x),
                 "default_reasoning_effort": x.default_reasoning_effort,
                 "supported_reasoning_efforts": list(x.supported_reasoning_efforts or []),
                 # The pinned Runtime catalog owns these exact model limits;
@@ -191,8 +245,34 @@ def provider_dict(db: Session, item: ModelProvider) -> dict[str, Any]:
 
 def list_providers(db: Session) -> list[dict[str, Any]]:
     return [
-        provider_dict(db, x) for x in db.scalars(select(ModelProvider).order_by(ModelProvider.name))
+        provider_dict(db, x)
+        for x in db.scalars(
+            select(ModelProvider).order_by(ModelProvider.is_primary.desc(), ModelProvider.name)
+        )
     ]
+
+
+def set_primary_provider(db: Session, provider_id: str, primary: bool) -> dict[str, Any]:
+    """Mark one provider as the user's default, or clear the mark.
+
+    Only a connected provider that can actually start a conversation may be
+    primary, so the default never points at something unusable.
+    """
+
+    item = get_provider(db, provider_id)
+    if primary:
+        provider = provider_dict(db, item)
+        if not provider["available_for_nodes"]:
+            raise conflict("only a connected provider with a default model can be primary")
+        db.execute(
+            update(ModelProvider)
+            .where(ModelProvider.id != item.id, ModelProvider.is_primary.is_(True))
+            .values(is_primary=False)
+        )
+    item.is_primary = primary
+    finish(db)
+    db.refresh(item)
+    return provider_dict(db, item)
 
 
 def get_provider(db: Session, provider_id: str) -> ModelProvider:
@@ -205,7 +285,7 @@ def get_provider(db: Session, provider_id: str) -> ModelProvider:
 def provider_has_runtime_credentials(item: ModelProvider) -> bool:
     """Whether a provider can supply credentials when OpenHands starts."""
 
-    if item.auth_type in {"API_KEY", "ANTHROPIC_API_KEY"}:
+    if item.auth_type == "API_KEY":
         return item.encrypted_api_key is not None
     if item.auth_type == "CODEX_OAUTH":
         return (
@@ -325,7 +405,7 @@ def _deterministic_replacement_model(
     providers = db.scalars(
         select(ModelProvider)
         .where(ModelProvider.connection_state == "CONNECTED")
-        .order_by(ModelProvider.name, ModelProvider.id)
+        .order_by(ModelProvider.is_primary.desc(), ModelProvider.name, ModelProvider.id)
     ).all()
     for provider in providers:
         if provider.id in excluded_provider_ids:
@@ -415,30 +495,44 @@ def save_provider(
     item.name = payload.name.strip()
     previous_auth_type = item.auth_type
     item.auth_type = payload.auth_type
-    item.api_protocol = "RESPONSES" if payload.auth_type == "CODEX_OAUTH" else payload.api_protocol
+    # Deprecated display field; runtime resolution uses each model's protocol.
+    item.api_protocol = (
+        "RESPONSES"
+        if payload.auth_type == "CODEX_OAUTH"
+        else payload.api_protocol or item.api_protocol or "CHAT_COMPLETIONS"
+    )
     item.base_url = (
         CODEX_BASE_URL
         if payload.auth_type == "CODEX_OAUTH"
         else payload.base_url.strip().rstrip("/")
     )
+    if payload.auth_type == "CODEX_OAUTH":
+        item.usage_query_json = None
+    elif "usage_query" in payload.model_fields_set:
+        query = payload.usage_query
+        api_key = payload.api_key or (
+            _fernet().decrypt(item.encrypted_api_key).decode() if item.encrypted_api_key else ""
+        )
+        validate_usage_query_secret(query, api_key)
+        item.usage_query_json = query.model_dump() if query else None
     item.connection_state = (
         "CONNECTED"
         if payload.auth_type == "CODEX_OAUTH" and item.encrypted_oauth_refresh_token
         else "UNTESTED"
     )
-    if payload.auth_type in {"API_KEY", "ANTHROPIC_API_KEY"} and payload.api_key:
+    if payload.auth_type == "API_KEY" and payload.api_key:
         item.encrypted_api_key = _fernet().encrypt(payload.api_key.encode())
         item.api_key_hint = f"••••{payload.api_key[-4:]}"
     if previous_auth_type != payload.auth_type:
-        if payload.auth_type in {"API_KEY", "ANTHROPIC_API_KEY"}:
+        if payload.auth_type == "API_KEY":
             _clear_oauth(item)
-            if previous_auth_type in {"API_KEY", "ANTHROPIC_API_KEY"} and not payload.api_key:
+            if previous_auth_type == "API_KEY" and not payload.api_key:
                 item.encrypted_api_key = None
                 item.api_key_hint = None
         else:
             item.encrypted_api_key = None
             item.api_key_hint = None
-    if payload.auth_type == "ANTHROPIC_API_KEY":
+    if payload.legacy_anthropic:
         item.connection_state = "CONNECTED" if item.encrypted_api_key else "UNTESTED"
     previous_models = {
         model.model_name: model
@@ -513,11 +607,14 @@ def prompt_provider_snapshot(
         return PromptProviderSnapshot(CODEX_BASE_URL, headers, model, "RESPONSES")
     if item.auth_type != "API_KEY":
         raise ValueError("提示词门禁的模型供应商凭据不可用")
+    protocol = provider_model_protocol(db, provider_id, model)
+    if protocol == "ANTHROPIC":
+        raise ValueError("提示词门禁暂不支持 Anthropic Messages 模型")
     return PromptProviderSnapshot(
-        base_url=item.base_url.rstrip("/"),
+        base_url=openai_base_url(item.base_url),
         headers=provider_auth_headers(item),
         model=model,
-        protocol=cast(ProviderProtocol, item.api_protocol),
+        protocol=protocol,
     )
 
 
@@ -526,18 +623,22 @@ class ProviderConnectionSnapshot:
     provider_id: str
     base_url: str
     headers: dict[str, str]
+    usage_query: ProviderUsageQuery | None = None
 
 
 def provider_connection_snapshot(db: Session, provider_id: str) -> ProviderConnectionSnapshot:
     """Read and decrypt provider connection data inside a short transaction."""
 
     item = get_provider(db, provider_id)
-    if item.auth_type not in {"API_KEY", "ANTHROPIC_API_KEY"}:
+    if item.auth_type != "API_KEY":
         raise ValueError("Only API-key providers expose a model-list endpoint")
     return ProviderConnectionSnapshot(
         provider_id=item.id,
-        base_url=item.base_url.rstrip("/"),
-        headers=provider_auth_headers(item),
+        base_url=openai_base_url(item.base_url),
+        headers=_dual_auth_headers(provider_api_key(item)),
+        usage_query=ProviderUsageQuery.model_validate(item.usage_query_json)
+        if item.usage_query_json
+        else None,
     )
 
 
@@ -580,11 +681,14 @@ def title_provider_snapshot(
         return TitleProviderSnapshot(CODEX_BASE_URL, headers, model, "RESPONSES")
     if item.auth_type != "API_KEY" or not item.encrypted_api_key:
         raise ValueError("title provider credentials are unavailable")
+    protocol = provider_model_protocol(db, provider_id, model)
+    if protocol == "ANTHROPIC":
+        raise ValueError("title generation does not support Anthropic Messages models")
     return TitleProviderSnapshot(
-        item.base_url.rstrip("/"),
+        openai_base_url(item.base_url),
         provider_auth_headers(item),
         model,
-        cast(ProviderProtocol, item.api_protocol),
+        protocol,
     )
 
 
@@ -596,17 +700,42 @@ def preview_provider_connection_snapshot(
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
     api_key = payload.api_key.get_secret_value() if payload.api_key is not None else ""
     if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+        headers = _dual_auth_headers(api_key)
     elif payload.provider_id:
         item = get_provider(db, payload.provider_id)
-        if item.auth_type not in {"API_KEY", "ANTHROPIC_API_KEY"}:
+        if item.auth_type != "API_KEY":
             raise conflict("model discovery preview requires an API-key provider")
-        headers = provider_auth_headers(item)
+        headers = _dual_auth_headers(provider_api_key(item))
     return ProviderConnectionSnapshot(
         provider_id=payload.provider_id or "preview",
-        base_url=payload.base_url,
+        base_url=openai_base_url(payload.base_url),
         headers=headers,
     )
+
+
+def validate_usage_query_secret(query: ProviderUsageQuery | None, api_key: str) -> None:
+    if query and api_key and api_key in query.model_dump_json():
+        raise DomainError(
+            "MODEL_PROVIDER_USAGE_QUERY_INVALID", "查询配置中的密钥须使用 {key} 占位符", 422
+        )
+
+
+def preview_provider_usage_snapshot(
+    db: Session, payload: ModelProviderUsagePreviewWrite
+) -> ProviderConnectionSnapshot:
+    # Always authorize a referenced provider, even when a new key is supplied.
+    if payload.provider_id:
+        get_provider(db, payload.provider_id)
+    snapshot = preview_provider_connection_snapshot(db, payload)
+    api_key = snapshot.headers.get("Authorization", "").removeprefix("Bearer ")
+    if not api_key:
+        raise DomainError("MODEL_PROVIDER_USAGE_QUERY_INVALID", "请先配置 API Key", 422)
+    validate_usage_query_secret(payload.usage_query, api_key)
+    return replace(snapshot, usage_query=payload.usage_query)
+
+
+def provider_usage_snapshot(db: Session, provider_id: str) -> ProviderConnectionSnapshot:
+    return provider_connection_snapshot(db, provider_id)
 
 
 def mark_provider_connection_state(db: Session, provider_id: str, state: str) -> None:
@@ -867,3 +996,14 @@ def codex_runtime_credentials(db: Session, provider_id: str) -> CodexRuntimeCred
         access_token=_fernet().decrypt(current.encrypted_oauth_access_token).decode(),
         account_id=current.oauth_account_id,
     )
+
+
+def provider_model_label(db: Session, provider_id: str | None, model_name: str | None) -> str:
+    """Return the display text "<model> · <provider>" used by model-change dividers."""
+
+    provider = db.get(ModelProvider, provider_id) if provider_id else None
+    name = provider.name if provider is not None else ""
+    model = model_name or ""
+    if model and name:
+        return f"{model} · {name}"
+    return model or name or "未知模型"

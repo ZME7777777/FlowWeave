@@ -1,8 +1,8 @@
+import { ViewportPopover } from './ViewportPopover';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { ExternalLink, Info, Maximize2, Minimize2, PanelRightClose, PanelRightOpen, Radar, Terminal, X } from 'lucide-react';
-import { createPortal } from 'react-dom';
 import { ReactNode, useEffect, useRef, useState } from 'react';
 import { agentTerminalUrl, flowRunTerminalUrl } from '../api/client';
 import type { FlowRunConversation, FlowRunRuntimeOverview } from '../types';
@@ -131,7 +131,7 @@ export function RuntimeTerminal({ runId, conversationId, standalone = false }: R
       event.preventDefault();
       event.stopImmediatePropagation();
       const { text, line } = terminalTextAt(event);
-      setContextMenu({ x: Math.min(event.clientX, window.innerWidth - 230), y: Math.min(event.clientY, window.innerHeight - 250), text, line });
+      setContextMenu({ x: event.clientX, y: event.clientY, text, line });
       terminal.focus();
     };
     const closeTerminalContextMenu = (event: MouseEvent) => {
@@ -220,7 +220,7 @@ export function RuntimeTerminal({ runId, conversationId, standalone = false }: R
   const copy = (value: string) => { closeMenu(); void copyTerminalText(value).catch(() => undefined); };
   const send = (value: string) => { closeMenu(); sendTerminalInput.current(value); };
   const selectedText = contextMenu?.text || '选中内容';
-  return <div className={`agent-runtime-terminal ${standalone ? 'standalone' : ''}`}><div className="agent-terminal-status"><i className={state}/><span>{detail}</span></div><div ref={host} className="agent-terminal-screen" aria-label="Agent 运行终端"/>{contextMenu && createPortal(<div className="agent-terminal-context-menu" role="menu" aria-label="终端操作菜单" style={{ left: contextMenu.x, top: contextMenu.y }} onMouseDown={event => event.stopPropagation()} onContextMenu={event => event.preventDefault()}><button type="button" role="menuitem" disabled={!contextMenu.text} onClick={() => copy(contextMenu.text)}>复制 “{selectedText}”</button><button type="button" role="menuitem" disabled={!contextMenu.line} onClick={() => copy(contextMenu.line)}>复制当前行</button><button type="button" role="menuitem" disabled={!contextMenu.text} onClick={() => send(contextMenu.text)}>输入 “{selectedText}”</button><hr/><button type="button" role="menuitem" onClick={() => send('\u0002%')}>左右分屏</button><button type="button" role="menuitem" onClick={() => send('\u0002"')}>上下分屏</button><button type="button" role="menuitem" onClick={() => send('\u0002m')}>标记窗格</button></div>, document.body)}</div>;
+  return <div className={`agent-runtime-terminal ${standalone ? 'standalone' : ''}`}><div className="agent-terminal-status"><i className={state}/><span>{detail}</span></div><div ref={host} className="agent-terminal-screen" aria-label="Agent 运行终端"/>{contextMenu && <ViewportPopover anchor={contextMenu} gap={0} className="agent-terminal-context-menu" role="menu" aria-label="终端操作菜单" onMouseDown={event => event.stopPropagation()} onContextMenu={event => event.preventDefault()}><button type="button" role="menuitem" disabled={!contextMenu.text} onClick={() => copy(contextMenu.text)}>复制 “{selectedText}”</button><button type="button" role="menuitem" disabled={!contextMenu.line} onClick={() => copy(contextMenu.line)}>复制当前行</button><button type="button" role="menuitem" disabled={!contextMenu.text} onClick={() => send(contextMenu.text)}>输入 “{selectedText}”</button><hr/><button type="button" role="menuitem" onClick={() => send('\u0002%')}>左右分屏</button><button type="button" role="menuitem" onClick={() => send('\u0002"')}>上下分屏</button><button type="button" role="menuitem" onClick={() => send('\u0002m')}>标记窗格</button></ViewportPopover>}</div>;
 }
 
 export function FlowRunTerminalDialog({ runId, runName, onClose }: { runId: string; runName: string; onClose: () => void }) {

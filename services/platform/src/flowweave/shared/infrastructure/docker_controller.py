@@ -146,7 +146,7 @@ def validate_owned_runtime_plugin(
     return cast(dict[str, Any], raw)
 
 
-ControllerRole = Literal["api", "worker", "admin_observer"]
+ControllerRole = Literal["api", "worker", "admin_observer", "admin_controller"]
 
 
 def authorize_controller_request(
@@ -158,6 +158,7 @@ def authorize_controller_request(
         ("api", settings.docker_controller_api_key),
         ("worker", settings.docker_controller_worker_api_key),
         ("admin_observer", settings.admin_runtime_observer_key),
+        ("admin_controller", settings.admin_runtime_controller_key),
     )
     for role, key in candidates:
         if key and hmac.compare_digest(authorization, f"Bearer {key}"):

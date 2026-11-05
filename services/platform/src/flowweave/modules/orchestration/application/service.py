@@ -45,6 +45,7 @@ from flowweave.modules.gates.public import (
     GateExecutionPlan,
     GateResult,
     execute_gate_plan,
+    resolve_failure_policy,
 )
 from flowweave.modules.runs.application.git_settings import (
     default_git_identity,
@@ -136,7 +137,6 @@ from flowweave.shared.schemas import (
     GateRemediationWrite,
     GateRetryWithProviderWrite,
     GateRiskAcceptanceWrite,
-    GitIdentityWrite,
     HumanInputWrite,
     ManualAttemptOutputsWrite,
     NodeRunCopyWrite,
@@ -233,6 +233,9 @@ def _event(
     db.add(event)
     db.flush()
     enqueue_matching_deliveries(db, event)
+    from flowweave.modules.cases.public import record_case_execution_event
+
+    record_case_execution_event(db, event)
     if event_type in {
         "NODE_RUN_COMPLETED",
         "RUNTIME_FAILED",
@@ -248,6 +251,7 @@ def _event(
             node_run_id=node_run_id,
             node_attempt_id=attempt_id,
             payload=event.payload_json,
+            run_event_cursor=event.cursor,
         )
 
 
@@ -847,6 +851,10 @@ def _register_artifact(
         {"artifact_id": item.id, "field_key": item.field_key, "version_no": version},
         attempt_id=attempt_id,
     )
+    if attempt_id is not None:
+        from flowweave.modules.cases.public import project_flow_run_artifacts
+
+        project_flow_run_artifacts(db, run_id, artifact_id=item.id)
     if source == "RUNTIME" and attempt_id is not None:
         from flowweave.modules.cases.public import project_flow_run_observations
 
@@ -2790,17 +2798,43 @@ def _record_gate_results(
             _dispatch_automatic_advance(db, attempt)
             return
         # A business FAIL is a valid Gate judgement. It is not authorization
-        # for FlowWeave to create, fork, or direct an author Conversation.
-        # Keep the blocked Attempt until an operator explicitly acts.
-        run.state = FlowRunState.WAITING_HUMAN
-        _event(
-            db,
-            run.id,
-            "AUTOMATIC_GATE_REVIEW_REQUIRED",
-            {"stage": stage, "state": next_state, "decision": "FAIL"},
-            node_run.id,
-            attempt.id,
+        # for FlowWeave to create, fork, or direct an author Conversation (FR-241).
+        # Keep the blocked Attempt until an operator explicitly acts, unless the
+        # flow designer declared on the failing gate that the execution must end.
+        failed_policy_ids = [
+            str(prepared.policy.get("id"))
+            for prepared, result in evaluations
+            if result.decision == "FAIL"
+        ]
+        declared = (
+            resolve_failure_policy(
+                cast(list[dict[str, Any]], getattr(attempt, "gate_policies_json", None) or []),
+                failed_policy_ids,
+            )
+            if failed_policy_ids
+            else None
         )
+        if declared is not None and declared.action == "STOP" and stage == "END":
+            _event(
+                db,
+                run.id,
+                "AUTOMATIC_GATE_STOPPED",
+                {
+                    "stage": stage,
+                    "state": next_state,
+                    "decision": "FAIL",
+                    "failure_policy": declared.as_dict(),
+                },
+                node_run.id,
+                attempt.id,
+            )
+            cancel_run(db, run.id, f"gate-policy-stop:{attempt.id}:{stage}")
+            return
+        run.state = FlowRunState.WAITING_HUMAN
+        payload: dict[str, Any] = {"stage": stage, "state": next_state, "decision": "FAIL"}
+        if declared is not None:
+            payload["failure_policy"] = declared.as_dict()
+        _event(db, run.id, "AUTOMATIC_GATE_REVIEW_REQUIRED", payload, node_run.id, attempt.id)
         return
     if next_state == AttemptState.WAITING_START_CONFIRMATION and run.schedule_id is not None:
         # Scheduled step records have a frozen launch configuration.  They
@@ -3454,6 +3488,7 @@ def create_flow_run_schedule(db: Session, payload: FlowRunScheduleWrite) -> dict
     source = _run(db, payload.source_flow_run_id)
     parent = db.get(FlowRun, source.parent_flow_run_id) if source.parent_flow_run_id else None
     plan = copy.deepcopy(dict(source.automation_plan_json or {}))
+    plan["git_identity"] = default_git_identity(db)
     readiness = cast(dict[str, Any], plan.get("readiness") or {})
     if (
         source.run_mode != "AUTOMATIC"
@@ -4494,6 +4529,7 @@ def start_flow(
         runtime_manifest_hash=_runtime_manifest_hash(runtime_manifest),
         environment_version_id=environment.id,
     )
+    run.automation_plan_json = {"git_identity": default_git_identity(db)}
     db.add(snapshot)
     db.flush()
     sandboxes.allocate_flow_run_runtime(db, run.id)
@@ -4590,7 +4626,11 @@ def _create_stepwise_record_runtime(
 
 
 def _create_nested_stepwise_run_record(
-    db: Session, parent_run_id: str, payload: StepwiseRunRecordWrite
+    db: Session,
+    parent_run_id: str,
+    payload: StepwiseRunRecordWrite,
+    *,
+    allow_terminal_parent: bool = False,
 ) -> FlowRun:
     """Create one empty, manually advanced execution record.
 
@@ -4603,7 +4643,10 @@ def _create_nested_stepwise_run_record(
     parent = _locked_run(db, parent_run_id)
     if parent.run_mode != "MANUAL" or parent.parent_flow_run_id is not None:
         raise illegal("stepwise records require a top-level standard FlowRun", state=parent.state)
-    if parent.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
+    if not allow_terminal_parent and parent.state in {
+        FlowRunState.COMPLETED,
+        FlowRunState.CANCELLED,
+    }:
         raise illegal("terminal FlowRun cannot create a stepwise record", state=parent.state)
     if not parent.environment_version_id:
         raise DomainError(
@@ -4650,7 +4693,7 @@ def _create_nested_stepwise_run_record(
     record.active_snapshot_id = snapshot.id
     record.automation_plan_json = {
         "start_node_key": payload.start_node_key,
-        "git_identity": default_git_identity(db, payload.git_identity),
+        "git_identity": default_git_identity(db),
     }
     hold_snapshot_memory_references(
         db, snapshot_id=snapshot.id, runtime_manifest=snapshot.runtime_manifest_json
@@ -5591,13 +5634,20 @@ def copy_nested_stepwise_run_record(
     parent_run_id: str,
     source_record_id: str,
     payload: StepwiseRunRecordCopyWrite,
+    *,
+    as_template: bool = False,
 ) -> dict[str, Any]:
-    """Copy a stepwise record's first-node initial configuration into a new record."""
+    """Copy a stepwise record's first-node initial configuration into a new record.
+
+    ``as_template`` is for cloning a Case launch template. A template is only a configuration
+    source and is never executed in place, so the parent being COMPLETED/CANCELLED is no
+    obstacle; the copy is still a DRAFT record that starts no node.
+    """
 
     parent = _locked_run(db, parent_run_id)
     if parent.run_mode != "MANUAL" or parent.parent_flow_run_id is not None:
         raise illegal("stepwise records require a top-level standard FlowRun", state=parent.state)
-    if parent.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
+    if not as_template and parent.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
         raise illegal("terminal FlowRun cannot copy a stepwise record", state=parent.state)
     source = _locked_run(db, source_record_id)
     is_legacy_parent_record = source.id == parent.id
@@ -5608,17 +5658,11 @@ def copy_nested_stepwise_run_record(
     ):
         raise not_found("stepwise_run_record", source_record_id)
     source_start_node_key, source_node = _stepwise_initial_node(db, source)
-    source_identity = record_git_identity(source)
     copied_record = _create_nested_stepwise_run_record(
         db,
         parent.id,
-        StepwiseRunRecordWrite(
-            name=payload.name,
-            start_node_key=source_start_node_key,
-            git_identity=(
-                GitIdentityWrite.model_validate(source_identity) if source_identity else None
-            ),
-        ),
+        StepwiseRunRecordWrite(name=payload.name, start_node_key=source_start_node_key),
+        allow_terminal_parent=as_template,
     )
     source_drafts = _stepwise_node_drafts(source)
     copied_input_count = 0
@@ -5723,14 +5767,15 @@ def create_automatic_run_draft(
     )
     db.add(run)
     db.flush()
-    run.automation_plan_json = {"git_identity": default_git_identity(db, payload.git_identity)}
-    run.automation_plan_json = _freeze_automatic_plan(
+    plan = _freeze_automatic_plan(
         db,
         run,
         definition,
         start_node_key=payload.start_node_key,
         node_plans=payload.node_plans,
     )
+    plan["git_identity"] = default_git_identity(db)
+    run.automation_plan_json = plan
     runtime_manifest = _compile_runtime_manifest(
         definition,
         server_identity=server_identity,
@@ -6007,6 +6052,7 @@ def copy_automatic_run_draft(
         plan["artifact_ids"] = copied_ids
         node_plans[str(node_key)] = plan
     source_plan["node_plans"] = node_plans
+    source_plan["git_identity"] = default_git_identity(db)
     upgraded_gate_ids = _upgrade_legacy_automatic_plan_gate_ids(source_plan)
     source_plan["status"] = "DRAFT"
     copied.automation_plan_json = source_plan
@@ -6100,7 +6146,6 @@ def export_nested_automatic_run_configs(
         "records": [
             {
                 "name": record.name,
-                "git_identity": record_git_identity(record),
                 "start_node_key": str(
                     (record.automation_plan_json or {}).get("start_node_key") or ""
                 ),
@@ -6140,7 +6185,6 @@ def import_nested_automatic_run_configs(
                     environment_version_id=parent.environment_version_id,
                     start_node_key=record.start_node_key,
                     node_plans=record.node_plans,
-                    git_identity=record.git_identity,
                 ),
             )
         )
@@ -6216,7 +6260,6 @@ def export_nested_stepwise_run_configs(
         records.append(
             {
                 "name": record.name,
-                "git_identity": record_git_identity(record),
                 "start_node_key": start_node_key,
                 "initial_configuration": {
                     "startup_prompt": startup_prompt,
@@ -6254,11 +6297,7 @@ def import_nested_stepwise_run_configs(
         record = _create_nested_stepwise_run_record(
             db,
             parent.id,
-            StepwiseRunRecordWrite(
-                name=config.name,
-                start_node_key=config.start_node_key,
-                git_identity=config.git_identity,
-            ),
+            StepwiseRunRecordWrite(name=config.name, start_node_key=config.start_node_key),
         )
         snapshot = _active_snapshot(db, record)
         node = _node(snapshot, config.start_node_key)
@@ -10727,7 +10766,7 @@ def reject_attempt(
     )
     node_run = _node_run(db, attempt.node_run_id)
     run = _run(db, node_run.flow_run_id)
-    _action(
+    rejection = _action(
         db,
         run.id,
         "REJECT_ATTEMPT",
@@ -10787,9 +10826,34 @@ def reject_attempt(
         node_run.id,
         next_attempt.id,
     )
+    _event(
+        db,
+        run.id,
+        "ATTEMPT_REJECTED",
+        {"action_id": rejection.id, "replacement_attempt_id": next_attempt.id},
+        node_run.id,
+        attempt.id,
+    )
     _dispatch_readiness(db, next_attempt)
     finish(db)
     return attempt_detail(db, next_attempt.id)
+
+
+def _stepwise_gate_failure_event(db: Session, attempt: NodeAttempt) -> RunEvent | None:
+    """Return the latest delivery failure when it came from the END gate task."""
+
+    event = db.scalar(
+        select(RunEvent)
+        .where(RunEvent.attempt_id == attempt.id, RunEvent.event_type == "RUNTIME_DELIVERY_FAILED")
+        .order_by(RunEvent.cursor.desc())
+        .limit(1)
+    )
+    payload = event.payload_json if event is not None else {}
+    return (
+        event
+        if isinstance(payload, dict) and payload.get("task_type") == "RUN_GATE_POLICY"
+        else None
+    )
 
 
 def retry_gates(db: Session, attempt_id: str, payload: AttemptVersionWrite) -> dict[str, Any]:
@@ -10875,6 +10939,14 @@ def retry_gates(db: Session, attempt_id: str, payload: AttemptVersionWrite) -> d
         task.max_attempts = max(task.max_attempts, 10)
         finish(db)
         return attempt_detail(db, attempt.id)
+    # A stepwise gate task that exhausted its delivery retries is projected as
+    # RUNTIME_DELIVERY_FAILED. Gates are deterministic and idempotent, so the
+    # blocked stage can be run again once the transient cause is gone.
+    stepwise_gate_delivery_failure = (
+        current.error_code == "RUNTIME_DELIVERY_FAILED"
+        and current.state == AttemptState.END_BLOCKED
+        and _stepwise_gate_failure_event(db, current) is not None
+    )
     retryable_error_codes = {
         None,
         "GATE_CONFIG_INVALID",
@@ -10884,7 +10956,7 @@ def retry_gates(db: Session, attempt_id: str, payload: AttemptVersionWrite) -> d
         "AUTOMATIC_TRANSITION_DELIVERY_FAILED",
         "AUTOMATIC_TRANSITION_INVALID",
     }
-    if current.error_code not in retryable_error_codes:
+    if current.error_code not in retryable_error_codes and not stepwise_gate_delivery_failure:
         raise illegal(
             "attempt failure cannot be recovered by rerunning gates",
             state=current.state,
@@ -10903,6 +10975,19 @@ def retry_gates(db: Session, attempt_id: str, payload: AttemptVersionWrite) -> d
         {current.state},
         next_state=next_state,
     )
+    if stepwise_gate_delivery_failure:
+        attempt.error_code = None
+        attempt.error_detail = None
+        attempt.runtime_phase = "COMPLETED"
+        node_run = _node_run(db, attempt.node_run_id)
+        _event(
+            db,
+            node_run.flow_run_id,
+            "GATE_DELIVERY_RETRY_SCHEDULED",
+            {"stage": stage},
+            node_run.id,
+            attempt.id,
+        )
     _dispatch_gates(db, attempt, stage)
     finish(db)
     return attempt_detail(db, attempt.id)
@@ -11178,6 +11263,9 @@ def cancel_run(db: Session, run_id: str, idempotency_key: str) -> dict[str, Any]
 
 
 def _assert_run_not_schedule_template(db: Session, run_id: str) -> None:
+    from flowweave.modules.cases.public import assert_no_case_artifact_references
+
+    assert_no_case_artifact_references(db, run_id)
     template_schedule_ids = list(
         db.scalars(select(FlowRunSchedule.id).where(FlowRunSchedule.source_flow_run_id == run_id))
     )

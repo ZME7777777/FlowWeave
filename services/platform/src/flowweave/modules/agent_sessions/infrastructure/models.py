@@ -17,6 +17,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    ForeignKey,
     Integer,
     LargeBinary,
     Numeric,
@@ -127,6 +128,7 @@ class AgentConversationBinding(Base):
             name="ck_agent_conversation_title_state",
         ),
         CheckConstraint("title_generation >= 1", name="ck_agent_conversation_title_generation"),
+        CheckConstraint("stored_event_count >= 0", name="ck_agent_conversation_event_count"),
         CheckConstraint(
             "unread_origin IS NULL OR unread_origin IN ('MANUAL', 'SYSTEM')",
             name="ck_agent_conversation_unread_origin",
@@ -151,6 +153,10 @@ class AgentConversationBinding(Base):
     model_provider_id: Mapped[str | None] = mapped_column(String(36), index=True)
     model_name: Mapped[str | None] = mapped_column(String(240))
     reasoning_effort: Mapped[str | None] = mapped_column(String(30))
+    # The model of the most recent user event actually sent; NULL until the
+    # first send. Used only to project a "model changed" divider.
+    last_sent_provider_id: Mapped[str | None] = mapped_column(String(36))
+    last_sent_model_name: Mapped[str | None] = mapped_column(String(240))
     fallback_models_json: Mapped[list[dict[str, str | None]]] = mapped_column(JSON, default=list)
     streaming_callback_ready: Mapped[bool] = mapped_column(Boolean, default=True)
     # Immutable creation-time native parent authority. NULL means no opt-in;
@@ -186,6 +192,7 @@ class AgentConversationBinding(Base):
     final_reply_preview_content: Mapped[str | None] = mapped_column(Text)
     pinned: Mapped[bool] = mapped_column(Boolean, default=False)
     unread: Mapped[bool] = mapped_column(Boolean, default=False)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     # The unread bit remains the server-owned fact. SYSTEM with unread=False
     # records that the user acknowledged the current abnormality.
     unread_origin: Mapped[str | None] = mapped_column(String(20))
@@ -196,6 +203,7 @@ class AgentConversationBinding(Base):
     # unread, title and Runtime lifecycle changes.
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     last_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    stored_event_count: Mapped[int | None] = mapped_column(BigInteger)
     # A Worker-owned scheduling projection. It is intentionally separate from
     # the authoritative OpenHands usage counters and is only used to throttle
     # best-effort, read-only reconciliation.
@@ -293,6 +301,7 @@ class AgentConversationSchedule(Base):
     reasoning_effort: Mapped[str | None] = mapped_column(String(30))
     capability_version_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
     credential_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    credentials_configured: Mapped[bool] = mapped_column(Boolean, default=False)
     name: Mapped[str] = mapped_column(String(220))
     prompt: Mapped[str] = mapped_column(Text)
     cron_expression: Mapped[str] = mapped_column(String(120))
@@ -364,6 +373,26 @@ class AgentConversationMessageAttachment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class AgentMessageModelChange(Base):
+    """Display projection: the model differed from the previous user event."""
+
+    __tablename__ = "agent_message_model_changes"
+    __table_args__ = (
+        UniqueConstraint("binding_id", "event_id", name="uq_agent_message_model_change"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    binding_id: Mapped[str] = mapped_column(String(36), index=True)
+    event_id: Mapped[str] = mapped_column(String(200))
+    from_provider_id: Mapped[str | None] = mapped_column(String(36))
+    from_model_name: Mapped[str | None] = mapped_column(String(240))
+    from_label: Mapped[str] = mapped_column(String(300))
+    to_provider_id: Mapped[str | None] = mapped_column(String(36))
+    to_model_name: Mapped[str | None] = mapped_column(String(240))
+    to_label: Mapped[str] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class AgentAttachmentUpload(Base):
     """Resumable transfer state; completion creates an attachment or workspace file."""
 
@@ -424,7 +453,7 @@ class AgentAttachmentUploadPart(Base):
 
 
 class AgentConversationCapability(Base):
-    """Immutable capability-version provenance frozen for one conversation."""
+    """Immutable registration history; last position per capability is current."""
 
     __tablename__ = "agent_conversation_capabilities"
     __table_args__ = (
@@ -645,7 +674,31 @@ __all__ = (
     "AgentSidebarConversation",
     "AgentConversationCapability",
     "AgentConversationCommand",
+    "AgentMessageSubmission",
     "AgentConversationMessageAttachment",
     "AgentConversationSearch",
     "AgentConversationSearchHit",
 )
+
+
+class AgentMessageSubmission(Base):
+    """Cancellation fence for one HTTP submission; contains no message/event data."""
+
+    __tablename__ = "agent_message_submissions"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_user_id", "binding_id", "submission_id", name="uq_agent_submission"
+        ),
+        CheckConstraint(
+            "phase IN ('PREPARING', 'DISPATCHING', 'CANCELLED')", name="ck_agent_submission_phase"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    binding_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("agent_conversation_bindings.id", ondelete="CASCADE"), index=True
+    )
+    submission_id: Mapped[str] = mapped_column(String(200))
+    phase: Mapped[str] = mapped_column(String(20), default="PREPARING")
+    pause_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

@@ -1,5 +1,6 @@
 """Stable public facade for run orchestration."""
 
+from flowweave.modules.orchestration.application.record_directory import list_record_directory
 from flowweave.modules.orchestration.application.service import (
     ArtifactContentReference,
     PreparedArtifact,
@@ -99,6 +100,7 @@ recover_runtime_deliveries = recover_runtime_tasks
 run_events_after = events
 
 __all__ = (
+    "list_record_directory",
     "ArtifactContentReference",
     "PreparedArtifact",
     "accept_attempt",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -10,10 +11,16 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, false, func, select, true
 from sqlalchemy.orm import Session
 
-from flowweave.modules.agent_sessions.infrastructure.models import AgentConversationSchedule
+from flowweave.modules.agent_sessions.infrastructure.models import (
+    AgentAttachmentUpload,
+    AgentAttachmentUploadPart,
+    AgentConversationMessageAttachment,
+    AgentConversationSchedule,
+    AgentSidebarConversation,
+)
 from flowweave.modules.agent_sessions.public import AgentConversationBinding
 from flowweave.modules.agent_workspaces.application.service import (
     runtime_allocation_for_agent_workspace,
@@ -41,6 +48,15 @@ from flowweave.shared.settings import get_settings
 
 _RUNTIME_PROJECT_ROOT = PurePosixPath("/runtime/workspace/project")
 _MAX_RELATIVE_PATH_LENGTH = 500
+
+
+def _lock_directory_paths(db: Session, workspace_id: str) -> None:
+    # Serialize path references with deletions without blocking other users or
+    # unrelated session operations on the shared Workspace row.
+    if db.get_bind().dialect.name == "postgresql":
+        scope = f"work-directory:{workspace_id}:{current_user_id()}"
+        digest = hashlib.sha256(scope.encode()).digest()
+        db.execute(select(func.pg_advisory_xact_lock(int.from_bytes(digest[:8], signed=True))))
 
 
 def _workspace(db: Session, workspace_id: str) -> AgentWorkspace:
@@ -152,6 +168,7 @@ def _canonical_relative_path(value: str) -> PurePosixPath:
     relative = PurePosixPath(value)
     if (
         relative.is_absolute()
+        or not relative.parts
         or relative.as_posix() != value
         or any(part in {"", ".", ".."} for part in relative.parts)
     ):
@@ -332,7 +349,8 @@ def _dict(db: Session, item: AgentWorkDirectory) -> dict[str, Any]:
     return {
         "id": item.id,
         "display_name": item.display_name,
-        "state": "ACTIVE",
+        "state": "ARCHIVED" if item.archived_at else "ACTIVE",
+        "archived_at": item.archived_at.isoformat() if item.archived_at else None,
         "current_version": {
             "id": version.id,
             "version": version.version,
@@ -407,30 +425,178 @@ def frozen_conversation_context(
     return _agent_working_directory(workspace_id, version.working_path)
 
 
-def list_work_directories(db: Session, workspace_id: str) -> dict[str, Any]:
-    _workspace(db, workspace_id)
-    automation_directory_ids = select(AgentConversationSchedule.work_directory_id).where(
-        AgentConversationSchedule.workspace_id == workspace_id,
-        AgentConversationSchedule.workspace_mode == "AUTOMATION",
-        AgentConversationSchedule.work_directory_id.is_not(None),
-    )
-    items = db.scalars(
-        select(AgentWorkDirectory)
-        .where(
-            AgentWorkDirectory.workspace_id == workspace_id,
-            ~AgentWorkDirectory.id.in_(automation_directory_ids),
-            ~AgentWorkDirectory.id.in_(
-                select(Case.control_work_directory_id).where(
-                    Case.control_work_directory_id.is_not(None)
-                )
-            ),
+def _directory_predicates(
+    workspace_id: str, *, include_archived: bool, include_managed: bool
+) -> list[Any]:
+    predicates: list[Any] = [AgentWorkDirectory.workspace_id == workspace_id]
+    if not include_managed:
+        predicates.extend(
+            (
+                ~AgentWorkDirectory.id.in_(
+                    select(AgentConversationSchedule.work_directory_id).where(
+                        AgentConversationSchedule.workspace_id == workspace_id,
+                        AgentConversationSchedule.workspace_mode == "AUTOMATION",
+                        AgentConversationSchedule.work_directory_id.is_not(None),
+                    )
+                ),
+                ~AgentWorkDirectory.id.in_(
+                    select(Case.control_work_directory_id).where(
+                        Case.control_work_directory_id.is_not(None)
+                    )
+                ),
+            )
         )
-        .order_by(AgentWorkDirectory.updated_at.desc(), AgentWorkDirectory.created_at.desc())
+    if not include_archived:
+        predicates.append(AgentWorkDirectory.archived_at.is_(None))
+    return predicates
+
+
+def _ordered_directories(db: Session, predicates: list[Any]) -> list[AgentWorkDirectory]:
+    return list(
+        db.scalars(
+            select(AgentWorkDirectory)
+            .where(*predicates)
+            .order_by(
+                AgentWorkDirectory.archived_at,
+                AgentWorkDirectory.updated_at.desc(),
+                AgentWorkDirectory.created_at.desc(),
+            )
+        )
+    )
+
+
+def list_work_directories(
+    db: Session, workspace_id: str, *, include_archived: bool = False
+) -> dict[str, Any]:
+    _workspace(db, workspace_id)
+    items = _ordered_directories(
+        db,
+        _directory_predicates(
+            workspace_id, include_archived=include_archived, include_managed=False
+        ),
     )
     return {
         "root": root_context(workspace_id=workspace_id),
         "items": [_dict(db, item) for item in items],
     }
+
+
+def list_management_workspaces(
+    db: Session, workspace_id: str, *, include_archived: bool = False
+) -> dict[str, Any]:
+    workspace = _workspace(db, workspace_id)
+    items = _ordered_directories(
+        db,
+        _directory_predicates(
+            workspace_id, include_archived=include_archived, include_managed=True
+        ),
+    )
+    schedules = {
+        item.work_directory_id: item
+        for item in db.scalars(
+            select(AgentConversationSchedule).where(
+                AgentConversationSchedule.workspace_id == workspace_id,
+                AgentConversationSchedule.workspace_mode == "AUTOMATION",
+                AgentConversationSchedule.work_directory_id.is_not(None),
+            )
+        )
+    }
+    cases = {
+        item.control_work_directory_id: item
+        for item in db.scalars(
+            select(Case).where(Case.control_work_directory_id.is_not(None))
+        )
+    }
+    result: list[dict[str, Any]] = []
+    for item in items:
+        value = _dict(db, item)
+        if schedule := schedules.get(item.id):
+            value.update(
+                {
+                    "display_name": schedule.name,
+                    "workspace_kind": "AGENT_SCHEDULE",
+                    "source_id": schedule.id,
+                }
+            )
+        elif case := cases.get(item.id):
+            value.update(
+                {
+                    "display_name": case.name,
+                    "workspace_kind": "CASE",
+                    "source_id": case.id,
+                }
+            )
+        else:
+            value["workspace_kind"] = "AGENT"
+        result.append(value)
+    root = root_context(workspace_id=workspace_id)
+    root.update({"display_name": workspace.display_name, "workspace_kind": "AGENT"})
+    return {"root": root, "items": result}
+
+
+def _directory_conversations(
+    db: Session, workspace_id: str, work_directory_id: str
+) -> list[AgentConversationBinding]:
+    version_ids = select(AgentWorkDirectoryVersion.id).where(
+        AgentWorkDirectoryVersion.work_directory_id == work_directory_id
+    )
+    return list(
+        db.scalars(
+            select(AgentConversationBinding)
+            .where(
+                AgentConversationBinding.workspace_id == workspace_id,
+                AgentConversationBinding.work_directory_version_id.in_(version_ids),
+                AgentConversationBinding.lifecycle == "ACTIVE",
+                ~AgentConversationBinding.id.in_(
+                    select(AgentSidebarConversation.sidebar_binding_id)
+                ),
+            )
+            .order_by(AgentConversationBinding.id)
+            .with_for_update()
+        )
+    )
+
+
+def archive_work_directory(
+    db: Session, workspace_id: str, work_directory_id: str
+) -> dict[str, Any]:
+    _workspace(db, workspace_id)
+    item = _directory(db, workspace_id, work_directory_id, lock=True)
+    bindings = _directory_conversations(db, workspace_id, item.id)
+    from flowweave.modules.agent_sessions.application import conversations
+
+    # Validate the complete batch before changing either directory or children.
+    # Repeated archive also repairs legacy directories with unarchived children.
+    for binding in bindings:
+        if binding.archived_at is None:
+            conversations.assert_conversation_stopped(db, workspace_id, binding.id, lock=False)
+    timestamp = now()
+    for binding in bindings:
+        if binding.archived_at is None:
+            binding.archived_at = timestamp
+            binding.updated_at = timestamp
+    if item.archived_at is None:
+        item.archived_at = timestamp
+        item.updated_at = timestamp
+    db.flush()
+    return _dict(db, item)
+
+
+def restore_work_directory(
+    db: Session, workspace_id: str, work_directory_id: str
+) -> dict[str, Any]:
+    _workspace(db, workspace_id)
+    item = _directory(db, workspace_id, work_directory_id, lock=True)
+    timestamp = now()
+    for binding in _directory_conversations(db, workspace_id, item.id):
+        if binding.archived_at is not None:
+            binding.archived_at = None
+            binding.updated_at = timestamp
+    if item.archived_at is not None:
+        item.archived_at = None
+        item.updated_at = timestamp
+    db.flush()
+    return _dict(db, item)
 
 
 def get_work_directory(db: Session, workspace_id: str, work_directory_id: str) -> dict[str, Any]:
@@ -463,6 +629,7 @@ def create_work_directory(
     db: Session, workspace_id: str, display_name: str, selected_paths: tuple[str, ...]
 ) -> dict[str, Any]:
     _workspace(db, workspace_id)
+    _lock_directory_paths(db, workspace_id)
     name = _display_name(display_name)
     _assert_name_available(db, workspace_id, name)
     paths = _validate_paths(db, workspace_id, selected_paths)
@@ -681,6 +848,7 @@ def update_work_directory(
     selected_paths: tuple[str, ...] | None,
 ) -> dict[str, Any]:
     _workspace(db, workspace_id)
+    _lock_directory_paths(db, workspace_id)
     item = _directory(db, workspace_id, work_directory_id, lock=True)
     changed = False
     if display_name is not None:
@@ -703,46 +871,247 @@ def update_work_directory(
     return _dict(db, item)
 
 
-def delete_work_directory(db: Session, workspace_id: str, work_directory_id: str) -> None:
+def delete_work_directory(
+    db: Session, workspace_id: str, work_directory_id: str, *, delete_files: bool = True
+) -> None:
+    """Delete a work directory and its conversations.
+
+    With ``delete_files=False`` only the FlowWeave records and the native
+    OpenHands conversations are removed; every file on disk is left in place.
+    """
+
+    from flowweave.modules.agent_sessions.application import conversations
+    from flowweave.modules.agent_sessions.application.draft_attachments import (
+        ATTACHMENT_PATH,
+    )
+    from flowweave.modules.agent_workspaces.application import (
+        directory_deletion,
+        workspace,
+    )
+
     _workspace(db, workspace_id)
+    _lock_directory_paths(db, workspace_id)
     item = _directory(db, workspace_id, work_directory_id, lock=True)
-    version_ids = list(
+    if db.scalar(select(Case.id).where(Case.control_work_directory_id == item.id)) or db.scalar(
+        select(AgentConversationSchedule.id).where(
+            AgentConversationSchedule.work_directory_id == item.id
+        )
+    ):
+        raise DomainError(
+            "AGENT_WORK_DIRECTORY_REFERENCED",
+            "工作区仍被事项或定时任务使用，请先解除关联",
+            409,
+        )
+    versions = list(
         db.scalars(
-            select(AgentWorkDirectoryVersion.id).where(
+            select(AgentWorkDirectoryVersion).where(
                 AgentWorkDirectoryVersion.work_directory_id == item.id
             )
         )
     )
-    # A work-directory is the owner-facing unit in the Agent Workspace UI.
-    # Deleting it must therefore remove every Conversation frozen against any
-    # of its versions, rather than leaving an unusable directory behind and
-    # asking the user to discover and remove each conversation separately.
-    # Import lazily to preserve the host/session dependency direction.
-    if version_ids:
-        from flowweave.modules.agent_sessions.application import conversations
-
-        binding_ids = list(
+    version_ids = [version.id for version in versions]
+    paths: set[PurePosixPath] = set()
+    if not versions:
+        raise DomainError("AGENT_WORK_DIRECTORY_VERSION_MISSING", "工作目录版本数据不完整", 409)
+    for version in versions:
+        selected = _path_values(db, version.id)
+        if not selected and version.working_path == ".":
+            raise DomainError("AGENT_WORK_DIRECTORY_VERSION_MISSING", "工作目录版本数据不完整", 409)
+        paths.update(_canonical_relative_path(path) for path in selected)
+    # Older single-path versions can predate path rows. A multi-path version's
+    # working_path='.' must never be interpreted as permission to delete root.
+    paths.update(
+        _canonical_relative_path(version.working_path)
+        for version in versions
+        if version.working_path != "."
+    )
+    if delete_files and any(path.parts[0] in {"uploads", ".flowweave"} for path in paths):
+        raise DomainError("AGENT_WORK_DIRECTORY_DELETE_UNSAFE", "不能删除平台保留目录", 409)
+    bindings = list(
+        db.scalars(
+            select(AgentConversationBinding)
+            .where(
+                AgentConversationBinding.workspace_id == workspace_id,
+                AgentConversationBinding.work_directory_version_id.in_(version_ids),
+            )
+            .with_for_update()
+        )
+    )
+    by_id = {binding.id: binding for binding in bindings}
+    # Sidebar conversations may have no independent directory version. Follow
+    # their explicit binding relation, never infer ownership from title or cwd.
+    while by_id:
+        child_ids = list(
             db.scalars(
-                select(AgentConversationBinding.id)
-                .where(
-                    AgentConversationBinding.workspace_id == workspace_id,
-                    AgentConversationBinding.work_directory_version_id.in_(version_ids),
+                select(AgentSidebarConversation.sidebar_binding_id).where(
+                    AgentSidebarConversation.workspace_id == workspace_id,
+                    AgentSidebarConversation.source_binding_id.in_(by_id),
+                    ~AgentSidebarConversation.sidebar_binding_id.in_(by_id),
                 )
-                .order_by(AgentConversationBinding.created_at, AgentConversationBinding.id)
             )
         )
-        # Preflight the complete cascade before deleting anything.  A running
-        # Conversation must be stopped first, otherwise a later rejection
-        # could leave the work-directory only partially deleted.
-        for binding_id in binding_ids:
-            conversations.assert_conversation_stopped(db, workspace_id, binding_id, lock=False)
-        for binding_id in binding_ids:
-            conversations.delete_conversation(
-                db,
-                workspace_id,
-                binding_id,
-                f"delete-work-directory:{work_directory_id}:{binding_id}",
+        children = (
+            list(
+                db.scalars(
+                    select(AgentConversationBinding)
+                    .where(
+                        AgentConversationBinding.id.in_(child_ids),
+                        AgentConversationBinding.workspace_id == workspace_id,
+                    )
+                    .with_for_update()
+                )
             )
+            if child_ids
+            else []
+        )
+        if not children:
+            break
+        by_id.update((child.id, child) for child in children)
+    binding_ids = set(by_id)
+    root = workspace.ensure_user_project_root(db, workspace_id)
+    runtime_root = PurePosixPath(user_runtime_project_root(workspace_id))
+    other_paths = list(
+        db.scalars(
+            select(AgentWorkDirectoryPath.relative_path)
+            .join(
+                AgentWorkDirectoryVersion,
+                AgentWorkDirectoryVersion.id == AgentWorkDirectoryPath.version_id,
+            )
+            .join(
+                AgentWorkDirectory,
+                AgentWorkDirectory.id == AgentWorkDirectoryVersion.work_directory_id,
+            )
+            .where(
+                AgentWorkDirectory.workspace_id == workspace_id,
+                AgentWorkDirectory.id != item.id,
+            )
+        )
+    )
+    other_paths.extend(
+        db.scalars(
+            select(AgentWorkDirectoryVersion.working_path)
+            .join(
+                AgentWorkDirectory,
+                AgentWorkDirectory.id == AgentWorkDirectoryVersion.work_directory_id,
+            )
+            .where(
+                AgentWorkDirectory.workspace_id == workspace_id,
+                AgentWorkDirectory.id != item.id,
+                AgentWorkDirectoryVersion.working_path != ".",
+            )
+        )
+    )
+
+    def overlaps(path: PurePosixPath) -> bool:
+        return any(path.is_relative_to(target) or target.is_relative_to(path) for target in paths)
+
+    if delete_files and any(overlaps(_canonical_relative_path(path)) for path in other_paths):
+        raise DomainError(
+            "AGENT_WORK_DIRECTORY_SHARED_PATH",
+            "目录仍被其他工作区使用，无法连同文件删除",
+            409,
+        )
+    for binding in db.scalars(
+        select(AgentConversationBinding).where(
+            AgentConversationBinding.workspace_id == workspace_id,
+            ~AgentConversationBinding.id.in_(binding_ids),
+        )
+        if delete_files
+        else select(AgentConversationBinding).where(false())
+    ):
+        cwd = PurePosixPath(binding.working_directory or "/")
+        if (
+            cwd != runtime_root
+            and cwd.is_relative_to(runtime_root)
+            and overlaps(cwd.relative_to(runtime_root))
+        ):
+            raise DomainError(
+                "AGENT_WORK_DIRECTORY_SHARED_PATH",
+                "目录仍被其他会话使用，无法删除",
+                409,
+            )
+    for path in db.scalars(
+        select(AgentConversationMessageAttachment.path)
+        .join(
+            AgentConversationBinding,
+            AgentConversationBinding.id == AgentConversationMessageAttachment.binding_id,
+        )
+        .where(
+            AgentConversationBinding.workspace_id == workspace_id,
+            ~AgentConversationBinding.id.in_(binding_ids),
+            true() if delete_files else false(),
+        )
+    ):
+        candidate = PurePosixPath(path)
+        if candidate.is_relative_to(runtime_root) and any(
+            candidate.relative_to(runtime_root).is_relative_to(target) for target in paths
+        ):
+            raise DomainError(
+                "AGENT_WORK_DIRECTORY_SHARED_PATH",
+                "目录中仍有其他会话的附件，无法删除",
+                409,
+            )
+    for binding_id in binding_ids:
+        conversations.assert_conversation_stopped(
+            db, workspace_id, binding_id, lock=False, allow_missing=True
+        )
+    uploads = list(
+        db.scalars(
+            select(AgentAttachmentUpload)
+            .where(
+                AgentAttachmentUpload.host_kind == "AGENT_WORKSPACE",
+                AgentAttachmentUpload.host_id == workspace_id,
+                (AgentAttachmentUpload.work_directory_id == item.id)
+                | AgentAttachmentUpload.binding_id.in_(binding_ids),
+            )
+            .with_for_update()
+        )
+    )
+    upload_ids = [upload.id for upload in uploads]
+    draft_owners = {upload.attachment_owner_id for upload in uploads if upload.attachment_owner_id}
+    owners = binding_ids | draft_owners
+    with directory_deletion.parent_fd(root, PurePosixPath("uploads/entry")) as uploads:
+        if delete_files and uploads is not None:
+            for name in os.listdir(uploads):
+                matched = ATTACHMENT_PATH.fullmatch(str(runtime_root / "uploads" / name))
+                if matched and matched.group("owner") in owners:
+                    shared = db.scalar(
+                        select(AgentConversationMessageAttachment.id).where(
+                            AgentConversationMessageAttachment.path
+                            == str(runtime_root / "uploads" / name),
+                            ~AgentConversationMessageAttachment.binding_id.in_(binding_ids),
+                        )
+                    )
+                    if shared is not None:
+                        raise DomainError(
+                            "AGENT_WORK_DIRECTORY_SHARED_ATTACHMENT",
+                            "附件仍被其他会话引用，无法删除",
+                            409,
+                        )
+                    paths.add(PurePosixPath("uploads") / name)
+    if delete_files:
+        for path in paths:
+            directory_deletion.metadata(root, path)
+        directory_deletion.stage(db, workspace_id, root, tuple(paths))
+    action = "delete" if delete_files else "detach"
+    for binding_id in binding_ids:
+        conversations.delete_conversation(
+            db,
+            workspace_id,
+            binding_id,
+            f"{action}-work-directory:{work_directory_id}:{binding_id}",
+            keep_attachment_files=not delete_files,
+        )
+    db.execute(
+        delete(AgentAttachmentUploadPart).where(AgentAttachmentUploadPart.upload_id.in_(upload_ids))
+    )
+    db.execute(delete(AgentAttachmentUpload).where(AgentAttachmentUpload.id.in_(upload_ids)))
+    db.execute(
+        delete(AgentSidebarConversation).where(
+            AgentSidebarConversation.workspace_id == workspace_id,
+            AgentSidebarConversation.sidebar_binding_id.in_(binding_ids),
+        )
+    )
     if version_ids:
         db.execute(
             delete(AgentWorkDirectoryPath).where(AgentWorkDirectoryPath.version_id.in_(version_ids))
@@ -1057,6 +1426,7 @@ __all__ = (
     "frozen_conversation_context",
     "get_work_directory",
     "get_flow_run_work_directory",
+    "list_management_workspaces",
     "list_work_directories",
     "list_flow_run_work_directories",
     "root_context",

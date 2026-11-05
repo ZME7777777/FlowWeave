@@ -37,7 +37,8 @@ from flowweave.modules.users.application.security import (
     current_user_id,
     user_runtime_project_root,
 )
-from flowweave.runtime.base import RuntimeWorkspaceFile
+from flowweave.runtime.base import RuntimeHandle, RuntimeWorkspaceFile
+from flowweave.runtime.dependencies import get_runtime
 from flowweave.shared.errors import DomainError, not_found
 from flowweave.shared.observability import current_metrics
 
@@ -158,6 +159,7 @@ def _host_path(
     *,
     require_file: bool,
     allow_automation_workspace: bool = False,
+    allow_hidden: bool = False,
 ) -> Path:
     parsed = PurePosixPath(runtime_path)
     root = PurePosixPath(runtime_root)
@@ -169,13 +171,17 @@ def _host_path(
         raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在工作区范围内", 422)
     relative = parsed.relative_to(root)
     hidden_parts = tuple(part for part in relative.parts if part.startswith(".") and part != ".tmp")
+    if any(part in {".git", ".openhands"} for part in relative.parts):
+        raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在工作区范围内", 422)
     automation_workspace = (
         allow_automation_workspace
         and hidden_parts == (".flowweave",)
         and relative.parts[:2] == (".flowweave", "automations")
         and len(relative.parts) >= 3
     )
-    if hidden_parts and not automation_workspace:
+    if ".flowweave" in relative.parts and not automation_workspace:
+        raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在工作区范围内", 422)
+    if hidden_parts and not (allow_hidden or automation_workspace):
         raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "文件路径不在工作区范围内", 422)
     candidate = project_root.joinpath(*relative.parts)
     try:
@@ -267,7 +273,12 @@ def _directory_cursor(kind: str, name: str) -> str:
 
 
 def _authorized_directory(
-    project_root: Path, runtime_root: str, file_roots: tuple[str, ...], parent_path: str
+    project_root: Path,
+    runtime_root: str,
+    file_roots: tuple[str, ...],
+    parent_path: str,
+    *,
+    include_hidden: bool = False,
 ) -> Path:
     if not any(
         parent_path == root or parent_path.startswith(root.rstrip("/") + "/") for root in file_roots
@@ -286,6 +297,7 @@ def _authorized_directory(
             parent_path,
             require_file=False,
             allow_automation_workspace=automation_workspace,
+            allow_hidden=include_hidden,
         )
     )
     try:
@@ -326,6 +338,7 @@ def list_directory(
     limit: int = 100,
     work_directory_id: str | None = None,
     binding_id: str | None = None,
+    include_hidden: bool = False,
 ) -> dict[str, Any]:
     """List one authorized directory without recursively indexing the project tree."""
 
@@ -337,7 +350,13 @@ def list_directory(
     project_root = _project_root(db, workspace_id)
     runtime_root = _runtime_root(workspace_id)
     selected_parent = parent_path or working_directory
-    host_parent = _authorized_directory(project_root, runtime_root, file_roots, selected_parent)
+    host_parent = _authorized_directory(
+        project_root,
+        runtime_root,
+        file_roots,
+        selected_parent,
+        include_hidden=include_hidden,
+    )
     after = _decode_directory_cursor(cursor)
     started_at = time.monotonic()
     outcome = "error"
@@ -350,7 +369,9 @@ def list_directory(
                 "AGENT_WORKSPACE_STORAGE_UNAVAILABLE", "工作区目录当前不可用", 503
             ) from exc
         for child in children:
-            if child.name.startswith("."):
+            if child.name in {".flowweave", ".git", ".openhands"} or (
+                child.name.startswith(".") and not include_hidden
+            ):
                 continue
             try:
                 metadata = child.lstat()
@@ -449,6 +470,12 @@ def _repository_details(repository: Path, runtime_path: str) -> dict[str, Any]:
                     details["upstream"] = upstream
                     details["ahead"] = int(counts[0])
                     details["behind"] = int(counts[1])
+        status = _git_run(repository, "status", "--porcelain", "-z", "--untracked-files=normal")
+        if status is not None:
+            details["dirty"] = any(
+                entry[3:] and not _is_private_upload_path(entry[3:])
+                for entry in status.decode("utf-8", errors="replace").split("\0")
+            )
         outcome = "ok"
         return details
     finally:
@@ -480,6 +507,72 @@ def _git_run(repository: Path, *arguments: str) -> bytes | None:
     except (OSError, subprocess.TimeoutExpired):
         return None
     return result.stdout if result.returncode == 0 else None
+
+
+def ensure_private_upload_directory_ignored(
+    project_root: Path, runtime_root: str, working_directory: str
+) -> None:
+    """Keep the platform-owned attachment directory out of any enclosing Git repo."""
+
+    runtime_path = PurePosixPath(working_directory)
+    runtime_workspace_root = PurePosixPath(runtime_root)
+    if not runtime_path.is_relative_to(runtime_workspace_root):
+        raise DomainError("AGENT_WORKSPACE_PATH_INVALID", "附件目录不在当前工作区范围内", 422)
+    host_directory = project_root.joinpath(
+        *runtime_path.relative_to(runtime_workspace_root).parts
+    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(host_directory), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            check=False,
+            env={"PATH": os.defpath},
+            text=True,
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    if result.returncode != 0 or not result.stdout.strip():
+        return
+    repository = Path(result.stdout.strip()).resolve()
+    upload_directory = (host_directory / ".uploads").resolve()
+    if (
+        not repository.is_relative_to(project_root.resolve())
+        or not upload_directory.is_relative_to(repository)
+    ):
+        return
+    relative_upload_directory = upload_directory.relative_to(repository).as_posix()
+    pattern = f"/{relative_upload_directory}/"
+    exclude_value = _git_run(
+        repository,
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-path",
+        "info/exclude",
+    )
+    if not exclude_value:
+        return
+    exclude_path = Path(exclude_value.decode("utf-8", errors="strict").strip())
+    try:
+        if exclude_path.exists() and exclude_path.is_symlink():
+            raise DomainError("AGENT_WORKSPACE_GIT_EXCLUDE_INVALID", "Git 排除文件无效", 409)
+        existing = exclude_path.read_text() if exclude_path.exists() else ""
+        if pattern in {line.strip() for line in existing.splitlines()}:
+            return
+        exclude_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        exclude_path.write_text(
+            f"{existing.rstrip()}\n{pattern}\n" if existing else f"{pattern}\n"
+        )
+    except OSError as exc:
+        raise DomainError(
+            "AGENT_WORKSPACE_GIT_EXCLUDE_UNAVAILABLE",
+            "无法保护附件目录的 Git 排除规则",
+            503,
+        ) from exc
+
+
+def _is_private_upload_path(path: str) -> bool:
+    return any(part == ".uploads" for part in PurePosixPath(path).parts)
 
 
 def _fetch_origin(repository: Path) -> None:
@@ -559,8 +652,124 @@ def git_sync(
     return _repository_details(repository, runtime_path)
 
 
-def git_log(
+def git_branches(
     project_root: Path, runtime_root: str, file_roots: tuple[str, ...], repository_path: str
+) -> dict[str, Any]:
+    repository, runtime_path = _authorized_repository(
+        project_root, runtime_root, file_roots, repository_path
+    )
+    output = _git_run(
+        repository,
+        "for-each-ref",
+        "--format=%(refname)%00%(symref)",
+        "refs/heads/",
+        "refs/remotes/",
+    )
+    if output is None:
+        raise DomainError("AGENT_WORKSPACE_GIT_UNAVAILABLE", "无法读取分支列表", 503)
+    branches = []
+    for line in output.decode("utf-8", errors="replace").splitlines():
+        ref, _, symbolic = line.partition("\0")
+        if symbolic:
+            continue
+        remote = ref.startswith("refs/remotes/")
+        prefix = "refs/remotes/" if remote else "refs/heads/"
+        branches.append({"ref": ref, "name": ref.removeprefix(prefix), "remote": remote})
+    return {"repository": _repository_details(repository, runtime_path), "branches": branches}
+
+
+def runtime_git_sync(
+    handle: RuntimeHandle,
+    project_root: Path,
+    runtime_root: str,
+    file_roots: tuple[str, ...],
+    repository_path: str,
+) -> dict[str, Any]:
+    repository, runtime_path = _authorized_repository(
+        project_root, runtime_root, file_roots, repository_path
+    )
+    before = _repository_details(repository, runtime_path)
+    get_runtime().workspace_git_operation(handle, runtime_path, "sync")
+    after = _repository_details(repository, runtime_path)
+    after["remote_status"] = (
+        "verified"
+        if all(before.get(key) == after.get(key) for key in ("head", "branch", "upstream"))
+        else "unverified"
+    )
+    return after
+
+
+def runtime_git_history(
+    handle: RuntimeHandle,
+    project_root: Path,
+    runtime_root: str,
+    file_roots: tuple[str, ...],
+    repository_path: str,
+) -> dict[str, Any]:
+    repository, runtime_path = _authorized_repository(
+        project_root, runtime_root, file_roots, repository_path
+    )
+    before = _repository_details(repository, runtime_path)
+    remote_status = "unverified"
+    try:
+        after = runtime_git_sync(handle, project_root, runtime_root, file_roots, repository_path)
+        if after["remote_status"] == "verified" and all(
+            before.get(key) == after.get(key) for key in ("head", "branch", "upstream")
+        ):
+            remote_status = "verified"
+    except DomainError:
+        # Reading local history remains available when Runtime/auth/network is unavailable.
+        pass
+    history = git_log(
+        project_root, runtime_root, file_roots, repository_path, remote_status=remote_status
+    )
+    if any(
+        before.get(key) != history["repository"].get(key) for key in ("head", "branch", "upstream")
+    ):
+        history["repository"]["remote_status"] = "unverified"
+        for commit in history["commits"]:
+            commit["local_only"] = False
+    return history
+
+
+def runtime_git_switch(
+    handle: RuntimeHandle,
+    project_root: Path,
+    runtime_root: str,
+    file_roots: tuple[str, ...],
+    repository_path: str,
+    ref: str,
+    expected_head: str,
+    expected_ref: str,
+) -> dict[str, Any]:
+    repository, runtime_path = _authorized_repository(
+        project_root, runtime_root, file_roots, repository_path
+    )
+    if not any(
+        runtime_path == allowed or runtime_path.startswith(allowed.rstrip("/") + "/")
+        for allowed in file_roots
+    ):
+        raise DomainError(
+            "AGENT_WORKSPACE_GIT_SCOPE_INVALID", "分支切换需要整个仓库的工作区访问权限", 403
+        )
+    get_runtime().workspace_git_operation(
+        handle,
+        runtime_path,
+        "switch",
+        ref=ref,
+        expected_head=expected_head,
+        expected_ref=expected_ref,
+    )
+    return _repository_details(repository, runtime_path)
+
+
+def git_log(
+    project_root: Path,
+    runtime_root: str,
+    file_roots: tuple[str, ...],
+    repository_path: str,
+    *,
+    remote_status: str = "unverified",
 ) -> dict[str, Any]:
     """Return a bounded, read-only history for one authorized repository."""
 
@@ -610,11 +819,12 @@ def git_log(
             "author": fields[index + 2],
             "date": fields[index + 3],
             "subject": fields[index + 4],
-            "local_only": fields[index].strip() in local_commit_ids,
+            "local_only": remote_status == "verified" and fields[index].strip() in local_commit_ids,
         }
         for index in range(0, max(0, len(fields) - 1), 5)
         if index + 4 < len(fields) and fields[index].strip()
     ]
+    repository_metadata["remote_status"] = remote_status
     return {"repository": repository_metadata, "commits": commits}
 
 
@@ -770,10 +980,12 @@ def git_working_changes(
     staged = _git_changed_files(repository, staged=True)
     unstaged = _git_changed_files(repository, staged=False)
     untracked = _git_run(repository, "ls-files", "--others", "--exclude-standard", "-z") or b""
+    staged = [item for item in staged if not _is_private_upload_path(item["path"])]
+    unstaged = [item for item in unstaged if not _is_private_upload_path(item["path"])]
     unstaged.extend(
         {"path": path, "status": "?"}
         for path in untracked.decode("utf-8", errors="replace").split("\0")
-        if path
+        if path and not _is_private_upload_path(path)
     )
     return {
         "repository": _repository_details(repository, runtime_path),
@@ -1178,7 +1390,7 @@ def _subtree_has_bound_attachment(db: Session, workspace_id: str, path: str) -> 
 
 
 _PRIVATE_ATTACHMENT_PATH = re.compile(
-    r"^/runtime/workspace/(?:project|[0-9a-f-]{36})/uploads/"
+    r"^/runtime/workspace/(?:project/(?:users/)?[0-9a-f-]{36}|project|[0-9a-f-]{36})(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/(?:\.uploads|uploads)/"
     r"(?P<owner>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-"
     r"[0-9a-f]{32}(?:--[A-Za-z0-9][A-Za-z0-9._-]{0,180})?$"
 )
@@ -1221,11 +1433,10 @@ def delete_bound_attachment_files(db: Session, workspace_id: str, binding_id: st
     project_root = _project_root(db, workspace_id)
     runtime_root = _runtime_root(workspace_id)
     private_paths = set(paths)
-    uploads = project_root / "uploads"
     try:
         private_paths.update(
-            str(PurePosixPath(runtime_root) / "uploads" / candidate.name)
-            for candidate in uploads.glob(f"{binding_id}-*")
+            str(PurePosixPath(runtime_root) / candidate.relative_to(project_root).as_posix())
+            for candidate in project_root.rglob(f"{binding_id}-*")
             if candidate.is_file()
         )
     except OSError:
@@ -1392,7 +1603,13 @@ def git_history(
     project_root, runtime_root, file_roots = _git_scope(
         db, workspace_id, work_directory_id, binding_id
     )
-    return git_log(project_root, runtime_root, file_roots, repository_path)
+    from flowweave.modules.agent_workspaces.application.git_settings import _workspace_handle
+
+    try:
+        handle = _workspace_handle(db, workspace_id)
+    except DomainError:
+        return git_log(project_root, runtime_root, file_roots, repository_path)
+    return runtime_git_history(handle, project_root, runtime_root, file_roots, repository_path)
 
 
 def sync_git_repository(
@@ -1405,7 +1622,45 @@ def sync_git_repository(
     project_root, runtime_root, file_roots = _git_scope(
         db, workspace_id, work_directory_id, binding_id
     )
-    return git_sync(project_root, runtime_root, file_roots, repository_path)
+    from flowweave.modules.agent_workspaces.application.git_settings import _workspace_handle
+
+    return runtime_git_sync(
+        _workspace_handle(db, workspace_id), project_root, runtime_root, file_roots, repository_path
+    )
+
+
+def list_git_branches(
+    db: Session,
+    workspace_id: str,
+    repository_path: str,
+    binding_id: str | None = None,
+    work_directory_id: str | None = None,
+) -> dict[str, Any]:
+    scope = _git_scope(db, workspace_id, work_directory_id, binding_id)
+    return git_branches(*scope, repository_path)
+
+
+def switch_git_branch(
+    db: Session,
+    workspace_id: str,
+    repository_path: str,
+    ref: str,
+    expected_head: str,
+    expected_ref: str,
+    binding_id: str | None = None,
+    work_directory_id: str | None = None,
+) -> dict[str, Any]:
+    from flowweave.modules.agent_workspaces.application.git_settings import _workspace_handle
+
+    scope = _git_scope(db, workspace_id, work_directory_id, binding_id)
+    return runtime_git_switch(
+        _workspace_handle(db, workspace_id),
+        *scope,
+        repository_path,
+        ref,
+        expected_head,
+        expected_ref,
+    )
 
 
 def git_commit_details(
@@ -1477,6 +1732,7 @@ def download(
     *,
     preview: bool = False,
     offset: int = 0,
+    include_hidden: bool = False,
 ) -> Any:
     _workspace(db, workspace_id)
     runtime_root = _runtime_root(workspace_id)
@@ -1509,6 +1765,7 @@ def download(
         path,
         require_file=True,
         allow_automation_workspace=automation_workspace,
+        allow_hidden=include_hidden,
     )
     try:
         size = host_path.stat().st_size

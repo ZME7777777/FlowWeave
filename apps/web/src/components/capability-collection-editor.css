@@ -1,0 +1,22 @@
+.modal.capability-collection-editor{width:min(960px,94vw);height:min(800px,calc(100dvh - 56px));max-height:calc(100dvh - 56px);gap:12px;padding:16px 18px}
+.capability-collection-editor>header{flex:0 0 auto;min-height:28px;gap:12px}
+.capability-collection-editor>header h2{margin:0;font-size:15px;line-height:1.4}
+.capability-collection-editor>header button{padding:5px 8px;font-size:10px}
+.capability-collection-editor>.capability-collection-fields{grid-template-columns:minmax(0,1fr) minmax(0,1.6fr);gap:14px}
+.capability-collection-editor .capability-collection-fields>label{display:flex;min-width:0;flex-direction:row;align-items:center;gap:8px;margin:0;white-space:nowrap}
+.capability-collection-editor .capability-collection-fields input{min-width:0;flex:1;width:0;height:32px;padding:6px 9px;font-size:11px}
+.capability-collection-editor>.capability-collection-members{margin:0}
+.capability-collection-editor .capability-collection-members>header{min-height:42px;padding:6px 12px}
+.capability-collection-editor .capability-collection-members>header>div{display:flex;align-items:center;gap:10px;min-width:0}
+.capability-collection-editor .capability-collection-members>header span{margin:0;white-space:nowrap}
+.capability-collection-editor .capability-collection-members>header input{height:29px;font-size:10px}
+.capability-collection-editor .capability-collection-members>div{overscroll-behavior:contain}
+.capability-collection-editor .capability-collection-members>div>label{min-height:48px;gap:9px;padding:7px 12px}
+.capability-collection-editor .capability-collection-members label>span{min-width:0}
+.capability-collection-editor .capability-collection-members label span b,.capability-collection-editor .capability-collection-members label span small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.capability-collection-editor .capability-collection-members label span b{font-size:11px}
+.capability-collection-editor .capability-collection-members label span small{font-size:10px}
+.capability-collection-editor .capability-collection-members label em{white-space:nowrap}
+.capability-collection-editor>footer{margin:0;min-height:32px}
+.capability-collection-editor>footer button{padding:7px 12px;font-size:11px}
+@media(max-width:700px){.modal.capability-collection-editor{padding:12px;gap:10px}.capability-collection-editor>.capability-collection-fields{gap:9px;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr)}.capability-collection-editor .capability-collection-fields>label{flex-direction:column;align-items:stretch;gap:4px}.capability-collection-editor .capability-collection-fields input{width:100%}.capability-collection-editor .capability-collection-members>header{flex-direction:row;align-items:center}.capability-collection-editor .capability-collection-members>header input{min-width:0;width:45%}}

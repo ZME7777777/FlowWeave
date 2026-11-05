@@ -7,14 +7,16 @@ from typing import Any, Literal, cast
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from flowweave.modules.catalog.application import mcp_authentication
 from flowweave.modules.credentials.application.service import credentials_for_agent
 from flowweave.modules.model_providers.application.service import (
     codex_runtime_credentials,
     get_provider,
     has_connected_default_model,
-    prompt_provider_snapshot,
-    provider_auth_headers,
+    provider_api_key,
+    provider_model_protocol,
 )
+from flowweave.modules.model_providers.domain.protocols import protocol_base_url
 from flowweave.modules.model_providers.infrastructure.codex_oauth import CODEX_BASE_URL
 from flowweave.modules.runs.application.git_settings import record_git_identity
 from flowweave.modules.runs.infrastructure.models import FlowRun
@@ -219,42 +221,23 @@ def runtime_provider(
             extra_headers=headers,
             reasoning_effort=selected_effort,
         )
-    if provider.auth_type == "ANTHROPIC_API_KEY":
-        authorization = provider_auth_headers(provider).get("Authorization", "")
-        api_key = authorization.removeprefix("Bearer ").strip()
-        if not api_key:
-            raise DomainError(
-                "MODEL_CREDENTIAL_REQUIRED",
-                "The selected Anthropic provider does not have an API key",
-                422,
-            )
-        return RuntimeProvider(
-            provider_id=provider_id,
-            base_url=provider.base_url.rstrip("/"),
-            model=selected_model,
-            api_key=api_key,
-            auth_type="ANTHROPIC_API_KEY",
-            reasoning_effort=selected_effort,
-        )
-    selected = prompt_provider_snapshot(
-        db,
-        provider_id,
-        selected_model,
-    )
-    authorization = selected.headers.get("Authorization", "")
-    api_key = authorization.removeprefix("Bearer ").strip()
+    # One API-key provider multiplexes protocols: the selected model decides the
+    # wire protocol, the endpoint shape and (inside OpenHands/LiteLLM) the
+    # authentication header, so users never configure it twice.
+    api_key = provider_api_key(provider).strip()
     if not api_key:
         raise DomainError(
             "MODEL_CREDENTIAL_REQUIRED",
             "The selected model provider does not have an API key",
             422,
         )
+    protocol = provider_model_protocol(db, provider_id, selected_model)
     return RuntimeProvider(
         provider_id=provider_id,
-        base_url=selected.base_url,
-        model=selected.model,
+        base_url=protocol_base_url(provider.base_url, protocol),
+        model=selected_model,
         api_key=api_key,
-        api_protocol=selected.protocol,
+        api_protocol=protocol,
         reasoning_effort=selected_effort,
     )
 
@@ -446,7 +429,7 @@ def build_runtime_request(
     # used outside FlowRun; the FlowRun contributes only its Runtime and
     # workspace mount. Keep this fast path before all node materialization.
     if interaction_mode == "COLLABORATION" and agent_spec is not None:
-        return StartAttemptRequest(
+        request = StartAttemptRequest(
             attempt_id=attempt_id,
             execution_key=execution_key,
             node={},
@@ -479,6 +462,7 @@ def build_runtime_request(
             runtime_base_url=runtime_base_url,
             conversation_secrets=conversation_secrets,
         )
+        return mcp_authentication.prepare_request(db, request, f"conversation:{attempt_id}")
     runtime_allocation = (
         runtime_allocation_for_node_attempt(
             db,
@@ -529,7 +513,7 @@ def build_runtime_request(
             runtime_working_dir_relative = ""
             runtime_working_directory = str(workspace_context.runtime_working_directory)
     if agent_spec is not None:
-        return StartAttemptRequest(
+        request = StartAttemptRequest(
             attempt_id=attempt_id,
             execution_key=execution_key,
             node=node,
@@ -558,6 +542,7 @@ def build_runtime_request(
             runtime_base_url=runtime_base_url,
             conversation_secrets=conversation_secrets,
         )
+        return mcp_authentication.prepare_request(db, request, f"attempt:{attempt_id}")
     raw_agent_spec = node.get("runtime_agent_spec")
     if not isinstance(raw_agent_spec, dict):
         raise DomainError(
@@ -859,7 +844,7 @@ def build_runtime_request(
         critic=critic,
         budgets=RuntimeBudgets(max_iterations=max_iterations),
     )
-    return StartAttemptRequest(
+    request = StartAttemptRequest(
         attempt_id=attempt_id,
         execution_key=execution_key,
         node=node,
@@ -887,3 +872,4 @@ def build_runtime_request(
         runtime_base_url=runtime_base_url,
         conversation_secrets=conversation_secrets,
     )
+    return mcp_authentication.prepare_request(db, request, f"attempt:{attempt_id}")

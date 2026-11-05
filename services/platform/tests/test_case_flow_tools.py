@@ -1,0 +1,1758 @@
+"""PostgreSQL/HTTP authority, draft lifecycle and action audit regressions."""
+
+import copy
+import json
+from uuid import uuid4
+
+import pytest
+from sqlalchemy import select, text
+from test_case_native_tools import native_case  # noqa: F401
+
+from flowweave.modules.cases.application import native_tools, service
+from flowweave.modules.cases.infrastructure.models import (
+    CaseArtifactReference,
+    CaseControlPlan,
+    CaseFlowRun,
+    CaseFlowToolGrant,
+    CaseStage,
+)
+from flowweave.modules.flows.infrastructure.models import FlowDefinition
+from flowweave.modules.model_providers.infrastructure.models import ModelProvider, ProviderModel
+from flowweave.modules.runs.infrastructure.models import (
+    ArtifactVersion,
+    CandidateOutputSet,
+    FlowRun,
+    GateEvaluation,
+    NodeAttempt,
+    NodeRun,
+    RunSnapshot,
+)
+from flowweave.modules.users.application.security import tenant_user
+from flowweave.shared.credentials_crypto import encrypt_secret
+from flowweave.shared.errors import DomainError
+
+
+@pytest.fixture
+def flow_case(native_case, monkeypatch):  # noqa: F811
+    g = native_case
+    db = g.db
+    monkeypatch.setattr(service, "write_case_files", lambda *args: None)
+    flow = FlowDefinition(name="Scene tools graph")
+    provider = ModelProvider(
+        name="Scene provider",
+        base_url="https://model.example.test/v1",
+        encrypted_api_key=encrypt_secret("test-provider-key"),
+        connection_state="CONNECTED",
+    )
+    db.add_all([flow, provider])
+    db.flush()
+    db.add(ProviderModel(provider_id=provider.id, model_name="test-model", enabled=True))
+    g.preset = {"model_provider_id": provider.id, "model_name": "test-model"}
+    g.definition = {
+        "name": "Scene graph",
+        "nodes": [
+            {
+                "instance_key": key,
+                "alias": key,
+                "asset": {
+                    "id": str(uuid4()),
+                    "name": "Node " + key,
+                    "description": "input contract",
+                    "inputs": [
+                        {"field_key": "link", "data_type": "URL", "display_name": "reference"}
+                    ],
+                    "outputs": [
+                        {"field_key": "report", "data_type": "URL", "display_name": "report"}
+                    ],
+                    "executor": {
+                        "startup_prompt": "check input",
+                        "context_prompt": "cite evidence",
+                    },
+                },
+            }
+            for key in ("first", "second")
+        ],
+        "edges": [{"source_instance_key": "first", "target_instance_key": "second", "position": 0}],
+        "port_mappings": [
+            {
+                "source_instance_key": "first",
+                "source_output_key": "report",
+                "target_instance_key": "second",
+                "target_input_key": "link",
+            }
+        ],
+    }
+    plans = {
+        key: {
+            "startup_prompt": "original " + key,
+            "agent_preset": g.preset,
+            "artifact_ids": {},
+            "input_urls": {"link": "https://example.test/input"},
+            "gates": [],
+        }
+        for key in ("first", "second")
+    }
+    runs = []
+    for number in (1, 2):
+        run = FlowRun(
+            flow_definition_id=flow.id,
+            run_no=number,
+            name="template" if number == 1 else "execution",
+            run_mode="AUTOMATIC",
+            state="DRAFT",
+            environment_version_id=g.client.environment_version_id,
+            automation_plan_json={
+                "start_node_key": "first",
+                "node_plans": copy.deepcopy(plans),
+                "readiness": {"ready": True},
+            },
+        )
+        db.add(run)
+        db.flush()
+        snapshot = RunSnapshot(
+            flow_run_id=run.id,
+            version=1,
+            definition_json=copy.deepcopy(g.definition),
+            definition_hash="a" * 64,
+            runtime_manifest_json={"schema_version": 3, "nodes": {}},
+            runtime_manifest_hash="b" * 64,
+            environment_version_id=run.environment_version_id,
+        )
+        db.add(snapshot)
+        db.flush()
+        run.active_snapshot_id = snapshot.id
+        runs.append(run)
+    g.template, g.execution = runs
+    g.stage = db.scalar(
+        select(CaseStage).where(CaseStage.case_id == g.item.id, CaseStage.stage_key == "0")
+    )
+    g.stage.execution_mode = "CONTINUOUS"
+    g.stage.flow_run_id = g.template.id
+    g.stage.current_execution_flow_run_id = g.execution.id
+    db.add(CaseFlowRun(case_id=g.item.id, flow_run_id=g.execution.id))
+    db.commit()
+    g.flow_token = native_tools.prepare_creation(
+        db, g.entry.id, g.binding, contract=native_tools.FLOWS
+    )[native_tools.FLOWS.secret_name]
+    yield g
+
+
+def rpc(g, name, args=None, *, token=None, path=None):
+    return g.client.post(
+        path or native_tools.FLOWS.path,
+        headers={"Authorization": "Bearer " + (token or g.flow_token)},
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": args or {}},
+        },
+    )
+
+
+def projection(response):
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert "result" in body, body
+    return json.loads(body["result"]["content"][0]["text"])
+
+
+def action(g, name="START_EXECUTION", **overrides):
+    # Read the exact current preconditions via the same native tool surface.
+    facts = projection(
+        rpc(
+            g,
+            "read_case_flow",
+            {"source": "TEMPLATE" if name == "CREATE_EXECUTION_COPY" else "CURRENT"},
+        )
+    )
+    value = {
+        "action": name,
+        "idempotency_key": "action:" + str(uuid4()),
+        "reason": "check scene inputs",
+        "expected_case_row_version": facts["case_row_version"],
+        "expected_stage_key": facts["stage_key"],
+        "expected_execution_flow_run_id": facts["current_execution_flow_run_id"],
+        "expected_run_row_version": facts["flow_run"]["row_version"],
+        "expected_snapshot_version": facts["flow_run"]["active_snapshot_version"],
+    }
+    value.update(overrides)
+    return value
+
+
+def refresh(g):
+    g.db.expire_all()
+
+
+def test_separate_native_contracts_and_schema_have_no_identity_overrides(flow_case):
+    g = flow_case
+    assert rpc(g, "read_case_flow", token=g.token).status_code == 401
+    assert (
+        rpc(g, "read_case_context", token=g.flow_token, path=native_tools.MCP_PATH).status_code
+        == 401
+    )
+    assert rpc(g, "manage_case_flow", token=g.token).status_code == 401
+    listed = g.client.post(
+        native_tools.FLOWS.path,
+        headers={"Authorization": "Bearer " + g.flow_token},
+        json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+    ).json()["result"]["tools"]
+    assert [tool["name"] for tool in listed] == [
+        "read_case_flow",
+        "read_case_node_session",
+        "manage_case_flow",
+    ]
+    assert [tool["annotations"]["readOnlyHint"] for tool in listed] == [True, True, False]
+    assert "case_id" not in listed[2]["inputSchema"]["properties"]
+    assert "case_id" not in listed[1]["inputSchema"]["properties"]
+    refs = g.db.scalars(select(CaseFlowToolGrant)).all()
+    assert len(refs) == 1
+    assert refs[0].capability_digest != g.version.digest
+
+
+def test_bounded_graph_contract_and_draft_reads_do_not_leak_manifests(flow_case):
+    g = flow_case
+    nodes = projection(rpc(g, "read_case_flow", {"section": "nodes", "limit": 1}))
+    assert nodes["total"] == 2 and nodes["next_offset"] == 1
+    assert nodes["items"][0]["asset"]["inputs"][0]["field_key"] == "link"
+    assert nodes["items"][0]["asset"]["executor"]["startup_prompt"] == "check input"
+    assert len(projection(rpc(g, "read_case_flow", {"section": "edges"}))["items"]) == 2
+    end = projection(rpc(g, "read_case_flow", {"section": "nodes", "offset": 1}))
+    assert end["next_offset"] is None and end["items"][0]["instance_key"] == "second"
+    drafts = projection(rpc(g, "read_case_flow", {"section": "drafts", "flow_node_key": "first"}))
+    assert drafts["total"] == 1 and drafts["items"][0]["startup_prompt"] == "original first"
+    assert "capabilities" not in drafts["items"][0]["agent_preset"]
+    assert "runtime_manifest" not in json.dumps(nodes)
+    hidden = projection(rpc(g, "read_case_flow", {"stage_key": "foreign"}))
+    assert hidden["error_code"]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("case_id", "foreign"),
+        ("flow_run_id", "foreign"),
+        ("binding_id", "foreign"),
+        ("offset", True),
+        ("limit", 51),
+    ],
+)
+def test_read_arguments_cannot_expand_authority(flow_case, field, value):
+    assert rpc(flow_case, "read_case_flow", {field: value}).json()["error"]["code"] == -32602
+
+
+def test_real_copy_is_independent_and_response_retry_never_duplicates(flow_case):
+    g = flow_case
+    g.stage.current_execution_flow_run_id = None
+    g.db.commit()
+    original = copy.deepcopy(g.template.automation_plan_json)
+    args = action(g, "CREATE_EXECUTION_COPY")
+    first = projection(rpc(g, "manage_case_flow", args))
+    assert first["state"] == "SUCCEEDED", first
+    second = projection(rpc(g, "manage_case_flow", args))
+    assert second == first
+    refresh(g)
+    copied_id = g.stage.current_execution_flow_run_id
+    assert copied_id not in {g.template.id, g.execution.id}
+    assert g.db.get(FlowRun, copied_id).state == "DRAFT"
+    assert g.template.automation_plan_json == original
+    assert (
+        g.db.scalar(
+            select(CaseControlPlan).where(CaseControlPlan.id == first["plan_id"])
+        ).result_json["case"]["id"]
+        == g.item.id
+    )
+    assert len(g.db.scalars(select(FlowRun)).all()) == 3
+
+
+def test_real_automatic_configuration_preserves_template_and_can_be_read_back(flow_case):
+    g = flow_case
+    original = copy.deepcopy(g.template.automation_plan_json)
+    plans = copy.deepcopy(g.execution.automation_plan_json["node_plans"])
+    plans["first"]["startup_prompt"] = "Agent chose complete inputs"
+    args = action(
+        g,
+        "CONFIGURE_EXECUTION",
+        automatic_draft={"expected_row_version": 1, "start_node_key": "first", "node_plans": plans},
+    )
+    saved = projection(rpc(g, "manage_case_flow", args))
+    assert saved["state"] == "SUCCEEDED", saved
+    assert projection(rpc(g, "manage_case_flow", args)) == saved
+    refresh(g)
+    assert g.execution.row_version == 2
+    assert g.template.automation_plan_json == original
+    drafts = projection(rpc(g, "read_case_flow", {"section": "drafts"}))["items"]
+    assert drafts[0]["startup_prompt"] == "Agent chose complete inputs"
+
+
+@pytest.mark.parametrize("changed", ["case", "stage", "execution", "run", "snapshot"])
+def test_stale_preconditions_are_durably_failed_and_never_start(flow_case, monkeypatch, changed):
+    g = flow_case
+    calls = []
+    monkeypatch.setattr(
+        service.orchestration, "start_automatic_run", lambda *args: calls.append(args)
+    )
+    args = action(g)
+    if changed == "case":
+        args["expected_case_row_version"] += 1
+    elif changed == "stage":
+        args["expected_stage_key"] = "1"
+    elif changed == "execution":
+        args["expected_execution_flow_run_id"] = g.template.id
+    elif changed == "run":
+        args["expected_run_row_version"] += 1
+    else:
+        args["expected_snapshot_version"] += 1
+    saved = projection(rpc(g, "manage_case_flow", args))
+    assert saved["state"] == "FAILED" and saved["error_code"] == "CASE_FLOW_VERSION_CONFLICT"
+    assert projection(rpc(g, "manage_case_flow", args)) == saved
+    refresh(g)
+    stored = g.db.get(CaseControlPlan, saved["plan_id"])
+    assert (
+        stored.state == "FAILED"
+        and stored.input_snapshot_json["requested"]["expected_stage_key"]
+        == args["expected_stage_key"]
+    )
+    assert not calls
+
+
+def test_duplicate_start_and_payload_reuse_are_distinct(flow_case, monkeypatch):
+    g = flow_case
+    calls = []
+
+    def start(db, run_id, payload, key):
+        calls.append(key)
+        db.get(FlowRun, run_id).state = "ACTIVE"
+        return {"id": run_id, "state": "ACTIVE"}
+
+    monkeypatch.setattr(service.orchestration, "start_automatic_run", start)
+    args = action(g)
+    saved = projection(rpc(g, "manage_case_flow", args))
+    assert saved["state"] == "SUCCEEDED", saved
+    assert projection(rpc(g, "manage_case_flow", args)) == saved
+    assert len(calls) == 1
+    changed = {**args, "reason": "different decision"}
+    assert projection(rpc(g, "manage_case_flow", changed))["error_code"] == "VERSION_CONFLICT"
+    assert len(calls) == 1
+
+
+def test_failed_start_requires_linked_new_attempt(flow_case, monkeypatch):
+    g = flow_case
+    calls = []
+
+    def start(db, run_id, payload, key):
+        calls.append(key)
+        if len(calls) == 1:
+            raise DomainError("TEMPORARY_PROVIDER_ERROR", "test failure", 503)
+        db.get(FlowRun, run_id).state = "ACTIVE"
+        return {"id": run_id, "state": "ACTIVE"}
+
+    monkeypatch.setattr(service.orchestration, "start_automatic_run", start)
+    args = action(g)
+    failed = projection(rpc(g, "manage_case_flow", args))
+    assert failed["state"] == "FAILED"
+    assert projection(rpc(g, "manage_case_flow", args)) == failed
+    retry = action(g, retry_of_plan_id=failed["plan_id"])
+    saved = projection(rpc(g, "manage_case_flow", retry))
+    assert saved["state"] == "SUCCEEDED" and saved["retry_of_plan_id"] == failed["plan_id"]
+    assert len(calls) == 2
+
+
+def stepwise(g):
+    g.stage.execution_mode = "STEPWISE"
+    g.execution.run_mode = "MANUAL"
+    g.execution.state = "ACTIVE"
+    g.execution.parent_flow_run_id = g.template.id
+    g.execution.automation_plan_json = {
+        "start_node_key": "first",
+        "node_drafts": {
+            "first": {
+                "row_version": 1,
+                "startup_mode": "PROMPT",
+                "startup_prompt": "stepwise",
+                "agent_preset": g.preset,
+                "input_bindings": {},
+                "gates": [],
+            }
+        },
+    }
+    g.db.commit()
+
+
+def test_real_stepwise_configuration_and_started_node_protection(flow_case):
+    g = flow_case
+    stepwise(g)
+    draft = {
+        "expected_row_version": 1,
+        "startup_prompt": "more complete",
+        "agent_preset": g.preset,
+        "input_urls": {"link": "https://example.test/input"},
+    }
+    args = action(g, "CONFIGURE_EXECUTION", flow_node_key="first", stepwise_draft=draft)
+    saved = projection(rpc(g, "manage_case_flow", args))
+    assert saved["state"] == "SUCCEEDED", saved
+    drafts = projection(rpc(g, "read_case_flow", {"section": "drafts"}))["items"]
+    assert drafts[0]["row_version"] == 2 and drafts[0]["startup_prompt"] == "more complete"
+    assert drafts[0]["input_bindings"]["link"]["artifact_version_id"]
+    refresh(g)
+    g.db.add(NodeRun(flow_run_id=g.execution.id, flow_node_snapshot_key="first", sequence_no=1))
+    g.db.commit()
+    draft["expected_row_version"] = 2
+    blocked = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(g, "CONFIGURE_EXECUTION", flow_node_key="first", stepwise_draft=draft),
+        )
+    )
+    assert blocked["state"] == "FAILED"
+    refresh(g)
+    assert (
+        g.execution.automation_plan_json["node_drafts"]["first"]["startup_prompt"]
+        == "more complete"
+    )
+
+
+def test_stepwise_start_passes_frozen_draft_and_native_binding_result(flow_case, monkeypatch):
+    g = flow_case
+    stepwise(g)
+    calls = []
+
+    def start(db, run_id, node_key, payload, command):
+        calls.append((run_id, node_key, payload.expected_row_version, command))
+        return {"binding_id": str(uuid4()), "id": str(uuid4())}
+
+    monkeypatch.setattr(service.orchestration, "start_stepwise_node_draft", start)
+    args = action(g, "START_STEPWISE_NODE", flow_node_key="first", draft_row_version=1)
+    saved = projection(rpc(g, "manage_case_flow", args))
+    assert saved["state"] == "SUCCEEDED", saved
+    assert projection(rpc(g, "manage_case_flow", args)) == saved
+    assert len(calls) == 1 and calls[0][:3] == (g.execution.id, "first", 1)
+    assert "case-plan-stepwise-start:" in calls[0][3]
+
+
+def review_ready(g):
+    stepwise(g)
+    g.node = NodeRun(
+        flow_run_id=g.execution.id,
+        flow_node_snapshot_key="first",
+        sequence_no=1,
+        state="ACTIVE",
+        created_from="STEPWISE_DRAFT_START",
+    )
+    g.db.add(g.node)
+    g.db.flush()
+    g.attempt = NodeAttempt(
+        node_run_id=g.node.id,
+        attempt_no=1,
+        snapshot_id=g.execution.active_snapshot_id,
+        state="WAITING_ACCEPTANCE",
+        startup_prompt="reviewed prompt",
+        agent_preset_json=g.preset,
+        gate_policies_json=[],
+    )
+    g.db.add(g.attempt)
+    g.db.flush()
+    artifact = ArtifactVersion(
+        flow_run_id=g.execution.id,
+        producer_attempt_id=g.attempt.id,
+        field_key="report",
+        version_no=1,
+        artifact_type="URL",
+        uri="https://example.test/result",
+        content_hash="d" * 64,
+        byte_size=0,
+        source="RUNTIME",
+    )
+    g.db.add(artifact)
+    g.db.flush()
+    g.candidate = CandidateOutputSet(
+        attempt_id=g.attempt.id,
+        completion_event_id="native-completion",
+        status="GATE_PASSED",
+        artifact_ids_json=[artifact.id],
+    )
+    g.db.add(g.candidate)
+    g.db.flush()
+    g.attempt.current_candidate_output_set_id = g.candidate.id
+    g.execution.automation_plan_json = {"start_node_key": "first", "node_drafts": {}}
+    g.db.commit()
+
+
+def test_case_review_requires_explicit_acceptance_before_successor_start(flow_case, monkeypatch):
+    g = flow_case
+    review_ready(g)
+    starts = []
+    monkeypatch.setattr(
+        service.orchestration,
+        "start_stepwise_node_draft",
+        lambda *args: starts.append(args),
+    )
+    review = projection(rpc(g, "read_case_flow", {"section": "nodes"}))
+    first = review["items"][0]["execution"]
+    assert first["latest_attempt"]["id"] == g.attempt.id
+    assert first["latest_attempt"]["state"] == "WAITING_ACCEPTANCE"
+    assert first["latest_attempt"]["state_version"] == 1
+    accepted = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(
+                g,
+                "ACCEPT_STEPWISE_ATTEMPT",
+                flow_node_key="first",
+                node_run_id=g.node.id,
+                node_attempt_id=g.attempt.id,
+                expected_attempt_state_version=1,
+            ),
+        )
+    )
+    assert accepted["state"] == "SUCCEEDED"
+    refresh(g)
+    assert g.node.state == "ACCEPTED"
+    drafts = projection(rpc(g, "read_case_flow", {"section": "drafts"}))["items"]
+    assert [item["flow_node_key"] for item in drafts] == ["second"]
+    assert starts == []
+
+
+def test_case_can_reject_then_configure_and_start_replacement_attempt(flow_case, monkeypatch):
+    g = flow_case
+    review_ready(g)
+    monkeypatch.setattr(service.orchestration, "_dispatch_readiness", lambda *args: None)
+    monkeypatch.setattr(
+        service.orchestration, "ensure_node_attempt_workspace", lambda *args, **kwargs: "test"
+    )
+    rejected = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(
+                g,
+                "REJECT_STEPWISE_ATTEMPT",
+                flow_node_key="first",
+                node_run_id=g.node.id,
+                node_attempt_id=g.attempt.id,
+                expected_attempt_state_version=1,
+                copy_input_bindings=True,
+            ),
+        )
+    )
+    assert rejected["state"] == "SUCCEEDED"
+    refresh(g)
+    replacement = g.db.scalar(
+        select(NodeAttempt)
+        .where(NodeAttempt.node_run_id == g.node.id)
+        .order_by(NodeAttempt.attempt_no.desc())
+    )
+    assert g.attempt.state == "REJECTED" and replacement.attempt_no == 2
+    assert replacement.state == "WAITING_INPUT"
+    assert replacement.startup_prompt is None
+    assert replacement.agent_preset_json == g.preset
+
+
+def test_case_reopens_accepted_node_for_editable_rerun_without_rewriting_history(flow_case):
+    g = flow_case
+    review_ready(g)
+    g.attempt.state = "ACCEPTED"
+    g.node.state = "ACCEPTED"
+    g.node.accepted_attempt_id = g.attempt.id
+    g.execution.automation_plan_json = {
+        "start_node_key": "first",
+        "node_drafts": {
+            "second": {
+                "row_version": 2,
+                "startup_mode": "PROMPT",
+                "startup_prompt": "successor",
+                "agent_preset": g.preset,
+                "input_bindings": {},
+                "gates": [],
+            }
+        },
+    }
+    g.db.commit()
+    result = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(
+                g,
+                "RERUN_STEPWISE_NODE",
+                flow_node_key="first",
+                node_run_id=g.node.id,
+            ),
+        )
+    )
+    assert result["state"] == "SUCCEEDED"
+    refresh(g)
+    assert g.node.state == "ACCEPTED" and g.node.accepted_attempt_id == g.attempt.id
+    drafts = projection(rpc(g, "read_case_flow", {"section": "drafts"}))["items"]
+    assert drafts[0]["flow_node_key"] == "first"
+    assert drafts[0]["rerun_source_node_run_id"] == g.node.id
+
+
+def test_case_rerun_fails_after_successor_materializes(flow_case):
+    g = flow_case
+    review_ready(g)
+    g.attempt.state = "ACCEPTED"
+    g.node.state = "ACCEPTED"
+    g.node.accepted_attempt_id = g.attempt.id
+    g.db.add(
+        NodeRun(
+            flow_run_id=g.execution.id,
+            flow_node_snapshot_key="second",
+            sequence_no=2,
+            state="ACTIVE",
+            created_from="STEPWISE_DRAFT_START",
+        )
+    )
+    g.db.commit()
+    result = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(
+                g,
+                "RERUN_STEPWISE_NODE",
+                flow_node_key="first",
+                node_run_id=g.node.id,
+            ),
+        )
+    )
+    assert result["state"] == "FAILED"
+    refresh(g)
+    assert "first" not in g.execution.automation_plan_json["node_drafts"]
+
+
+def mark_continuous_review_pending(g):
+    g.execution.state = "COMPLETED"
+    service.reconcile_case_execution_state(g.db, g.execution.id)
+    g.db.commit()
+    g.db.refresh(g.item)
+    g.db.refresh(g.stage)
+    assert g.item.state == "ACTIVE"
+    assert g.stage.state == "REVIEW_PENDING"
+
+
+def test_completed_execution_waits_for_agent_review_without_advancing_case(flow_case):
+    g = flow_case
+    next_stage = CaseStage(
+        case_id=g.item.id,
+        stage_key="1",
+        name="next",
+        position=1,
+        state="PENDING",
+        execution_mode="CONTINUOUS",
+    )
+    g.db.add(next_stage)
+    g.db.commit()
+    mark_continuous_review_pending(g)
+    g.db.refresh(next_stage)
+    facts = projection(rpc(g, "read_case_flow"))
+    assert facts["stage_state"] == "REVIEW_PENDING"
+    assert facts["flow_run"]["id"] == g.execution.id
+    assert next_stage.state == "PENDING"
+
+
+def test_agent_copies_completed_continuous_execution_and_switches_current_draft(flow_case):
+    g = flow_case
+    mark_continuous_review_pending(g)
+    source_plan = copy.deepcopy(g.execution.automation_plan_json)
+    result = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(g, "COPY_CONTINUOUS_EXECUTION", copy_name="revised execution"),
+        )
+    )
+    assert result["state"] == "SUCCEEDED"
+    refresh(g)
+    copied = g.db.get(FlowRun, g.stage.current_execution_flow_run_id)
+    assert copied.id != g.execution.id
+    assert copied.state == "DRAFT" and copied.name == "revised execution"
+    assert g.stage.state == "ACTIVE"
+    assert g.execution.state == "COMPLETED"
+    assert g.execution.automation_plan_json == source_plan
+    assert g.db.scalar(
+        select(CaseFlowRun).where(
+            CaseFlowRun.case_id == g.item.id, CaseFlowRun.flow_run_id == copied.id
+        )
+    )
+
+
+def test_agent_advances_reviewed_stage_without_starting_next_execution(flow_case):
+    g = flow_case
+    next_template = FlowRun(
+        flow_definition_id=g.template.flow_definition_id,
+        run_no=3,
+        name="next template",
+        run_mode="AUTOMATIC",
+        state="DRAFT",
+        environment_version_id=g.template.environment_version_id,
+        automation_plan_json=copy.deepcopy(g.template.automation_plan_json),
+    )
+    g.db.add(next_template)
+    g.db.flush()
+    next_snapshot = RunSnapshot(
+        flow_run_id=next_template.id,
+        version=1,
+        definition_json=copy.deepcopy(g.definition),
+        definition_hash="c" * 64,
+        runtime_manifest_json={"schema_version": 3, "nodes": {}},
+        runtime_manifest_hash="d" * 64,
+        environment_version_id=next_template.environment_version_id,
+    )
+    g.db.add(next_snapshot)
+    g.db.flush()
+    next_template.active_snapshot_id = next_snapshot.id
+    next_stage = CaseStage(
+        case_id=g.item.id,
+        stage_key="1",
+        name="next",
+        position=1,
+        state="PENDING",
+        execution_mode="CONTINUOUS",
+        flow_run_id=next_template.id,
+    )
+    g.db.add(next_stage)
+    g.db.commit()
+    mark_continuous_review_pending(g)
+    result = projection(rpc(g, "manage_case_flow", action(g, "ADVANCE_CASE_STAGE")))
+    assert result["state"] == "SUCCEEDED"
+    refresh(g)
+    assert g.stage.state == "COMPLETED"
+    assert next_stage.state == "ACTIVE"
+    assert next_stage.current_execution_flow_run_id is None
+    assert g.item.state == "ACTIVE"
+
+
+def test_agent_cannot_skip_unresolved_stage_and_complete_case(flow_case):
+    g = flow_case
+    g.stage.position = 1
+    earlier = CaseStage(
+        case_id=g.item.id,
+        stage_key="before",
+        name="before",
+        position=0,
+        state="PENDING",
+        execution_mode="CONTINUOUS",
+    )
+    g.db.add(earlier)
+    g.db.commit()
+    mark_continuous_review_pending(g)
+    result = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(g, "COMPLETE_CASE", evidence_artifact_version_ids=[str(uuid4())]),
+        )
+    )
+    assert result["state"] == "FAILED"
+
+
+def test_agent_completes_final_stage_only_with_current_accepted_artifact_evidence(flow_case):
+    g = flow_case
+    g.node = NodeRun(
+        flow_run_id=g.execution.id,
+        flow_node_snapshot_key="first",
+        sequence_no=1,
+        state="ACCEPTED",
+        created_from="AUTOMATIC_PLAN",
+    )
+    g.db.add(g.node)
+    g.db.flush()
+    g.attempt = NodeAttempt(
+        node_run_id=g.node.id,
+        attempt_no=1,
+        snapshot_id=g.execution.active_snapshot_id,
+        state="ACCEPTED",
+    )
+    g.db.add(g.attempt)
+    g.db.flush()
+    g.node.accepted_attempt_id = g.attempt.id
+    artifact = ArtifactVersion(
+        flow_run_id=g.execution.id,
+        producer_attempt_id=g.attempt.id,
+        field_key="report",
+        version_no=1,
+        artifact_type="URL",
+        uri="https://example.test/result",
+        content_hash="d" * 64,
+        byte_size=0,
+        source="RUNTIME",
+    )
+    g.db.add(artifact)
+    g.db.flush()
+    artifact_id = artifact.id
+    g.db.add(
+        CaseArtifactReference(
+            case_id=g.item.id,
+            stage_id=g.stage.id,
+            stage_key=g.stage.stage_key,
+            execution_flow_run_id=g.execution.id,
+            node_run_id=g.node.id,
+            node_key="first",
+            node_attempt_id=g.attempt.id,
+            artifact_version_id=artifact_id,
+        )
+    )
+    g.execution.state = "COMPLETED"
+    g.db.commit()
+    mark_continuous_review_pending(g)
+    stale = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(g, "COMPLETE_CASE", evidence_artifact_version_ids=[str(uuid4())]),
+        )
+    )
+    assert stale["state"] == "FAILED"
+    refresh(g)
+    result = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(g, "COMPLETE_CASE", evidence_artifact_version_ids=[artifact_id]),
+        )
+    )
+    assert result["state"] == "SUCCEEDED"
+    refresh(g)
+    assert g.stage.state == "COMPLETED"
+    assert g.item.state == "COMPLETED"
+
+
+@pytest.mark.parametrize("state", ["PAUSED", "COMPLETED", "ARCHIVED"])
+def test_pause_and_terminal_scope_fail_closed(flow_case, state):
+    g = flow_case
+    args = action(g)
+    g.item.state = state
+    g.db.commit()
+    response = rpc(g, "manage_case_flow", args)
+    if state == "PAUSED":
+        assert projection(response)["error_code"] == "CASE_PAUSED"
+        assert projection(rpc(g, "read_case_flow"))["flow_run"]["id"] == g.execution.id
+    else:
+        assert response.status_code == 401
+
+
+def test_running_automatic_copy_cannot_be_edited(flow_case):
+    g = flow_case
+    g.execution.state = "ACTIVE"
+    g.db.commit()
+    plans = copy.deepcopy(g.execution.automation_plan_json["node_plans"])
+    args = action(
+        g,
+        "CONFIGURE_EXECUTION",
+        automatic_draft={"expected_row_version": 1, "start_node_key": "first", "node_plans": plans},
+    )
+    assert projection(rpc(g, "manage_case_flow", args))["state"] == "FAILED"
+    refresh(g)
+    assert g.execution.automation_plan_json["node_plans"] == plans
+
+
+def test_partial_configuration_failure_rolls_back_inputs_but_preserves_audit(
+    flow_case, monkeypatch
+):
+    g = flow_case
+
+    def invalid(db, run_id, payload):
+        db.get(FlowRun, run_id).name = "must roll back"
+        db.flush()
+        raise DomainError("INVALID_INPUT", "invalid input", 422)
+
+    monkeypatch.setattr(service.orchestration, "update_automatic_run_draft", invalid)
+    args = action(
+        g,
+        "CONFIGURE_EXECUTION",
+        automatic_draft={"expected_row_version": 1, "start_node_key": "first", "node_plans": {}},
+    )
+    saved = projection(rpc(g, "manage_case_flow", args))
+    assert saved["state"] == "FAILED" and saved["error_code"] == "INVALID_INPUT"
+    refresh(g)
+    assert g.execution.name == "execution"
+    assert g.db.get(CaseControlPlan, saved["plan_id"]).state == "FAILED"
+
+
+def test_flow_grant_rls_and_revocation(flow_case, db_session_factory):
+    g = flow_case
+    from flowweave.shared.secret_redaction import redact_secret_text
+
+    assert g.flow_token not in redact_secret_text("failure " + g.flow_token)
+    with tenant_user(str(uuid4())), db_session_factory() as other:
+        assert other.scalars(select(CaseFlowToolGrant)).all() == []
+    g.db.delete(g.binding)
+    g.db.commit()
+    assert rpc(g, "read_case_flow").status_code == 401
+    assert g.db.scalar(select(CaseFlowToolGrant.id)) is None
+
+
+@pytest.mark.parametrize("operation", ["copy", "configure"])
+def test_locked_sdk_executes_copy_and_restores_same_action_without_duplicate(
+    flow_case, tmp_path, operation
+):
+    from test_case_native_tools import run_locked_case_probe
+
+    g = flow_case
+    g.stage.current_execution_flow_run_id = None
+    g.db.commit()
+    if operation == "copy":
+        args = action(g, "CREATE_EXECUTION_COPY")
+    else:
+        g.stage.current_execution_flow_run_id = g.execution.id
+        g.db.commit()
+        args = action(
+            g,
+            "CONFIGURE_EXECUTION",
+            automatic_draft={
+                "expected_row_version": 1,
+                "start_node_key": "first",
+                "node_plans": copy.deepcopy(g.execution.automation_plan_json["node_plans"]),
+            },
+        )
+    run_locked_case_probe(g, tmp_path, native_tools.FLOWS, action_args=args)
+    refresh(g)
+    assert len(g.db.scalars(select(FlowRun)).all()) == (3 if operation == "copy" else 2)
+    if operation == "configure":
+        assert g.execution.row_version == 2
+    plans = g.db.scalars(select(CaseControlPlan)).all()
+    assert len(plans) == 1 and plans[0].state == "SUCCEEDED"
+
+
+def test_concurrent_native_copy_requests_create_one_execution(flow_case):
+    from concurrent.futures import ThreadPoolExecutor
+
+    g = flow_case
+    g.stage.current_execution_flow_run_id = None
+    g.db.commit()
+    args = action(g, "CREATE_EXECUTION_COPY")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: projection(rpc(g, "manage_case_flow", args)), range(2)))
+    assert results[0] == results[1] and results[0]["state"] == "SUCCEEDED"
+    refresh(g)
+    assert len(g.db.scalars(select(FlowRun)).all()) == 3
+    assert len(g.db.scalars(select(CaseControlPlan)).all()) == 1
+
+
+@pytest.mark.parametrize("drift", ["round", "runtime", "frozen_version", "directory"])
+def test_flow_grant_revalidates_current_coordinator(flow_case, drift):
+    from flowweave.modules.agent_sessions.infrastructure.models import AgentConversationCapability
+
+    g = flow_case
+    args = action(g)
+    if drift == "round":
+        g.item.current_control_round_id = str(uuid4())
+    elif drift == "runtime":
+        g.binding.runtime_session_id = str(uuid4())
+    elif drift == "directory":
+        g.binding.work_directory_version_id = str(uuid4())
+    else:
+        reference = g.db.scalar(
+            select(AgentConversationCapability).where(
+                AgentConversationCapability.binding_id == g.binding.id,
+                AgentConversationCapability.capability_key == native_tools.FLOWS.server_name,
+            )
+        )
+        reference.digest = "0" * 64
+    g.db.commit()
+    assert rpc(g, "read_case_flow").status_code == 401
+    assert rpc(g, "manage_case_flow", args).status_code == 401
+
+
+def test_savepoint_compensates_only_failed_action_and_retains_outer_audit(flow_case, monkeypatch):
+    from flowweave.shared.application.transactions import (
+        register_commit_action,
+        register_rollback_action,
+    )
+
+    g = flow_case
+    calls = []
+
+    def invalid(db, *args):
+        register_commit_action(db, lambda: calls.append("bad commit"))
+        register_rollback_action(db, lambda: calls.append("compensated"))
+        db.get(FlowRun, g.execution.id).name = "discard this"
+        db.flush()
+        raise DomainError("CONFIGURATION_INVALID", "failure", 422)
+
+    monkeypatch.setattr(service.orchestration, "update_automatic_run_draft", invalid)
+    args = action(
+        g,
+        "CONFIGURE_EXECUTION",
+        automatic_draft={"expected_row_version": 1, "start_node_key": "first", "node_plans": {}},
+    )
+    assert projection(rpc(g, "manage_case_flow", args))["state"] == "FAILED"
+    assert calls == ["compensated"]
+    refresh(g)
+    assert g.execution.name == "execution"
+
+
+def test_migration_enforces_flow_grant_rls_and_cascade(flow_case):
+    from importlib.util import module_from_spec, spec_from_file_location
+    from pathlib import Path
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    source = Path(__file__).parents[1] / "migrations/versions/0182_case_flow_tools.py"
+    spec = spec_from_file_location("case_flow_tool_migration", source)
+    migration = module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    schema = "case_flow_migration_" + uuid4().hex
+    role = "case_flow_rls_" + uuid4().hex
+    with flow_case.db.bind.connect() as connection:
+        connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+        connection.execute(text(f'SET LOCAL search_path TO "{schema}"'))
+        connection.execute(text("CREATE TABLE case_control_rounds (id varchar(36) PRIMARY KEY)"))
+        connection.execute(
+            text("CREATE TABLE agent_conversation_bindings (id varchar(36) PRIMARY KEY)")
+        )
+        connection.execute(
+            text(
+                "CREATE TABLE case_control_plans (id varchar(36) PRIMARY KEY, "
+                "action varchar(40), CONSTRAINT ck_case_control_plan_action "
+                "CHECK (action = 'START_EXECUTION'))"
+            )
+        )
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.upgrade()
+        connection.execute(text("INSERT INTO case_control_rounds VALUES ('round')"))
+        connection.execute(text("INSERT INTO agent_conversation_bindings VALUES ('binding')"))
+        connection.execute(
+            text("""INSERT INTO case_flow_tool_grants VALUES (
+            'grant','owner','round','binding','directory','runtime','conversation',
+            :digest, :encrypted, 'version', :digest, '{}', now())"""),
+            {"digest": "1" * 64, "encrypted": b"encrypted-test-credential"},
+        )
+        connection.execute(text(f'CREATE ROLE "{role}" NOLOGIN NOSUPERUSER'))
+        connection.execute(text(f'GRANT USAGE ON SCHEMA "{schema}" TO "{role}"'))
+        connection.execute(text(f'GRANT SELECT, UPDATE ON case_flow_tool_grants TO "{role}"'))
+        connection.execute(text(f'SET LOCAL ROLE "{role}"'))
+        connection.execute(text("SELECT set_config('flowweave.bypass', 'off', true)"))
+        connection.execute(text("SELECT set_config('flowweave.user_id', 'other', true)"))
+        assert connection.scalar(text("SELECT count(*) FROM case_flow_tool_grants")) == 0
+        assert (
+            connection.execute(
+                text("UPDATE case_flow_tool_grants SET token_digest = 'bad'")
+            ).rowcount
+            == 0
+        )
+        connection.execute(text("SELECT set_config('flowweave.user_id', 'owner', true)"))
+        assert connection.scalar(text("SELECT count(*) FROM case_flow_tool_grants")) == 1
+        connection.execute(text("RESET ROLE"))
+        connection.execute(text("DELETE FROM case_control_rounds WHERE id = 'round'"))
+        assert connection.scalar(text("SELECT count(*) FROM case_flow_tool_grants")) == 0
+        assert connection.scalar(text("SELECT count(*) FROM agent_conversation_bindings")) == 1
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.downgrade()
+        assert connection.scalar(text("SELECT count(*) FROM agent_conversation_bindings")) == 1
+        connection.rollback()
+
+
+def test_pending_action_from_replaced_coordinator_cannot_be_executed_via_api(
+    flow_case, monkeypatch
+):
+    from flowweave.shared.schemas import CaseControlPlanWrite
+
+    g = flow_case
+    args = action(g)
+    requested = {
+        key: value
+        for key, value in args.items()
+        if key not in {"action", "idempotency_key", "reason"}
+    }
+    plan = service.create_case_control_plan_for_binding(
+        g.db,
+        g.binding.id,
+        CaseControlPlanWrite(
+            stage_id=g.stage.id,
+            action="START_EXECUTION",
+            idempotency_key=args["idempotency_key"],
+            reason=args["reason"],
+            input_snapshot=requested,
+        ),
+    )
+    g.item.current_control_round_id = str(uuid4())
+    g.db.commit()
+    calls = []
+    monkeypatch.setattr(
+        service.orchestration, "start_automatic_run", lambda *args: calls.append(args)
+    )
+    response = g.client.post(f"/api/v1/cases/{g.item.id}/control-plans/{plan['id']}/execute")
+    assert response.status_code == 401
+    refresh(g)
+    assert g.db.get(CaseControlPlan, plan["id"]).state == "FAILED"
+    assert not calls
+
+
+@pytest.mark.parametrize("kind", ["foreign_artifact", "missing_model"])
+def test_configuration_uses_existing_input_and_model_validation(flow_case, kind):
+    g = flow_case
+    plans = copy.deepcopy(g.execution.automation_plan_json["node_plans"])
+    if kind == "foreign_artifact":
+        plans["first"]["artifact_ids"] = {"link": str(uuid4())}
+        plans["first"]["input_urls"] = {}
+    else:
+        plans["first"]["agent_preset"]["model_provider_id"] = str(uuid4())
+    args = action(
+        g,
+        "CONFIGURE_EXECUTION",
+        automatic_draft={"expected_row_version": 1, "start_node_key": "first", "node_plans": plans},
+    )
+    result = projection(rpc(g, "manage_case_flow", args))
+    assert result["state"] == "FAILED" and result["error_code"]
+    refresh(g)
+    assert g.execution.row_version == 1
+    assert (
+        g.execution.automation_plan_json["node_plans"]["first"]["startup_prompt"]
+        == "original first"
+    )
+
+
+def test_flow_tool_body_and_projection_bounds(flow_case):
+    g = flow_case
+    response = g.client.post(
+        native_tools.FLOWS.path,
+        headers={"Authorization": "Bearer " + g.flow_token},
+        content=b"x" * 262_145,
+    )
+    assert response.json()["error"]["code"] == -32600
+    plan = copy.deepcopy(g.execution.automation_plan_json)
+    plan["node_plans"]["first"]["startup_prompt"] = "x" * 1_100_000
+    g.execution.automation_plan_json = plan
+    g.db.commit()
+    response = rpc(g, "read_case_flow", {"section": "drafts", "limit": 1})
+    result = projection(response)
+    assert result["error_code"] == "CASE_FLOW_RESPONSE_TOO_LARGE"
+    assert response.json()["result"]["isError"] is True
+    assert (
+        "original second"
+        == projection(rpc(g, "read_case_flow", {"section": "drafts", "flow_node_key": "second"}))[
+            "items"
+        ][0]["startup_prompt"]
+    )
+
+
+def blocked_attempt(g, *, error_code="RUNTIME_DELIVERY_FAILED", state="START_BLOCKED"):
+    stepwise(g)
+    g.node = NodeRun(
+        flow_run_id=g.execution.id,
+        flow_node_snapshot_key="first",
+        sequence_no=1,
+        state="ACTIVE",
+        created_from="STEPWISE_DRAFT_START",
+    )
+    g.db.add(g.node)
+    g.db.flush()
+    g.attempt = NodeAttempt(
+        node_run_id=g.node.id,
+        attempt_no=1,
+        snapshot_id=g.execution.active_snapshot_id,
+        state=state,
+        state_version=3,
+        runtime_phase="FAILED",
+        error_code=error_code,
+        error_detail="EXECUTOR_UNAVAILABLE",
+        startup_prompt="stepwise",
+        agent_preset_json=g.preset,
+        gate_policies_json=[],
+    )
+    g.db.add(g.attempt)
+    g.db.commit()
+
+
+def cancel_args(g, **overrides):
+    return action(
+        g,
+        "CANCEL_STEPWISE_ATTEMPT",
+        flow_node_key="first",
+        node_run_id=g.node.id,
+        node_attempt_id=g.attempt.id,
+        expected_attempt_state_version=3,
+        **overrides,
+    )
+
+
+def test_case_can_cancel_runtime_delivery_blocked_attempt_then_start_again(flow_case):
+    g = flow_case
+    blocked_attempt(g)
+    cancelled = projection(rpc(g, "manage_case_flow", cancel_args(g)))
+    assert cancelled["state"] == "SUCCEEDED", cancelled
+    refresh(g)
+    assert g.attempt.state == "CANCELLED"
+    assert g.node.state == "CANCELLED"
+    assert g.execution.state == "ACTIVE"
+    # The draft is untouched and the cancelled history is preserved, so the
+    # node can be started again as a new NodeRun/Attempt.
+    drafts = projection(rpc(g, "read_case_flow", {"section": "drafts"}))["items"]
+    assert [item["flow_node_key"] for item in drafts] == ["first"]
+
+
+@pytest.mark.parametrize(
+    ("error_code", "state"),
+    [
+        ("RUNTIME_OUTPUT_PROJECTION_FAILED", "END_BLOCKED"),
+        (None, "START_BLOCKED"),
+        ("RUNTIME_DELIVERY_FAILED", "WAITING_ACCEPTANCE"),
+    ],
+)
+def test_case_cannot_cancel_attempts_outside_runtime_delivery_failure(flow_case, error_code, state):
+    g = flow_case
+    blocked_attempt(g, error_code=error_code, state=state)
+    refused = projection(rpc(g, "manage_case_flow", cancel_args(g)))
+    assert refused["state"] == "FAILED"
+    refresh(g)
+    assert g.attempt.state == state
+
+
+def test_case_files_use_the_case_owner_when_written_without_a_request_principal(
+    native_case,  # noqa: F811
+    monkeypatch,
+):
+    """A Worker gate task has no ambient user; Case files must still go to the Case owner."""
+
+    from types import SimpleNamespace
+
+    from flowweave.modules.cases.application import service as case_service
+    from flowweave.modules.users.application import security
+    from flowweave.modules.users.application.security import current_user_id
+
+    g = native_case
+    seen: list[str] = []
+    monkeypatch.setattr(
+        case_service.agent_workspaces,
+        "ensure_default_agent_workspace",
+        lambda _db: SimpleNamespace(id="workspace"),
+    )
+    monkeypatch.setattr(
+        case_service.agent_workspaces,
+        "write_case_files",
+        lambda *_args, **_kwargs: seen.append(current_user_id()),
+    )
+    g.item.control_work_directory_id = g.item.control_work_directory_id or "directory"
+    owner = g.item.owner_user_id
+    # Drop the fixture's ambient user exactly like a bypass-tenant Worker task.
+    token = security._tenant_user_id.set(None)
+    try:
+        with pytest.raises(RuntimeError):
+            current_user_id()
+        case_service.write_case_files(g.db, g.item)
+    finally:
+        security._tenant_user_id.reset(token)
+    assert seen == [owner]
+
+
+def test_advancing_the_last_stage_names_complete_case_as_the_required_action(flow_case):
+    """The Agent must be told which action ends the final stage, not a generic conflict."""
+
+    g = flow_case
+    for later in g.db.scalars(
+        select(CaseStage).where(CaseStage.case_id == g.item.id, CaseStage.id != g.stage.id)
+    ).all():
+        g.db.delete(later)
+    g.db.commit()
+    mark_continuous_review_pending(g)
+    result = projection(rpc(g, "manage_case_flow", action(g, "ADVANCE_CASE_STAGE")))
+    assert result["state"] == "FAILED"
+    assert result["error_code"] == "CASE_FINAL_STAGE_REQUIRES_COMPLETION"
+
+
+def test_agent_can_conclude_the_case_early_without_a_completed_run(flow_case):
+    """Stopping is a judgment the Agent may make on a running, unfinished execution."""
+
+    g = flow_case
+    g.execution.state = "RUNNING"
+    g.db.commit()
+    result = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(g, "CONCLUDE_CASE", reason="first node proved the premise invalid"),
+        )
+    )
+    assert result["state"] == "SUCCEEDED", result
+    refresh(g)
+    # A proposal only: nothing is cancelled or skipped and the Case is not terminal.
+    assert g.item.state == "PAUSED" and g.item.pause_reason == "CONCLUSION_PROPOSED"
+    assert g.item.pause_note == "first node proved the premise invalid"
+    assert g.stage.state in {"ACTIVE", "REVIEW_PENDING"}
+    assert g.execution.state == "RUNNING"
+    assert all(
+        stage.state != "SKIPPED"
+        for stage in g.db.scalars(select(CaseStage).where(CaseStage.case_id == g.item.id))
+    )
+    # A plain resume cannot dodge the human's decision.
+    with pytest.raises(DomainError) as blocked:
+        service.set_case_coordination_state(g.db, g.item.id, g.item.row_version, "ACTIVE")
+    assert blocked.value.code == "CASE_CONCLUSION_DECISION_REQUIRED"
+
+
+def _propose_conclusion(g):
+    g.execution.state = "RUNNING"
+    g.db.commit()
+    result = projection(
+        rpc(g, "manage_case_flow", action(g, "CONCLUDE_CASE", reason="goal already answered"))
+    )
+    assert result["state"] == "SUCCEEDED", result
+    refresh(g)
+
+
+def test_human_confirmation_really_ends_the_case(flow_case, monkeypatch):
+    g = flow_case
+    cancelled = []
+    monkeypatch.setattr(
+        service.orchestration, "cancel_run", lambda db, run_id, key: cancelled.append(run_id)
+    )
+    _propose_conclusion(g)
+    service.confirm_case_conclusion(g.db, g.item.id, g.item.row_version)
+    refresh(g)
+    assert g.item.state == "COMPLETED" and g.item.pause_reason is None
+    assert g.stage.state == "COMPLETED" and cancelled == [g.execution.id]
+    later = g.db.scalars(
+        select(CaseStage).where(CaseStage.case_id == g.item.id, CaseStage.id != g.stage.id)
+    ).all()
+    assert all(stage.state == "SKIPPED" for stage in later if stage.position > g.stage.position)
+    with pytest.raises(DomainError) as again:
+        service.confirm_case_conclusion(g.db, g.item.id, g.item.row_version)
+    assert again.value.code == "CASE_NO_CONCLUSION_PROPOSED"
+
+
+def test_human_rejection_resumes_untouched_and_tells_the_coordinator(flow_case, monkeypatch):
+    g = flow_case
+    monkeypatch.setattr(
+        service.orchestration, "cancel_run", lambda *a: pytest.fail("rejection must not cancel")
+    )
+    _propose_conclusion(g)
+    service.reject_case_conclusion(g.db, g.item.id, g.item.row_version, "still need region B")
+    refresh(g)
+    assert g.item.state == "ACTIVE" and g.item.pause_reason is None
+    assert "否决" in g.item.resume_note and "region B" in g.item.resume_note
+    assert g.stage.state in {"ACTIVE", "REVIEW_PENDING"} and g.execution.state == "RUNNING"
+    with pytest.raises(DomainError) as again:
+        service.reject_case_conclusion(g.db, g.item.id, g.item.row_version)
+    assert again.value.code == "CASE_NO_CONCLUSION_PROPOSED"
+
+
+def test_open_ask_user_question_pauses_the_case_and_a_reply_resumes_it(flow_case):
+    g = flow_case
+    binding = g.item.control_conversation_binding_id = str(uuid4())
+    g.db.flush()
+    assert service.note_case_control_waiting(g.db, "someone-elses-binding") is False
+    assert service.note_case_control_waiting(g.db, binding) is True
+    g.db.commit()
+    refresh(g)
+    assert g.item.state == "PAUSED" and g.item.pause_reason == "WAITING_HUMAN"
+    assert g.stage.state in {"ACTIVE", "REVIEW_PENDING"}
+    # Re-observing the same open question is idempotent.
+    assert service.note_case_control_waiting(g.db, binding) is False
+    assert service.note_case_control_reply(g.db, binding, "evt-1") is True
+    g.db.commit()
+    refresh(g)
+    assert g.item.state == "ACTIVE" and g.item.pause_reason is None
+    assert "evt-1" in g.item.resume_note and "已在会话中回复" in g.item.resume_note
+    assert service.note_case_control_reply(g.db, binding, "evt-2") is False
+
+
+def test_plain_resume_of_a_waiting_case_does_not_claim_an_answer(flow_case):
+    g = flow_case
+    g.item.control_conversation_binding_id = str(uuid4())
+    g.db.flush()
+    assert service.note_case_control_waiting(g.db, g.item.control_conversation_binding_id)
+    g.db.commit()
+    refresh(g)
+    service.set_case_coordination_state(g.db, g.item.id, g.item.row_version, "ACTIVE")
+    g.db.commit()
+    refresh(g)
+    assert g.item.state == "ACTIVE" and "未在会话中回复" in g.item.resume_note
+
+
+def test_stepwise_final_stage_is_completed_by_the_agent_with_accepted_artifact_evidence(flow_case):
+    g = flow_case
+    stepwise(g)
+    for later in g.db.scalars(
+        select(CaseStage).where(CaseStage.case_id == g.item.id, CaseStage.id != g.stage.id)
+    ).all():
+        g.db.delete(later)
+    g.node = NodeRun(
+        flow_run_id=g.execution.id,
+        flow_node_snapshot_key="first",
+        sequence_no=1,
+        state="ACCEPTED",
+        created_from="STEPWISE_DRAFT_START",
+    )
+    g.db.add(g.node)
+    g.db.flush()
+    g.attempt = NodeAttempt(
+        node_run_id=g.node.id,
+        attempt_no=1,
+        snapshot_id=g.execution.active_snapshot_id,
+        state="ACCEPTED",
+    )
+    g.db.add(g.attempt)
+    g.db.flush()
+    g.node.accepted_attempt_id = g.attempt.id
+    artifact = ArtifactVersion(
+        flow_run_id=g.execution.id,
+        producer_attempt_id=g.attempt.id,
+        field_key="report",
+        version_no=1,
+        artifact_type="URL",
+        uri="https://example.test/result",
+        source="RUNTIME",
+        content_hash="0" * 64,
+        byte_size=1,
+    )
+    g.db.add(artifact)
+    g.db.flush()
+    artifact_id = artifact.id
+    g.db.add(
+        CaseArtifactReference(
+            case_id=g.item.id,
+            stage_id=g.stage.id,
+            stage_key=g.stage.stage_key,
+            execution_flow_run_id=g.execution.id,
+            node_run_id=g.node.id,
+            node_key="first",
+            node_attempt_id=g.attempt.id,
+            artifact_version_id=artifact_id,
+        )
+    )
+    g.execution.state = "COMPLETED"
+    g.db.commit()
+    mark_continuous_review_pending(g)
+
+    # Evidence that is not a formally accepted artifact of this execution is refused.
+    stale = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(g, "COMPLETE_CASE", evidence_artifact_version_ids=[str(uuid4())]),
+        )
+    )
+    assert stale["state"] == "FAILED"
+    assert stale["error_code"] == "CASE_COMPLETION_EVIDENCE_INVALID"
+    refresh(g)
+    result = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(g, "COMPLETE_CASE", evidence_artifact_version_ids=[artifact_id]),
+        )
+    )
+    assert result["state"] == "SUCCEEDED", result
+    refresh(g)
+    assert g.stage.state == "COMPLETED"
+    assert g.item.state == "COMPLETED"
+
+
+def test_create_execution_copy_accepts_a_copy_name() -> None:
+    """The coordinator names the first copy it creates, exactly like later copies."""
+
+    from flowweave.modules.cases.application.flow_tools import FlowActionArguments
+
+    args = FlowActionArguments.model_validate(
+        {
+            "action": "CREATE_EXECUTION_COPY",
+            "idempotency_key": "create-collect-1",
+            "reason": "资料满足启动条件",
+            "expected_case_row_version": 6,
+            "expected_stage_key": "collect",
+            "expected_run_row_version": 1,
+            "expected_snapshot_version": 1,
+            "copy_name": "收集执行",
+        }
+    )
+    assert args.copy_name == "收集执行"
+
+
+def test_copy_name_is_still_rejected_for_unrelated_actions() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    from flowweave.modules.cases.application.flow_tools import FlowActionArguments
+
+    with pytest.raises(ValidationError, match="copy_name"):
+        FlowActionArguments.model_validate(
+            {
+                "action": "START_EXECUTION",
+                "idempotency_key": "start-1",
+                "reason": "启动",
+                "expected_case_row_version": 6,
+                "expected_stage_key": "collect",
+                "expected_execution_flow_run_id": "run-1",
+                "expected_run_row_version": 1,
+                "expected_snapshot_version": 1,
+                "copy_name": "不应出现",
+            }
+        )
+
+
+def test_completing_before_the_execution_finishes_reports_the_real_reason(flow_case):
+    """A stage that is not ready is a precondition failure, never a VERSION_CONFLICT."""
+
+    g = flow_case
+    assert g.stage.state == "ACTIVE"
+    result = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(g, "COMPLETE_CASE", evidence_artifact_version_ids=[str(uuid4())]),
+        )
+    )
+    assert result["error_code"] == "CASE_STAGE_STATE_NOT_READY"
+    assert result["error_code"] != "VERSION_CONFLICT"
+
+
+def test_plan_survives_a_session_rollback_so_a_failure_can_still_be_recorded(flow_case):
+    """The failure handler must not crash when a rollback removed the just-created plan row."""
+
+    g = flow_case
+    plan = service.CaseControlPlan(
+        case_id=g.item.id,
+        stage_id=g.stage.id,
+        action="START_EXECUTION",
+        idempotency_key="rollback-probe-1",
+        reason="probe",
+        input_snapshot_json={"requested": {}},
+    )
+    g.db.add(plan)
+    g.db.flush()
+    snapshot = service._plan_snapshot(plan)
+    assert snapshot["idempotency_key"] == "rollback-probe-1"
+    g.db.rollback()  # discards the uncommitted plan, exactly like a stale-version claim does
+
+    restored = service._restore_plan_after_rollback(g.db, plan, snapshot)
+    restored.state = "FAILED"
+    restored.error_code = "ANY_ERROR"
+    g.db.commit()
+    stored = g.db.get(service.CaseControlPlan, snapshot["id"])
+    assert stored is not None and stored.state == "FAILED"
+    assert stored.idempotency_key == "rollback-probe-1"
+
+
+def test_tool_result_describes_the_plan_after_the_session_replaced_its_row(flow_case):
+    """manage_flow must read the plan back after dispatch instead of trusting the stale ORM row."""
+
+    import inspect
+
+    from flowweave.modules.cases.application import flow_tools
+
+    source = inspect.getsource(flow_tools.manage_flow)
+    assert "db.get(CaseControlPlan, plan_id)" in source
+    assert "return action_result(plan)" not in source
+
+
+def test_gates_section_exposes_platform_and_author_gates_with_untrusted_text_bounded(flow_case):
+    g = flow_case
+    review_ready(g)
+    g.attempt.gate_policies_json = [
+        {
+            "id": "__platform__",
+            "stage": "END",
+            "position": -10,
+            "gate_type": "PLATFORM_OUTPUT_CONTRACT",
+            "enabled": True,
+            "config": {"system_owned": True},
+        },
+        {
+            "id": "author-1",
+            "stage": "END",
+            "position": 1,
+            "gate_type": "PROMPT",
+            "enabled": True,
+            "config": {"business_result_contract": {"node_kind": "COLLECTION"}},
+        },
+        {"id": "never-run", "stage": "START", "position": 1, "gate_type": "PYTHON"},
+    ]
+    for key, position, decision, extra in (
+        ("__platform__", -10, "PASS", {}),
+        ("author-1", 1, "FAIL", {"business_status": "NO_FINDINGS"}),
+    ):
+        for number in (1, 2):
+            g.db.add(
+                GateEvaluation(
+                    attempt_id=g.attempt.id,
+                    policy_snapshot_key=key,
+                    stage="END",
+                    policy_position=position,
+                    evaluation_attempt=number,
+                    state="FINISHED",
+                    decision="ERROR" if number == 1 else decision,
+                    input_hash="c" * 64,
+                    result_json={
+                        "summary": "x" * 5000 if number == 2 else "old",
+                        "reasons": ["missing evidence"],
+                        "evidence": [{"kind": "BUSINESS_RESULT", **extra}],
+                        "details": {},
+                    },
+                )
+            )
+    g.db.commit()
+
+    gates = projection(rpc(g, "read_case_flow", {"section": "gates"}))["items"]
+    assert [item["instance_key"] for item in gates] == ["first"]
+    by_id = {gate["policy_id"]: gate for gate in gates[0]["gates"]}
+    assert by_id["__platform__"]["origin"] == "PLATFORM"
+    assert by_id["author-1"]["origin"] == "AUTHOR"
+    latest = by_id["author-1"]["evaluation"]
+    assert latest["decision"] == "FAIL" and latest["evaluation_attempt"] == 2
+    assert latest["evaluations_total"] == 2
+    assert latest["evidence"][0]["business_status"] == "NO_FINDINGS"
+    assert len(latest["summary"]) < 1600 and latest["summary"].endswith("[truncated]")
+    assert by_id["never-run"]["evaluation"] is None
+
+    nodes = projection(rpc(g, "read_case_flow", {"section": "nodes"}))["items"]
+    decisions = nodes[0]["execution"]["latest_attempt"]["gate_decisions"]
+    assert {item["decision"] for item in decisions} == {"PASS", "FAIL"}
+
+
+def _author_gate_failure(g, on_fail, *, attempts=1):
+    """Give node ``first`` a failed END gate whose author declared ``on_fail``."""
+
+    review_ready(g)
+    config = {"prompt": "check"}
+    if on_fail is not None:
+        config["on_fail"] = on_fail
+    g.attempt.gate_policies_json = [
+        {
+            "id": "author-gate",
+            "stage": "END",
+            "position": 1,
+            "gate_type": "PROMPT",
+            "config": config,
+        }
+    ]
+    latest = g.attempt
+    for number in range(2, attempts + 1):
+        latest = NodeAttempt(
+            node_run_id=g.node.id,
+            attempt_no=number,
+            snapshot_id=g.execution.active_snapshot_id,
+            state="END_BLOCKED",
+            startup_prompt="again",
+            agent_preset_json=g.preset,
+            gate_policies_json=g.attempt.gate_policies_json,
+        )
+        g.db.add(latest)
+        g.db.flush()
+    g.db.add(
+        GateEvaluation(
+            attempt_id=latest.id,
+            policy_snapshot_key="author-gate",
+            stage="END",
+            policy_position=1,
+            evaluation_attempt=1,
+            state="FINISHED",
+            decision="FAIL",
+            input_hash="e" * 64,
+            result_json={"summary": "no evidence", "reasons": ["missing"]},
+        )
+    )
+    g.attempt.state = "ACCEPTED"
+    g.node.state = "ACCEPTED"
+    g.node.accepted_attempt_id = g.attempt.id
+    g.execution.automation_plan_json = {
+        "start_node_key": "first",
+        "node_drafts": {
+            "second": {
+                "row_version": 2,
+                "startup_mode": "PROMPT",
+                "startup_prompt": "successor",
+                "agent_preset": g.preset,
+                "input_bindings": {},
+                "gates": [],
+            }
+        },
+    }
+    g.db.commit()
+
+
+def _rerun(g):
+    return projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(g, "RERUN_STEPWISE_NODE", flow_node_key="first", node_run_id=g.node.id),
+        )
+    )
+
+
+def test_author_rerun_policy_allows_reruns_until_the_declared_rounds_are_used(flow_case):
+    g = flow_case
+    _author_gate_failure(g, {"action": "RERUN", "max_rounds": 2}, attempts=1)
+    read = projection(rpc(g, "read_case_flow", {"section": "nodes"}))["items"][0]
+    state = read["execution"]["latest_attempt"]["author_failure_policy"]
+    assert state["action"] == "RERUN" and state["rounds_remaining"] == 2
+    got = _rerun(g)
+    assert got["state"] == "SUCCEEDED", got
+
+
+def test_author_rerun_policy_blocks_once_rounds_are_exhausted(flow_case):
+    g = flow_case
+    _author_gate_failure(g, {"action": "RERUN", "max_rounds": 1}, attempts=2)
+    state = projection(rpc(g, "read_case_flow", {"section": "gates"}))["items"][0][
+        "author_failure_policy"
+    ]
+    assert state["exhausted"] is True and "ask_user" in state["instruction"]
+    blocked = _rerun(g)
+    assert blocked["state"] == "FAILED"
+    assert blocked["error_code"] == "CASE_GATE_POLICY_RERUN_EXHAUSTED"
+
+
+def test_author_stop_policy_forbids_rerun(flow_case):
+    g = flow_case
+    _author_gate_failure(g, {"action": "STOP"})
+    blocked = _rerun(g)
+    assert blocked["state"] == "FAILED" and blocked["error_code"] == "CASE_GATE_POLICY_STOP"
+
+
+def test_undeclared_gate_failure_leaves_the_coordinator_free_to_rerun(flow_case):
+    g = flow_case
+    _author_gate_failure(g, None, attempts=3)
+    nodes = projection(rpc(g, "read_case_flow", {"section": "nodes"}))["items"][0]
+    assert nodes["execution"]["latest_attempt"]["author_failure_policy"] is None
+    assert _rerun(g)["state"] == "SUCCEEDED"
+
+
+def test_node_session_projection_pairs_results_by_action_id_only():
+    from flowweave.modules.cases.application.flow_tools import project_session_events
+
+    events = [
+        {"id": "u1", "event_type": "MESSAGE", "payload": {"source": "user", "content": "收集异常"}},
+        {
+            "id": "c1",
+            "event_type": "TOOL_CALL",
+            "payload": {
+                "action_id": "a1",
+                "tool_name": "terminal",
+                "summary": "查询",
+                "details": {"command": "es-query --host wrong*"},
+            },
+        },
+        {
+            "id": "c2",
+            "event_type": "TOOL_CALL",
+            "payload": {"action_id": "a2", "tool_name": "terminal", "details": {"command": "ls"}},
+        },
+        # Result order is reversed and the text mentions the other call: pairing is by id.
+        {"id": "r2", "event_type": "TOOL_RESULT", "payload": {"action_id": "a2", "content": "x"}},
+        {
+            "id": "r1",
+            "event_type": "TOOL_RESULT",
+            "payload": {"action_id": "a1", "content": "全部 0 条 " + "z" * 5000},
+        },
+        {"id": "f", "event_type": "COMPLETED", "payload": {"content": "已闭合"}},
+    ]
+    view = project_session_events(events)
+    assert view["task"] == "收集异常" and view["final_reply"] == "已闭合"
+    first, second = view["calls"]
+    assert first["command"] == "es-query --host wrong*" and first["result"].startswith("全部 0 条")
+    assert first["result"].endswith("[truncated]") and second["result"] == "x"
+
+
+def test_answered_question_round_trips_through_the_message_envelope():
+    from flowweave.modules.agent_sessions.application import conversations as c
+
+    prompt, _ = c._message_payload("先灰度", (), answered_question="是否发布到生产？")
+    assert c.project_answered_question(prompt) == "是否发布到生产？"
+    assert c._project_conversation_references(prompt)[0] == "先灰度"
+    plain, _ = c._message_payload("先灰度", ())
+    assert plain == "先灰度" and c.project_answered_question(plain) is None

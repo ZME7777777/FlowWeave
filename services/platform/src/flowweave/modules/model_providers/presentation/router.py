@@ -19,6 +19,7 @@ from flowweave.shared.http import Db, get_container, run_sync
 from flowweave.shared.schemas import (
     ModelProviderBulkDeleteWrite,
     ModelProviderDiscoveryWrite,
+    ModelProviderUsagePreviewWrite,
     ModelProviderWrite,
 )
 
@@ -38,6 +39,20 @@ async def create_provider(payload: ModelProviderWrite, db: Db) -> dict[str, Any]
 @router.put("/model-providers/{provider_id}")
 async def update_provider(provider_id: str, payload: ModelProviderWrite, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.save_provider(session, payload, provider_id))
+
+
+@router.post("/model-providers/{provider_id}/primary")
+async def set_primary_provider(provider_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: service.set_primary_provider(session, provider_id, True)
+    )
+
+
+@router.delete("/model-providers/{provider_id}/primary")
+async def clear_primary_provider(provider_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: service.set_primary_provider(session, provider_id, False)
+    )
 
 
 @router.delete("/model-providers/{provider_id}", status_code=204, response_class=Response)
@@ -63,7 +78,7 @@ async def _discover(provider_id: str, db: Db, container: Container) -> list[str]
 
 async def _budget(provider_id: str, db: Db, container: Container) -> dict[str, object]:
     snapshot = await run_sync(
-        db, lambda session: service.provider_connection_snapshot(session, provider_id)
+        db, lambda session: service.provider_usage_snapshot(session, provider_id)
     )
     return await read_provider_budget(container.http, snapshot)
 
@@ -71,11 +86,22 @@ async def _budget(provider_id: str, db: Db, container: Container) -> dict[str, o
 @router.post("/model-providers/discover-models")
 async def preview_discover_models(
     payload: ModelProviderDiscoveryWrite, db: Db, container: ContainerDep
-) -> dict[str, list[str]]:
+) -> dict[str, Any]:
     snapshot = await run_sync(
         db, lambda session: service.preview_provider_connection_snapshot(session, payload)
     )
-    return {"models": await discover_provider_models(container.http, snapshot)}
+    models = await discover_provider_models(container.http, snapshot)
+    return {"models": models, "protocols": service.infer_protocols(models)}
+
+
+@router.post("/model-providers/preview-usage")
+async def preview_provider_usage(
+    payload: ModelProviderUsagePreviewWrite, db: Db, container: ContainerDep
+) -> dict[str, object]:
+    snapshot = await run_sync(
+        db, lambda session: service.preview_provider_usage_snapshot(session, payload)
+    )
+    return await read_provider_budget(container.http, snapshot)
 
 
 async def _discover_codex(
@@ -168,10 +194,8 @@ async def test_provider(provider_id: str, db: Db, container: ContainerDep) -> di
             raise
         await run_sync(db, lambda session: service.sync_codex_models(session, provider_id, models))
         return {"connection_state": "CONNECTED", "model_count": len(models)}
-    if provider["auth_type"] == "ANTHROPIC_API_KEY":
-        if not provider["has_api_key"]:
-            raise DomainError("ANTHROPIC_API_KEY_REQUIRED", "Anthropic API key is required", 409)
-        return {"connection_state": "CONNECTED", "model_count": len(provider["models"])}
+    if not provider["has_api_key"]:
+        raise DomainError("API_KEY_REQUIRED", "API key is required", 409)
     try:
         models = await _discover(provider_id, db, container)
     except DomainError:
@@ -193,7 +217,7 @@ async def provider_usage(provider_id: str, db: Db, container: ContainerDep) -> d
         db,
         lambda session: service.provider_dict(session, service.get_provider(session, provider_id)),
     )
-    if provider["auth_type"] != "API_KEY":
+    if provider["auth_type"] == "CODEX_OAUTH":
         return {
             "status": "UNAVAILABLE",
             "reason": "该认证方式未提供可读取的 API Key 预算",
@@ -221,4 +245,5 @@ async def discover_models(provider_id: str, db: Db, container: ContainerDep) -> 
             "models": [profile.model_name for profile in models],
             "provider": synchronized,
         }
-    return {"models": await _discover(provider_id, db, container)}
+    models = await _discover(provider_id, db, container)
+    return {"models": models, "protocols": service.infer_protocols(models)}

@@ -1,7 +1,9 @@
+import { writableAgentPreset, writableGates } from '../utils/agentPresetWrite';
+import type { MarketSources, MarketSkillSearch, MarketSkill, CapabilityPackageFiles, CapabilityPackageFile, CapabilityPackageComparison, CapabilityPackageFileDiff, CapabilityAssetType, CapabilityDirectoryPage, CapabilityCollectionSort, CapabilitySort, RepositoryPage } from '../types';
 import type {
   AuthUser, LdapDirectory, LdapUser, PlatformUser,
-  AgentProfileVersion, ArtifactInput, ArtifactVersion, ArtifactVersionPage, RuntimeArtifactAuditPage, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunRuntimeResource, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource,
-  BlockedNodeDelete, BulkDeleteResult, CapabilityBulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, GateRemediationResult, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderUsage, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt, FlowRunAutomaticRecordSummary, ProviderBulkDeleteResult,
+  AgentProfileVersion, ArtifactInput, ArtifactVersion, ArtifactVersionPage, RuntimeArtifactAuditPage, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunRuntimeResource, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource, SkillVersionComparison,
+  BlockedNodeDelete, BulkDeleteResult, CapabilityBulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, GateRemediationResult, ModelProtocol, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderUsage, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt, FlowRunAutomaticRecordSummary, ProviderBulkDeleteResult,
   AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationContext, AgentConversationHead, AgentConversationInputReadiness, AgentConversationReference, AgentConversationSchedule, AgentConversationScheduleOccurrence, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceReference, AgentWorkspaceRuntime, AutomaticRecordConfigDocument, CapabilityCollection, CapabilityCollectionWrite, Case, ContextBundleManifest, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, GatePolicy, WebsiteCredential, WebsiteCredentialWrite, FlowRunSchedule, FlowRunScheduleOccurrencePage, FlowRunScheduleWrite, FlowRunScheduleTemplate, FlowRunStepwiseRecord, FlowRunStepwiseRecordWrite, StepwiseNodeDraft, StepwiseRecordConfigDocument, StepwiseRuntimePortsWrite,
 } from '../types';
 import { deploymentBasePath } from '../deploymentPath';
@@ -44,7 +46,7 @@ async function responseError(response: Response): Promise<ApiError> {
   const backendMessage = typeof body?.error?.message === 'string' ? body.error.message : '';
   const chineseMessages: Record<string, string> = {
     FLOW_NAME_CONFLICT: '流程名称已存在，请使用其他名称。',
-    NODE_ASSET_NAME_CONFLICT: '当前目录已存在同名节点资产，请使用其他名称。',
+    NODE_ASSET_NAME_CONFLICT: '当前目录已存在同名节点中心，请使用其他名称。',
     FLOW_IN_USE: '该流程仍有关联运行，请先删除关联运行后再永久删除流程。',
     NODE_ASSET_IN_USE: '该节点仍被流程引用，请先从相关流程中移除节点。',
     CAPABILITY_IN_USE: '该能力仍被节点引用，请先解除引用后再删除。',
@@ -303,31 +305,8 @@ const automaticRecord = (run: AutomaticRunResponse): FlowRunAutomaticRecord => {
 const automaticNodePlansWrite = (nodePlans: FlowRunAutomaticRecordUpdate['node_plans']): FlowRunAutomaticRecordUpdate['node_plans'] =>
   Object.fromEntries(Object.entries(nodePlans).map(([nodeKey, plan]) => [nodeKey, {
     startup_prompt: plan.startup_prompt,
-    agent_preset: {
-      capability_version_ids: plan.agent_preset.capability_version_ids,
-      model_provider_id: plan.agent_preset.model_provider_id,
-      model_name: plan.agent_preset.model_name,
-      reasoning_effort: plan.agent_preset.reasoning_effort,
-      // This is an editable part of the launch preset. Keep it when projecting
-      // a frozen response back to the strict write shape; otherwise a later
-      // draft save silently replaces the configured quota fallbacks with [].
-      fallback_models: plan.agent_preset.fallback_models ?? [],
-      node_context_enabled: plan.agent_preset.node_context_enabled,
-      node_context_prompt: plan.agent_preset.node_context_prompt,
-    },
-    gates: plan.gates.map(gate => ({
-      stage: gate.stage,
-      position: gate.position,
-      gate_type: gate.gate_type,
-      enabled: gate.enabled,
-      timeout_seconds: gate.timeout_seconds,
-      config: gate.config,
-      agent_preset: {
-        model_provider_id: gate.agent_preset?.model_provider_id,
-        model_name: gate.agent_preset?.model_name,
-        reasoning_effort: gate.agent_preset?.reasoning_effort,
-      },
-    })),
+    agent_preset: writableAgentPreset(plan.agent_preset),
+    gates: writableGates(plan.gates),
     artifact_ids: plan.artifact_ids,
     input_urls: plan.input_urls,
   }]));
@@ -348,6 +327,9 @@ const conversationReferencePayload = (references: AgentConversationReference[]) 
     ...(selection ? { selection } : {}),
   };
 });
+export interface CaseCopyReport { copied: Array<{ item: string; reason: string }>; skipped: Array<{ item: string; reason: string }> }
+export interface CaseBundle { format: 'flowweave.case-bundle'; version: 1; exported_at?: string; cases: Array<Record<string, unknown>> }
+
 export const api = {
   authMe: () => request<AuthUser>('/auth/me'),
   currentUserProfile: () => request<{ display_name: string | null; email: string | null }>('/auth/profile'),
@@ -369,22 +351,31 @@ export const api = {
     request<AgentWorkspaceCapability[]>(`/agent-workspaces/${encodeURIComponent(id)}/capabilities`),
   replaceAgentWorkspaceCapabilities: (id: string, capability_version_ids: string[]) =>
     request<AgentWorkspaceCapability[]>(`/agent-workspaces/${encodeURIComponent(id)}/capabilities`, json('PUT', { capability_version_ids })),
-  agentWorkspaceSessionConfiguration: (id: string) =>
-    request<import('../types').AgentWorkspaceSessionConfiguration>(`/agent-workspaces/${encodeURIComponent(id)}/session-configuration`),
-  replaceAgentWorkspaceSessionConfiguration: (id: string, configuration: import('../types').AgentWorkspaceSessionConfiguration) =>
-    request<import('../types').AgentWorkspaceSessionConfiguration>(`/agent-workspaces/${encodeURIComponent(id)}/session-configuration`, json('PUT', configuration)),
-  agentWorkspaceMcpReadiness: (id: string, capabilityVersionId: string) =>
-    request<AgentWorkspaceMcpReadiness>(`/agent-workspaces/${encodeURIComponent(id)}/capabilities/${encodeURIComponent(capabilityVersionId)}/mcp-readiness`, json('POST')),
+  agentWorkspaceSessionConfiguration: (id: string, workDirectoryId?: string) => {
+    const query = workDirectoryId ? `?work_directory_id=${encodeURIComponent(workDirectoryId)}` : '';
+    return request<import('../types').AgentWorkspaceSessionConfiguration>(`/agent-workspaces/${encodeURIComponent(id)}/session-configuration${query}`);
+  },
+  replaceAgentWorkspaceSessionConfiguration: (id: string, configuration: import('../types').AgentWorkspaceSessionConfiguration, workDirectoryId?: string) => {
+    const query = workDirectoryId ? `?work_directory_id=${encodeURIComponent(workDirectoryId)}` : '';
+    return request<import('../types').AgentWorkspaceSessionConfiguration>(`/agent-workspaces/${encodeURIComponent(id)}/session-configuration${query}`, json('PUT', configuration));
+  },
+  agentWorkspaceMcpReadiness: (id: string, capabilityVersionId: string, signal?: AbortSignal, read_only_tool_call?: { name: string; arguments: Record<string, unknown> }) =>
+    request<AgentWorkspaceMcpReadiness>(`/agent-workspaces/${encodeURIComponent(id)}/capabilities/${encodeURIComponent(capabilityVersionId)}/mcp-readiness`, { ...json('POST', read_only_tool_call ? { read_only_tool_call } : undefined), signal, timeoutMs: 25_000 }),
   agentWorkspaceRuntime: (id: string) => request<AgentWorkspaceRuntime>(`/agent-workspaces/${encodeURIComponent(id)}/runtime`),
   agentGitIdentity: (id: string) => request<AgentGitIdentity>(`/agent-workspaces/${encodeURIComponent(id)}/settings/git`),
-  saveAgentGitIdentity: (id: string, identity: { author: string; email: string }) => request<AgentGitIdentity>(`/agent-workspaces/${encodeURIComponent(id)}/settings/git`, { method: 'PUT', body: JSON.stringify(identity) }),
-  agentWorkDirectories: (id: string) => request<AgentWorkDirectoryList>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories`),
+  synchronizeAgentGitIdentity: (id: string) => request<AgentGitIdentity>(`/agent-workspaces/${encodeURIComponent(id)}/settings/git/synchronize`, json('POST')),
+  agentWorkDirectories: (id: string, includeArchived = false) =>
+    request<AgentWorkDirectoryList>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories${includeArchived ? '?include_archived=true' : ''}`),
   createAgentWorkDirectory: (id: string, display_name: string, selected_paths: string[]) =>
     request<AgentWorkDirectory>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories`, json('POST', { display_name, selected_paths })),
   updateAgentWorkDirectory: (id: string, directoryId: string, display_name: string) =>
     request<AgentWorkDirectory>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories/${encodeURIComponent(directoryId)}`, json('PATCH', { display_name })),
-  deleteAgentWorkDirectory: (id: string, directoryId: string) =>
-    request<void>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories/${encodeURIComponent(directoryId)}`, json('DELETE')),
+  deleteAgentWorkDirectory: (id: string, directoryId: string, options: { keepFiles?: boolean } = {}) =>
+    request<void>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories/${encodeURIComponent(directoryId)}${options.keepFiles ? '?delete_files=false' : ''}`, json('DELETE')),
+  archiveAgentWorkDirectory: (id: string, directoryId: string) =>
+    request<AgentWorkDirectory>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories/${encodeURIComponent(directoryId)}/archive`, json('POST')),
+  restoreAgentWorkDirectory: (id: string, directoryId: string) =>
+    request<AgentWorkDirectory>(`/agent-workspaces/${encodeURIComponent(id)}/work-directories/${encodeURIComponent(directoryId)}/restore`, json('POST')),
   agentWorkspaceDetails: (id: string, options: { bindingId?: string; workDirectoryId?: string; fullIndex?: boolean } = {}) => {
     const query = new URLSearchParams();
     if (options.bindingId) query.set('binding_id', options.bindingId);
@@ -392,12 +383,13 @@ export const api = {
     if (options.fullIndex) query.set('full_index', 'true');
     return request<AgentWorkspaceDetails>(`/agent-workspaces/${encodeURIComponent(id)}/workspace${query.size ? `?${query}` : ''}`);
   },
-  agentWorkspaceDirectory: (id: string, options: { bindingId?: string; workDirectoryId?: string; parentPath?: string; cursor?: string } = {}) => {
+  agentWorkspaceDirectory: (id: string, options: { bindingId?: string; workDirectoryId?: string; parentPath?: string; cursor?: string; includeHidden?: boolean } = {}) => {
     const query = new URLSearchParams();
     if (options.bindingId) query.set('binding_id', options.bindingId);
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     if (options.parentPath) query.set('parent_path', options.parentPath);
     if (options.cursor) query.set('cursor', options.cursor);
+    if (options.includeHidden) query.set('include_hidden', 'true');
     return request<import('../types').AgentSessionWorkspaceDirectory>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/directory${query.size ? `?${query}` : ''}`);
   },
   agentWorkspaceGitRepositories: (id: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
@@ -411,6 +403,18 @@ export const api = {
     if (options.bindingId) query.set('binding_id', options.bindingId);
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     await request<void>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/git/sync?${query}`, json('POST'));
+  },
+  agentWorkspaceGitBranches: (id: string, repositoryPath: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
+    const query = new URLSearchParams({ repository_path: repositoryPath });
+    if (options.bindingId) query.set('binding_id', options.bindingId);
+    if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
+    return request<import('../types').WorkspaceGitBranches>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/git/branches?${query}`);
+  },
+  switchAgentWorkspaceGitBranch: (id: string, repositoryPath: string, body: import('../types').WorkspaceGitSwitchWrite, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
+    const query = new URLSearchParams({ repository_path: repositoryPath });
+    if (options.bindingId) query.set('binding_id', options.bindingId);
+    if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
+    return request<import('../types').WorkspaceGitRepository>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/git/switch?${query}`, json('POST', body));
   },
   agentWorkspaceGitLog: (id: string, repositoryPath: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
     const query = new URLSearchParams({ repository_path: repositoryPath });
@@ -442,11 +446,12 @@ export const api = {
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     return request<import('../types').WorkspaceGitFileDiff>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/git/diff?${query}`);
   },
-  agentWorkspaceFilePreview: async (id: string, path: string, options: { bindingId?: string; workDirectoryId?: string; draftAttachmentOwnerId?: string } = {}, offset = 0, signal?: AbortSignal) => {
+  agentWorkspaceFilePreview: async (id: string, path: string, options: { bindingId?: string; workDirectoryId?: string; draftAttachmentOwnerId?: string; includeHidden?: boolean } = {}, offset = 0, signal?: AbortSignal) => {
     const query = new URLSearchParams({ path });
     if (options.bindingId) query.set('binding_id', options.bindingId);
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     if (options.draftAttachmentOwnerId) query.set('draft_attachment_owner_id', options.draftAttachmentOwnerId);
+    if (options.includeHidden) query.set('include_hidden', 'true');
     query.set('preview', 'true');
     query.set('offset', String(offset));
     let response: Response;
@@ -484,13 +489,27 @@ export const api = {
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     return request<void>(`/agent-workspaces/${encodeURIComponent(id)}/terminals/${encodeURIComponent(terminalInstanceId)}${query.size ? `?${query}` : ''}`, json('DELETE'));
   },
-  agentConversationManagement: (workspaceId: string, workDirectoryId?: string) => {
+  agentConversationManagementWorkspaces: (workspaceId: string) =>
+    request<import('../types').AgentConversationManagementWorkspaceList>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management/workspaces`),
+  agentConversationManagement: (workspaceId: string, workDirectoryId?: string, archived?: boolean) => {
+    const query = new URLSearchParams();
+    if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
+    if (archived !== undefined) query.set('archived', String(archived));
+    return request<import('../types').AgentConversationManagementPage>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management${query.size ? `?${query}` : ''}`);
+  },
+  archiveManagedAgentConversations: (workspaceId: string, binding_ids: string[], workDirectoryId?: string) => {
     const query = workDirectoryId ? `?work_directory_id=${encodeURIComponent(workDirectoryId)}` : '';
-    return request<import('../types').AgentConversationManagementPage>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management${query}`);
+    return request<import('../types').AgentConversationManagementArchiveResult>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management/archive${query}`, { ...json('POST', { binding_ids }), timeoutMs: 60_000 });
   },
   deleteManagedAgentConversations: (workspaceId: string, binding_ids: string[], workDirectoryId?: string) => {
     const query = workDirectoryId ? `?work_directory_id=${encodeURIComponent(workDirectoryId)}` : '';
     return request<import('../types').AgentConversationManagementDeleteResult>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management/delete${query}`, json('POST', { binding_ids }, crypto.randomUUID()));
+  },
+  agentConversationDeletionJobs: (workspaceId: string, signal?: AbortSignal) =>
+    request<{ items: import('../types').AgentConversationDeletionJob[] }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management/deletion-jobs`, { signal }),
+  startAgentConversationDeletion: (workspaceId: string, binding_ids: string[], workDirectoryId: string | undefined, idempotencyKey: string) => {
+    const query = workDirectoryId ? `?work_directory_id=${encodeURIComponent(workDirectoryId)}` : '';
+    return request<import('../types').AgentConversationDeletionJob>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-management/deletion-jobs${query}`, json('POST', { binding_ids }, idempotencyKey));
   },
   agentConversationSchedules: (workspaceId: string) =>
     request<AgentConversationSchedule[]>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules`),
@@ -504,8 +523,15 @@ export const api = {
     request<AgentConversationSchedule>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}/trigger`, json('POST')),
   deleteAgentConversationSchedule: (workspaceId: string, scheduleId: string) =>
     request<void>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}`, json('DELETE')),
+  deleteFailedAgentConversationScheduleOccurrence: (workspaceId: string, scheduleId: string, occurrenceId: string) =>
+    request<void>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}/occurrences/${encodeURIComponent(occurrenceId)}`, json('DELETE')),
   agentConversationScheduleOccurrences: (workspaceId: string, scheduleId: string) =>
     request<AgentConversationScheduleOccurrence[]>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}/occurrences`),
+  agentScheduleRunConversations: (workspaceId: string, scheduleId: string, cursor: string | null, signal?: AbortSignal) => {
+    const params = new URLSearchParams({ limit: '20' });
+    if (cursor) params.set('cursor', cursor);
+    return request<import('../types').AgentScheduleRunConversationPage>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-schedules/${encodeURIComponent(scheduleId)}/run-conversations?${params}`, { signal });
+  },
   agentConversations: (workspaceId: string, cursor?: string, limit = 3, workDirectoryId?: string) => {
     const query = new URLSearchParams({ limit: String(limit) });
     if (cursor) query.set('cursor', cursor);
@@ -573,12 +599,14 @@ export const api = {
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/capabilities`, json('POST', { capability_version_id })),
   registerAgentConversationCapabilities: (workspaceId: string, bindingId: string, capability_version_ids: string[]) =>
     request<import('../types').AgentConversationCapabilityRegistration>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/capabilities/batch`, json('POST', { capability_version_ids })),
-  bootstrapAgentConversation: (workspaceId: string, conversation_id: string, model_provider_id: string, model_name: string, reasoning_effort: string | null, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], work_directory_id?: string, capability_version_ids?: string[], credential_ids?: string[], idempotencyKey = conversation_id, annotations: AgentConversationAnnotation[] = []) =>
-    request<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`, json('POST', { conversation_id, model_provider_id, model_name, reasoning_effort, content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), work_directory_id, capability_version_ids, credential_ids, annotations }, idempotencyKey)),
+  bootstrapAgentConversation: (workspaceId: string, conversation_id: string, model_provider_id: string, model_name: string, reasoning_effort: string | null, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], work_directory_id?: string, capability_version_ids?: string[], credential_ids?: string[], idempotencyKey = conversation_id, annotations: AgentConversationAnnotation[] = [], goal_objective?: string) =>
+    request<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null; event_id?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`, json('POST', { conversation_id, model_provider_id, model_name, reasoning_effort, content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), work_directory_id, capability_version_ids, credential_ids, annotations, goal_objective }, idempotencyKey)),
   createAgentSidebarConversation: (workspaceId: string, sourceBindingId: string, conversation_id: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = []) =>
     request<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null; expires_at: string }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(sourceBindingId)}/sidebar`, json('POST', { conversation_id, content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references) }, conversation_id)),
   agentSidebarConversation: (workspaceId: string, bindingId: string) =>
     request<{ binding_id: string; source_binding_id?: string; expires_at: string; expired: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/sidebars/${encodeURIComponent(bindingId)}`),
+  agentSidebarConversationForSource: (workspaceId: string, sourceBindingId: string) =>
+    request<{ binding_id: string; source_binding_id: string; expires_at: string; expired: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(sourceBindingId)}/sidebar`),
   deleteAgentSidebarConversation: (workspaceId: string, bindingId: string) =>
     request<void>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/sidebars/${encodeURIComponent(bindingId)}`, json('DELETE', undefined, true)),
   agentConversation: (workspaceId: string, bindingId: string) =>
@@ -591,6 +619,10 @@ export const api = {
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/unread`, json('PUT', { unread, unread_origin })),
   reorderAgentConversation: (workspaceId: string, bindingId: string, ordered_binding_ids: string[]) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/order`, json('POST', { ordered_binding_ids })),
+  archiveAgentConversation: (workspaceId: string, bindingId: string) =>
+    request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/archive`, json('POST')),
+  restoreAgentConversation: (workspaceId: string, bindingId: string) =>
+    request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/restore`, json('POST')),
   deleteAgentConversation: (workspaceId: string, bindingId: string) =>
     request<import('../types').AgentConversationDeleteResult>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`, json('DELETE', undefined, true)),
   agentConversationEvents: (workspaceId: string, bindingId: string, cursor?: string, historyCursor?: string, diagnosticTrigger?: string, signal?: AbortSignal) => {
@@ -606,10 +638,16 @@ export const api = {
     request<AgentConversationHead>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/head`),
   agentPendingConfirmation: (workspaceId: string, bindingId: string) =>
     request<AgentPendingConfirmation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/pending-confirmation`),
+  agentPendingQuestion: (workspaceId: string, bindingId: string) =>
+    request<import('../types').AgentPendingQuestion>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/pending-question`),
   decideAgentConfirmation: (workspaceId: string, bindingId: string, expected_pending_digest: string, accept: boolean, reason: string) =>
     request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/pending-confirmation/decision`, json('POST', { expected_pending_digest, accept, reason })),
-  sendAgentMessage: (workspaceId: string, bindingId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], annotations: AgentConversationAnnotation[] = [], idempotencyKey?: string) =>
-    request<{ accepted: boolean; cursor?: string | null; compacted?: boolean; queued_during_turn?: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations }, idempotencyKey)),
+  cancelAgentConversationBootstrap: (workspaceId: string, submissionId: string) =>
+    request<{ cancelled: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-bootstraps/${encodeURIComponent(submissionId)}/cancel`, json('POST', {})),
+  cancelAgentMessageSubmission: (workspaceId: string, bindingId: string, submissionId: string) =>
+    request<{ cancelled: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(submissionId)}/cancel`, json('POST', {})),
+  sendAgentMessage: (workspaceId: string, bindingId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], annotations: AgentConversationAnnotation[] = [], idempotencyKey?: string, answered_question?: string) =>
+    request<{ accepted: boolean; cursor?: string | null; event_id?: string | null; compacted?: boolean; queued_during_turn?: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations, ...(answered_question ? { answered_question } : {}) }, idempotencyKey)),
   uploadAgentAttachment: (workspaceId: string, bindingId: string, file: File, onProgress?: UploadProgressHandler): Promise<AgentAttachment> =>
     uploadFormData(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/attachments/uploads`, `/agent-workspaces/${encodeURIComponent(workspaceId)}/attachments/uploads`, file, { filename: file.name, mime_type: file.type, total_size: file.size }, onProgress, bindingId),
   uploadAgentWorkspaceAttachment: (workspaceId: string, file: File, workDirectoryId?: string, conversationId?: string, onProgress?: UploadProgressHandler): Promise<AgentAttachment> =>
@@ -635,10 +673,12 @@ export const api = {
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/streaming-migration`, json('POST', { model_provider_id, model_name, reasoning_effort }, true)),
   condenseAgentConversation: (workspaceId: string, bindingId: string) =>
     request<{ accepted: boolean; task_id?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/condense`, json('POST', undefined, true)),
+  controlAgentConversationGoal: (workspaceId: string, bindingId: string, action: 'START' | 'STOP' | 'RESUME', objective?: string, max_iterations?: number) =>
+    request<{ accepted: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/goal`, json('POST', { action, ...(action === 'START' ? { objective, max_iterations } : {}) })),
   forkAgentConversation: (workspaceId: string, bindingId: string, event_id: string) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/fork`, json('POST', { event_id }, true)),
   rerunAgentMessage: (workspaceId: string, bindingId: string, eventId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], annotations: AgentConversationAnnotation[] = []) =>
-    request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(eventId)}/rerun`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations })),
+    request<{ accepted: boolean; cursor?: string | null; event_id?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(eventId)}/rerun`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations })),
   interruptAgentConversation: (workspaceId: string, bindingId: string) =>
     request<{ accepted: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/interrupt`, json('POST')),
   agentConversationInputReadiness: (workspaceId: string, bindingId: string) =>
@@ -651,6 +691,9 @@ export const api = {
   deleteDirectory: (id: string) => request<void>(`/node-directories/${encodeURIComponent(id)}`, json('DELETE')),
   cases: () => request<Case[]>('/cases'),
   createCase: (body: import('../types').CaseBasics) => request<Case>('/cases', json('POST', body)),
+  copyCase: (id: string) => request<Case & { copy_report?: CaseCopyReport }>(`/cases/${encodeURIComponent(id)}/copy`, json('POST')),
+  exportCases: (caseIds: string[]) => request<CaseBundle>('/cases/export', json('POST', { case_ids: caseIds })),
+  importCases: (bundle: CaseBundle) => request<Array<Case & { copy_report?: CaseCopyReport }>>('/cases/import', json('POST', bundle)),
   updateCase: (id: string, body: import('../types').CaseBasics & { expected_row_version: number }) =>
     request<Case>(`/cases/${encodeURIComponent(id)}`, json('PUT', body)),
   uploadCaseMaterial: async (id: string, expectedRowVersion: number, file: File): Promise<Case> => {
@@ -665,23 +708,33 @@ export const api = {
   saveCaseSessionConfig: (id: string, expected_row_version: number, config: import('../types').CaseSessionConfig) =>
     request<Case>(`/cases/${encodeURIComponent(id)}/session-config`, json('PUT', { expected_row_version, ...config })),
   deleteCase: (id: string) => request<void>(`/cases/${encodeURIComponent(id)}`, json('DELETE', undefined, true)),
-  deleteCaseControlConversation: (id: string) => request<void>(`/cases/${encodeURIComponent(id)}/control-conversation`, json('DELETE', undefined, true)),
+  deleteCaseControlConversation: (id: string, bindingId?: string) => request<void>(`/cases/${encodeURIComponent(id)}/control-conversation${bindingId ? `?binding_id=${encodeURIComponent(bindingId)}` : ''}`, json('DELETE', undefined, true)),
   case: (id: string) => request<Case>(`/cases/${encodeURIComponent(id)}`),
+  caseArtifactMaterials: (id: string, offset = 0, limit = 50) =>
+    request<{ items: import('../types').CaseArtifactMaterial[]; next_offset: number | null }>(`/cases/${encodeURIComponent(id)}/artifact-materials?${new URLSearchParams({ offset: String(offset), limit: String(limit) })}`),
+  setCaseCoordinationState: (id: string, expected_row_version: number, state: 'ACTIVE' | 'PAUSED') =>
+    request<Case>(`/cases/${encodeURIComponent(id)}/coordination-state`, json('PUT', { expected_row_version, state })),
+  confirmCaseConclusion: (id: string, expected_row_version: number) =>
+    request<Case>(`/cases/${encodeURIComponent(id)}/conclusion/confirm`, json('POST', { expected_row_version })),
+  rejectCaseConclusion: (id: string, expected_row_version: number, note?: string) =>
+    request<Case>(`/cases/${encodeURIComponent(id)}/conclusion/reject`, json('POST', { expected_row_version, ...(note?.trim() ? { note: note.trim() } : {}) })),
   caseStageTemplates: (caseId: string) => request<import('../types').CaseStageTemplate[]>(`/cases/${encodeURIComponent(caseId)}/stage-templates`),
   setCaseStageState: (caseId: string, stageId: string, expected_case_row_version: number, state: import('../types').CaseStage['state']) =>
     request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/state`, json('PUT', { expected_case_row_version, state })),
   bindCaseStageFlowRun: (caseId: string, stageId: string, flow_run_id: string, execution_mode: 'STEPWISE' | 'CONTINUOUS') =>
     request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/flow-run`, json('PUT', { flow_run_id, execution_mode })),
-  launchCaseStage: (caseId: string, stageId: string, name?: string) =>
-    request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/launch`, json('POST', { name })),
-  startCaseStageExecution: (caseId: string, stageId: string, reason = '启动当前事项阶段执行副本') =>
-    request<import('../types').CaseDecisionProposal>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/execution/start`, json('POST', { reason })),
+  startCase: (caseId: string, body: { session: 'CURRENT' | 'NEW'; note?: string; expected_row_version: number }, idempotencyKey: string) =>
+    request<Case>(`/cases/${encodeURIComponent(caseId)}/start`, json('POST', body, idempotencyKey)),
+  rerunCaseStage: (caseId: string, stageId: string) =>
+    request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/rerun`, json('POST')),
   executeCaseControlPlan: (caseId: string, planId: string) =>
     request<import('../types').CaseControlPlan>(`/cases/${encodeURIComponent(caseId)}/control-plans/${encodeURIComponent(planId)}/execute`, json('POST')),
   retryCaseControlPlan: (caseId: string, planId: string) =>
     request<import('../types').CaseControlPlan>(`/cases/${encodeURIComponent(caseId)}/control-plans/${encodeURIComponent(planId)}/retry`, json('POST')),
   createCaseControlConversation: (caseId: string, body: { model_provider_id: string; model_name: string; reasoning_effort?: string | null; capability_version_ids?: string[]; credential_ids?: string[] }, idempotencyKey = randomId()) =>
     request<Case>(`/cases/${encodeURIComponent(caseId)}/control-conversation`, json('POST', body, idempotencyKey)),
+  retryCaseControlRound: (caseId: string, roundId: string) =>
+    request<Case>(`/cases/${encodeURIComponent(caseId)}/control-rounds/${encodeURIComponent(roundId)}/retry`, json('POST')),
 
   nodes: (directoryId?: string) => request<NodeAsset[]>(`/node-assets${directoryId ? `?directory_id=${directoryId}` : ''}`),
   node: (id: string) => request<NodeAsset>(`/node-assets/${id}`),
@@ -701,31 +754,52 @@ export const api = {
       };
       content_hash: string;
     }>('/capability-imports/validate', json('POST', body)),
-  commitCapability: (import_token: string) => request<CapabilityImportResult>('/capability-imports', json('POST', { import_token })),
+  commitCapability: (import_token: string, mcp_authentication?: import('../types').McpAuthenticationWrite) => request<CapabilityImportResult>('/capability-imports', json('POST', { import_token, ...(mcp_authentication ? { mcp_authentication } : {}) })),
   createPluginSourceResolution: (body: { source_url: string; commit: string; repo_path?: string | null }) =>
     request<PluginSourceResolution>('/plugin-source-resolutions', json('POST', body)),
   previewMarketplaceCatalog: (body: { marketplace_source_url: string; marketplace_commit: string; marketplace_repo_path?: string | null }) =>
     request<MarketplaceCatalog>('/plugin-marketplace-catalogs/preview', json('POST', body)),
-  openhandsMarketplaceCatalog: () =>
-    request<MarketplaceCatalog>('/plugin-marketplace-catalogs/openhands'),
+  marketSources: (signal?: AbortSignal) => request<MarketSources>('/market-sources', { signal }),
+  saveMarketSources: (body: MarketSources) => request<MarketSources>('/market-sources', json('PUT', body)),
+  marketPluginCatalog: (sourceId: string, query: string, page: number, commit: string | undefined, signal?: AbortSignal) => request<MarketplaceCatalog>(`/market-sources/${encodeURIComponent(sourceId)}/plugins?${new URLSearchParams({ q: query, page: String(page), page_size: '10', ...(commit ? { commit } : {}) })}`, { signal, timeoutMs: 90_000 }),
+  marketSkills: (sourceId: string, query: string, signal?: AbortSignal) => request<MarketSkillSearch>(`/market-sources/${encodeURIComponent(sourceId)}/skills?q=${encodeURIComponent(query)}`, { signal, timeoutMs: 90_000 }),
+  validateMarketSkill: (sourceId: string, skill: MarketSkill) => request<{ import_token: string; content_hash: string; preview: Record<string, unknown> }>('/market-skill-imports/validate', { ...json('POST', { source_id: sourceId, repository: skill.repository, skill_id: skill.skill_id, commit: skill.commit ?? null, path: skill.path ?? null }), timeoutMs: 120_000 }),
+  openhandsMarketplaceCatalog: (signal?: AbortSignal) =>
+    request<MarketplaceCatalog>('/plugin-marketplace-catalogs/openhands', { signal, timeoutMs: 330_000 }),
   createMarketplacePluginResolution: (body: { marketplace_source_url: string; marketplace_commit: string; marketplace_repo_path?: string | null; plugin_name: string }) =>
     request<PluginSourceResolution>('/plugin-source-resolutions/marketplace', json('POST', body)),
   pluginSourceResolution: (id: string) =>
     request<PluginSourceResolution>(`/plugin-source-resolutions/${encodeURIComponent(id)}`),
   publishPluginSourceResolution: (id: string, expectedStateVersion: number) =>
     request<PluginSourceResolution>(`/plugin-source-resolutions/${encodeURIComponent(id)}/publish`, json('POST', { expected_state_version: expectedStateVersion })),
+  capabilityDirectory: (params: { capability_type: CapabilityAssetType; q: string; page: number; page_size: number; sort: CapabilitySort; direction: 'asc' | 'desc'; include_builtin?: boolean }) =>
+    request<CapabilityDirectoryPage>(`/capability-directory?${new URLSearchParams(Object.entries(params).map(([key, value]) => [key, String(value)]))}`),
+  capabilityCollectionDirectory: (params: { q: string; page: number; page_size: number; sort: CapabilityCollectionSort; direction: 'asc' | 'desc' }) =>
+    request<RepositoryPage<CapabilityCollection>>(`/capability-collection-directory?${new URLSearchParams(Object.entries(params).map(([key, value]) => [key, String(value)]))}`),
   capabilities: () => request<CapabilityAsset[]>('/capabilities'),
+  userConfigurableCapabilities: () => request<CapabilityAsset[]>('/user-configurable-capabilities'),
+  probeMcpCapability: (id: string, environment_version_id: string, timeout = 15) =>
+    request<import('../types').CapabilityValidationResult>(`/capabilities/${encodeURIComponent(id)}/mcp-probes`, json('POST', { environment_version_id, timeout })),
   capabilityCollections: () => request<CapabilityCollection[]>('/capability-collections'),
+  mcpAuthentication: (id: string, signal?: AbortSignal) => request<import('../types').McpAuthentication>(`/capabilities/${encodeURIComponent(id)}/mcp-authentication`, { signal }),
+  saveMcpAuthentication: (id: string, value: import('../types').McpAuthenticationWrite) => request<import('../types').McpAuthentication>(`/capabilities/${encodeURIComponent(id)}/mcp-authentication`, json('PUT', value)),
   mcpSource: (id: string) => request<McpSource>(`/capabilities/${encodeURIComponent(id)}/mcp-source`),
-  updateMcpSource: (id: string, content: string, mcp_scripts: Array<{ server: string; filename: string; content_base64: string }>) =>
-    request<CapabilityAsset>(`/capabilities/${encodeURIComponent(id)}/mcp-source`, json('PUT', { content, mcp_scripts })),
+  updateMcpSource: (id: string, content: string, mcp_scripts: Array<{ server: string; filename: string; content_base64: string }>, mcp_authentication?: import('../types').McpAuthenticationWrite) =>
+    request<CapabilityAsset>(`/capabilities/${encodeURIComponent(id)}/mcp-source`, json('PUT', { content, mcp_scripts, ...(mcp_authentication ? { mcp_authentication } : {}) })),
   createCapabilityCollection: (body: CapabilityCollectionWrite) =>
     request<CapabilityCollection>('/capability-collections', json('POST', body)),
   updateCapabilityCollection: (id: string, body: CapabilityCollectionWrite) =>
     request<CapabilityCollection>(`/capability-collections/${id}`, json('PUT', body)),
   deleteCapabilityCollection: (id: string) =>
     request<void>(`/capability-collections/${id}`, json('DELETE')),
+  capabilityFiles: (id: string, signal?: AbortSignal) => request<CapabilityPackageFiles>(`/capabilities/${encodeURIComponent(id)}/files`, { signal }),
+  capabilityFile: (id: string, path: string, signal?: AbortSignal) => request<CapabilityPackageFile>(`/capabilities/${encodeURIComponent(id)}/file?${new URLSearchParams({ path })}`, { signal }),
+  capabilityComparison: (id: string, signal?: AbortSignal) => request<CapabilityPackageComparison>(`/capabilities/${encodeURIComponent(id)}/version-comparison`, { signal }),
+  capabilityFileDiff: (id: string, path: string, signal?: AbortSignal) => request<CapabilityPackageFileDiff>(`/capabilities/${encodeURIComponent(id)}/file-diff?${new URLSearchParams({ path })}`, { signal }),
+  updateCapabilityFiles: (id: string, expected_digest: string, files: Record<string, string>) => request<CapabilityAsset>(`/capabilities/${encodeURIComponent(id)}/files`, json('PUT', { expected_digest, files })),
   capabilitySource: (id: string) => request<SkillSource>(`/capabilities/${encodeURIComponent(id)}/source`),
+  skillVersionComparison: (id: string) => request<SkillVersionComparison>(`/capabilities/${encodeURIComponent(id)}/skill-version-comparison`),
+  rollbackSkillVersion: (id: string) => request<CapabilityAsset>(`/capabilities/${encodeURIComponent(id)}/rollback`, json('POST')),
   contextSource: (id: string) => request<{ id: string; capability_key: string; filename: string; description: string; content_format: 'TEXT' | 'BUNDLE'; manifest: ContextBundleManifest | null; content: string }>(`/capabilities/${encodeURIComponent(id)}/context-source`),
   updateCapabilitySource: (id: string, content: string) =>
     request<CapabilityAsset>(`/capabilities/${encodeURIComponent(id)}/source`, json('PUT', { content })),
@@ -741,6 +815,8 @@ export const api = {
   deleteTerminalEnvironment: (id: string) => request<void>(`/terminal-environments/${id}`, json('DELETE')),
   deleteEnvironmentVersion: (environmentId: string, versionId: string) =>
     request<void>(`/terminal-environments/${environmentId}/versions/${versionId}`, json('DELETE')),
+  environmentVersionRuns: (environmentId: string, versionId: string, page: number, signal?: AbortSignal) =>
+    request<import('../types').EnvironmentVersionRunPage>(`/terminal-environments/${encodeURIComponent(environmentId)}/versions/${encodeURIComponent(versionId)}/runs?page=${page}&page_size=20`, { signal }),
   createEnvironmentSetup: (id: string, base_version_id?: string) =>
     request<EnvironmentSetupSession>(`/terminal-environments/${id}/setup-sessions`, json('POST', { base_version_id: base_version_id || null })),
   publishEnvironmentSetup: (id: string, description = '', runtime_capabilities: string[] = []) =>
@@ -759,12 +835,14 @@ export const api = {
   providers: () => request<ModelProvider[]>('/model-providers'),
   createProvider: (body: ModelProviderWrite) => request<ModelProvider>('/model-providers', json('POST', body)),
   updateProvider: (id: string, body: ModelProviderWrite) => request<ModelProvider>(`/model-providers/${id}`, json('PUT', body)),
+  setPrimaryProvider: (id: string, primary: boolean) => request<ModelProvider>(`/model-providers/${id}/primary`, json(primary ? 'POST' : 'DELETE')),
   deleteProvider: (id: string) => request<void>(`/model-providers/${id}`, json('DELETE')),
   deleteProviders: (ids: string[]) => request<ProviderBulkDeleteResult>('/model-providers', json('DELETE', { ids })),
   testProvider: (id: string) => request<{ connection_state: string; model_count: number }>(`/model-providers/${id}/test`, json('POST')),
+  previewProviderUsage: (body: import('../types').ModelProviderUsagePreviewWrite, signal?: AbortSignal) => request<ModelProviderUsage>('/model-providers/preview-usage', { ...json('POST', body), signal }),
   providerUsage: (id: string) => request<ModelProviderUsage>(`/model-providers/${id}/usage`),
-  discoverProviderModels: (id: string) => request<{ models: string[]; provider?: ModelProvider }>(`/model-providers/${id}/discover-models`, json('POST')),
-  previewProviderModels: (body: ModelProviderDiscoveryWrite) => request<{ models: string[] }>('/model-providers/discover-models', json('POST', body)),
+  discoverProviderModels: (id: string) => request<{ models: string[]; protocols?: Record<string, ModelProtocol>; provider?: ModelProvider }>(`/model-providers/${id}/discover-models`, json('POST')),
+  previewProviderModels: (body: ModelProviderDiscoveryWrite) => request<{ models: string[]; protocols?: Record<string, ModelProtocol> }>('/model-providers/discover-models', json('POST', body)),
   startCodexOAuth: (id: string) => request<CodexDeviceAuthorization>(`/model-providers/${id}/oauth/device/start`, json('POST')),
   pollCodexOAuth: (id: string) => request<CodexOAuthStatus>(`/model-providers/${id}/oauth/device/poll`, json('POST')),
   codexOAuthStatus: (id: string) => request<CodexOAuthStatus>(`/model-providers/${id}/oauth/status`),
@@ -788,6 +866,12 @@ export const api = {
   triggerFlowRunSchedule: (id: string) => request<FlowRunSchedule>(`/flow-run-schedules/${encodeURIComponent(id)}/trigger`, json('POST')),
   deleteFlowRunSchedule: (id: string) => request<void>(`/flow-run-schedules/${encodeURIComponent(id)}`, json('DELETE')),
   flowRun: (id: string) => request<FlowRun>(`/flow-runs/${id}`),
+  recordDirectory: (runId: string, kind: 'ALL' | 'MANUAL' | 'AUTOMATIC', cursor: string | null, signal?: AbortSignal, search = '') => {
+    const query = new URLSearchParams({ kind, limit: '30' });
+    if (cursor) query.set('cursor', cursor);
+    if (search.trim()) query.set('q', search.trim());
+    return request<import('../types').FlowRunDirectoryPage>(`/flow-runs/${encodeURIComponent(runId)}/records?${query}`, { signal });
+  },
   stepwiseRecords: (runId: string) => request<FlowRunStepwiseRecord[]>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs`),
   stepwiseRecord: (runId: string, recordId: string) => request<FlowRunStepwiseRecord>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs/${encodeURIComponent(recordId)}`),
   stepwiseTemplateReadiness: (runId: string) => request<import('../types').StepwiseTemplateReadiness>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-template-readiness`),
@@ -799,7 +883,7 @@ export const api = {
     request<FlowRunStepwiseRecord[]>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs/config-imports`, json('POST', document)),
   deleteStepwiseRecord: (runId: string, recordId: string) => request<void>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runs/${encodeURIComponent(recordId)}`, json('DELETE')),
   saveStepwiseNodeDraft: (runId: string, nodeKey: string, body: { expected_row_version: number; startup_mode: 'PROMPT'; startup_prompt?: string; artifact_ids: Record<string, string>; input_urls: Record<string, string>; gates: GatePolicy[]; agent_preset: import('../types').AgentPreset }) =>
-    request<StepwiseNodeDraft>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-node-drafts/${encodeURIComponent(nodeKey)}`, json('PUT', body)),
+    request<StepwiseNodeDraft>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-node-drafts/${encodeURIComponent(nodeKey)}`, json('PUT', { ...body, agent_preset: writableAgentPreset(body.agent_preset), gates: writableGates(body.gates) })),
   saveStepwiseRuntimePorts: (runId: string, body: StepwiseRuntimePortsWrite) =>
     request<FlowRunStepwiseRecord>(`/flow-runs/${encodeURIComponent(runId)}/stepwise-runtime-ports`, json('PUT', body)),
   startStepwiseNodeDraft: (runId: string, nodeKey: string, expected_row_version: number) =>
@@ -962,7 +1046,7 @@ export function flowRunTerminalUrl(runId: string, rows = 24, columns = 80): stri
 }
 
 export interface AgentStreamEvent {
-  type: 'delta' | 'event' | 'stream_reset' | 'stream_closed' | 'durable_cursor' | 'model_retry';
+  type: 'delta' | 'event' | 'message_complete' | 'stream_reset' | 'stream_closed' | 'durable_cursor' | 'model_retry';
   content?: string;
   item_id?: string;
   event?: OpenHandsConversationEvent;
@@ -1029,6 +1113,8 @@ export function subscribeToConversationStream(
           const seq = event.seq as number;
           afterSeq = afterSeq === undefined ? seq : Math.max(afterSeq, seq);
           onEvent({ type: 'durable_cursor', seq: afterSeq });
+        } else if (event.type === 'message_complete') {
+          onEvent({ type: 'message_complete' });
         } else {
           const retryEvent = modelRetryEvent(event);
           if (retryEvent) onEvent(retryEvent);
@@ -1072,12 +1158,13 @@ export function agentWorkspaceTerminalUrl(workspaceId: string, rows = 24, column
   return url.toString();
 }
 
-export function agentWorkspaceFileUrl(workspaceId: string, path: string, options: { bindingId?: string; workDirectoryId?: string; draftAttachmentOwnerId?: string; download?: boolean } = {}): string {
+export function agentWorkspaceFileUrl(workspaceId: string, path: string, options: { bindingId?: string; workDirectoryId?: string; draftAttachmentOwnerId?: string; includeHidden?: boolean; download?: boolean } = {}): string {
   const url = absoluteApiUrl(`/agent-workspaces/${encodeURIComponent(workspaceId)}/workspace/file`);
   url.searchParams.set('path', path);
   if (options.bindingId) url.searchParams.set('binding_id', options.bindingId);
   if (options.workDirectoryId) url.searchParams.set('work_directory_id', options.workDirectoryId);
   if (options.draftAttachmentOwnerId) url.searchParams.set('draft_attachment_owner_id', options.draftAttachmentOwnerId);
+  if (options.includeHidden) url.searchParams.set('include_hidden', 'true');
   if (options.download ?? true) url.searchParams.set('download', 'true');
   return url.toString();
 }
@@ -1169,6 +1256,7 @@ function subscribeToSessionStream(
           afterSeq = afterSeq === undefined ? seq : Math.max(afterSeq, seq);
           onEvent({ type: 'durable_cursor', seq: afterSeq });
         }
+        else if (event.type === 'message_complete') onEvent({ type: 'message_complete' });
         else {
           const retryEvent = modelRetryEvent(event);
           if (retryEvent) onEvent(retryEvent);
@@ -1219,8 +1307,8 @@ export const nodeSessionApi = {
   },
   create: (flowRunId: string, attemptId: string, title: string | undefined, model_provider_id: string, model_name: string, reasoning_effort: string | null, idempotencyKey = randomId(), work_directory_id?: string) =>
     request<import('../types').AgentConversation>(nodeSessionBase(flowRunId, attemptId), json('POST', { title, model_provider_id, model_name, reasoning_effort, work_directory_id }, idempotencyKey)),
-  bootstrap: (flowRunId: string, attemptId: string, content: string, model_provider_id: string, model_name: string, reasoning_effort: string | null, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], work_directory_id?: string, idempotencyKey = randomId(), annotations: AgentConversationAnnotation[] = []) =>
-    request<{ conversation: import('../types').AgentConversation; accepted: boolean; cursor?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/bootstrap`, json('POST', { conversation_id: idempotencyKey, content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), model_provider_id, model_name, reasoning_effort, work_directory_id, annotations }, idempotencyKey)),
+  bootstrap: (flowRunId: string, attemptId: string, content: string, model_provider_id: string, model_name: string, reasoning_effort: string | null, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], work_directory_id?: string, idempotencyKey = randomId(), annotations: AgentConversationAnnotation[] = [], goal_objective?: string) =>
+    request<{ conversation: import('../types').AgentConversation; accepted: boolean; cursor?: string | null; event_id?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/bootstrap`, json('POST', { conversation_id: idempotencyKey, content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), model_provider_id, model_name, reasoning_effort, work_directory_id, annotations, goal_objective }, idempotencyKey)),
   get: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`),
   update: (flowRunId: string, attemptId: string, bindingId: string, title: string) =>
@@ -1252,8 +1340,10 @@ export const nodeSessionApi = {
     request<{ model_provider_id: string; model_name?: string | null; reasoning_effort?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/model`, json('POST', { model_provider_id, model_name, reasoning_effort })),
   remove: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<import('../types').AgentConversationDeleteResult>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`, json('DELETE', undefined, true)),
-  message: (flowRunId: string, attemptId: string, bindingId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], idempotencyKey = randomId(), annotations: AgentConversationAnnotation[] = []) =>
-    request<{ accepted: boolean; cursor?: string | null; compacted?: boolean; queued_during_turn?: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations }, idempotencyKey)),
+  cancelMessageSubmission: (flowRunId: string, attemptId: string, bindingId: string, submissionId: string) =>
+    request<{ cancelled: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(submissionId)}/cancel`, json('POST', {})),
+  message: (flowRunId: string, attemptId: string, bindingId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], idempotencyKey = randomId(), annotations: AgentConversationAnnotation[] = [], answered_question?: string) =>
+    request<{ accepted: boolean; cursor?: string | null; event_id?: string | null; compacted?: boolean; queued_during_turn?: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations, ...(answered_question ? { answered_question } : {}) }, idempotencyKey)),
   pendingConfirmation: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<import('../types').AgentPendingConfirmation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/pending-confirmation`),
   decideConfirmation: (flowRunId: string, attemptId: string, bindingId: string, expected_pending_digest: string, accept: boolean, reason: string) =>
@@ -1271,6 +1361,8 @@ export const nodeSessionApi = {
   },
   condense: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<{ accepted: boolean; task_id?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/condense`, json('POST', undefined, true)),
+  controlGoal: (flowRunId: string, attemptId: string, bindingId: string, action: 'START' | 'STOP' | 'RESUME', objective?: string, max_iterations?: number) =>
+    request<{ accepted: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/goal`, json('POST', { action, ...(action === 'START' ? { objective, max_iterations } : {}) })),
   interrupt: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<{ accepted: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/interrupt`, json('POST')),
   resume: (flowRunId: string, attemptId: string, bindingId: string) =>
@@ -1280,7 +1372,7 @@ export const nodeSessionApi = {
   migrate: (flowRunId: string, attemptId: string, bindingId: string, model_provider_id: string, model_name?: string | null, reasoning_effort?: string | null) =>
     request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/streaming-migration`, json('POST', { model_provider_id, model_name, reasoning_effort }, true)),
   rerun: (flowRunId: string, attemptId: string, bindingId: string, eventId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], annotations: AgentConversationAnnotation[] = []) =>
-    request<{ accepted: boolean; cursor?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(eventId)}/rerun`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations })),
+    request<{ accepted: boolean; cursor?: string | null; event_id?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(eventId)}/rerun`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations })),
   mcpReadiness: (flowRunId: string, attemptId: string, capabilityVersionId: string) => request<import('../types').AgentSessionMcpReadiness>(`${nodeSessionBase(flowRunId, attemptId)}/capabilities/${encodeURIComponent(capabilityVersionId)}/mcp-readiness`, json('POST')),
   addCapability: (flowRunId: string, attemptId: string, bindingId: string, capability_version_id: string) => request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/capabilities`, json('POST', { capability_version_id })),
   registerCapabilities: (flowRunId: string, attemptId: string, bindingId: string, capability_version_ids: string[]) => request<import('../types').AgentConversationCapabilityRegistration>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/capabilities/batch`, json('POST', { capability_version_ids })),
@@ -1295,12 +1387,13 @@ export const nodeSessionApi = {
     if (fullIndex) query.set('full_index', 'true');
     return request<import('../types').AgentSessionWorkspaceDetails>(`${nodeSessionBase(flowRunId, attemptId)}/workspace${query.size ? `?${query}` : ''}`);
   },
-  workspaceDirectory: (flowRunId: string, attemptId: string, bindingId?: string, workDirectoryId?: string, parentPath?: string, cursor?: string) => {
+  workspaceDirectory: (flowRunId: string, attemptId: string, bindingId?: string, workDirectoryId?: string, parentPath?: string, cursor?: string, includeHidden = false) => {
     const query = new URLSearchParams();
     if (bindingId) query.set('binding_id', bindingId);
     if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
     if (parentPath) query.set('parent_path', parentPath);
     if (cursor) query.set('cursor', cursor);
+    if (includeHidden) query.set('include_hidden', 'true');
     return request<import('../types').AgentSessionWorkspaceDirectory>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/directory${query.size ? `?${query}` : ''}`);
   },
   gitRepositories: (flowRunId: string, attemptId: string, bindingId?: string, workDirectoryId?: string) => {
@@ -1314,6 +1407,18 @@ export const nodeSessionApi = {
     if (bindingId) query.set('binding_id', bindingId);
     if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
     await request<void>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/git/sync?${query}`, json('POST'));
+  },
+  gitBranches: (flowRunId: string, attemptId: string, repositoryPath: string, bindingId?: string, workDirectoryId?: string) => {
+    const query = new URLSearchParams({ repository_path: repositoryPath });
+    if (bindingId) query.set('binding_id', bindingId);
+    if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
+    return request<import('../types').WorkspaceGitBranches>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/git/branches?${query}`);
+  },
+  switchGitBranch: (flowRunId: string, attemptId: string, repositoryPath: string, body: import('../types').WorkspaceGitSwitchWrite, bindingId?: string, workDirectoryId?: string) => {
+    const query = new URLSearchParams({ repository_path: repositoryPath });
+    if (bindingId) query.set('binding_id', bindingId);
+    if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
+    return request<import('../types').WorkspaceGitRepository>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/git/switch?${query}`, json('POST', body));
   },
   gitLog: (flowRunId: string, attemptId: string, repositoryPath: string, bindingId?: string, workDirectoryId?: string) => {
     const query = new URLSearchParams({ repository_path: repositoryPath });
@@ -1357,11 +1462,12 @@ export const nodeSessionApi = {
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     return request<void>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/entries${query.size ? `?${query}` : ''}`, json('POST', { parent_path, name, kind }));
   },
-  file: (flowRunId: string, attemptId: string, path: string, bindingId?: string, workDirectoryId?: string, draftAttachmentOwnerId?: string, download = false, preview = false, offset = 0) => {
+  file: (flowRunId: string, attemptId: string, path: string, bindingId?: string, workDirectoryId?: string, draftAttachmentOwnerId?: string, download = false, preview = false, offset = 0, includeHidden = false) => {
     const query = new URLSearchParams({ path });
     if (bindingId) query.set('binding_id', bindingId);
     if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
     if (draftAttachmentOwnerId) query.set('draft_attachment_owner_id', draftAttachmentOwnerId);
+    if (includeHidden) query.set('include_hidden', 'true');
     if (download) query.set('download', 'true');
     if (preview) {
       query.set('preview', 'true');
@@ -1408,6 +1514,7 @@ export function subscribeToNodeSessionStream(
         afterSeq = afterSeq === undefined ? seq : Math.max(afterSeq, seq);
         onEvent({ type: 'durable_cursor', seq: afterSeq });
       }
+      else if (event.type === 'message_complete') onEvent({ type: 'message_complete' });
       else {
         const retryEvent = modelRetryEvent(event);
         if (retryEvent) onEvent(retryEvent);

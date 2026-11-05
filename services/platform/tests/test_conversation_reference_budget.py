@@ -113,20 +113,26 @@ def test_selected_reference_preserves_exact_event_and_range(resolve):
     event = RuntimeEvent(
         cursor="selected-event", event_type="MESSAGE", payload={"content": "前文 目标内容 后文"}
     )
-    assert resolve(
+    selection = {"compact_start": 2, "compact_end": 6}
+    resolved = resolve(
         [event],
         {
             "source_binding_id": "00000000-0000-0000-0000-000000000002",
             "source_event_id": "selected-event",
-            "selection": {"compact_start": 2, "compact_end": 6},
+            "selection": selection,
         },
-    ) == (
+    )
+
+    assert resolved == (
         {
             "event_id": "selected-event",
             "content": "目标内容",
             "source_binding_id": "00000000-0000-0000-0000-000000000002",
+            "selection": selection,
         },
     )
+    prompt, _ = conversations.message_payload("继续", (), resolved)
+    assert conversations.project_conversation_references(prompt)[1] == resolved
 
 
 def test_explicit_oversized_reference_and_total_budget_still_fail():

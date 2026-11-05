@@ -365,7 +365,7 @@ test('step configuration is saved before start with all continuous and stepwise 
   await expect(consolePanel).toContainText('取消选中后仍应保留的前端草稿');
   expect(savedBody).toBeUndefined();
   await expect(page.getByRole('button', { name: '启动逐步运行 测试逐步记录' })).toHaveCount(0);
-  await consolePanel.getByRole('button', { name: 'Agent 配置', exact: true }).click();
+  await consolePanel.getByRole('tab', { name: 'Agent 配置', exact: true }).click();
   await consolePanel.getByRole('button', { name: /大模型.*配置/ }).click();
   const modelDialog = page.getByRole('dialog', { name: '配置大模型', exact: true });
   await modelDialog.getByRole('button', { name: '首会话模型供应商', exact: true }).click();
@@ -1239,7 +1239,7 @@ test('run projection stays neutral until record selection and automatic save rep
   await expect(automaticEditor).toBeVisible();
   await expect(automaticEditor).toHaveAttribute('data-testid', 'node-configuration-panel');
   await expect(automaticEditor.locator('.node-console-mode-summary')).toContainText('连续运行');
-  await expect(automaticEditor.getByRole('navigation', { name: '提示词执行配置' })).toContainText('输入与上下文Agent 配置门禁配置执行记录');
+  await expect(automaticEditor.getByRole('tablist', { name: '提示词执行配置' })).toContainText('输入与上下文Agent 配置门禁配置执行记录');
   await expect(automaticEditor.getByRole('heading', { name: '输入' })).toBeVisible();
   await expect(automaticEditor.getByRole('link', { name: 'https://example.com/default-input' })).toBeVisible();
   await expect(automaticEditor.getByRole('heading', { name: '启动提示词' })).toBeVisible();
@@ -1264,9 +1264,9 @@ test('run projection stays neutral until record selection and automatic save rep
   await expect(automaticEditor.getByRole('link', { name: 'https://example.com/input' })).toBeVisible();
   await expect(automaticEditor.getByRole('link', { name: 'example.md' })).toBeVisible();
 
-  await automaticEditor.getByRole('button', { name: 'Agent 配置' }).click();
+  await automaticEditor.getByRole('tab', { name: 'Agent 配置' }).click();
   await expect(automaticEditor.getByRole('heading', { name: '首会话 Agent 配置' })).toBeVisible();
-  await automaticEditor.locator('.agent-preset-module').first().click();
+  await automaticEditor.getByRole('button', { name: /^能力/ }).click();
   const capabilityDialog = page.getByRole('dialog', { name: '配置能力' });
   const capabilityOptions = capabilityDialog.locator('.agent-capability-list > button');
   await expect(capabilityOptions).toHaveCount(31);
@@ -1281,7 +1281,7 @@ test('run projection stays neutral until record selection and automatic save rep
   expect(agentHintBox).not.toBeNull();
   expect(firstAgentModuleBox).not.toBeNull();
   expect(firstAgentModuleBox!.y - (agentHintBox!.y + agentHintBox!.height)).toBeLessThan(40);
-  await automaticEditor.getByRole('button', { name: '门禁配置' }).click();
+  await automaticEditor.getByRole('tab', { name: '门禁配置' }).click();
   await expect(automaticEditor).toContainText('门禁只应用于即将创建的这一次执行');
   const [gateHintBox, firstGateStageBox] = await Promise.all([
     automaticEditor.locator('.gate-draft-editor > .field-hint').boundingBox(),
@@ -1290,7 +1290,7 @@ test('run projection stays neutral until record selection and automatic save rep
   expect(gateHintBox).not.toBeNull();
   expect(firstGateStageBox).not.toBeNull();
   expect(firstGateStageBox!.y - (gateHintBox!.y + gateHintBox!.height)).toBeLessThan(40);
-  await automaticEditor.getByRole('button', { name: '输入与上下文' }).click();
+  await automaticEditor.getByRole('tab', { name: '输入与上下文' }).click();
   await automaticRecord.click();
   await expect(page.locator('.automatic-record-list > article.active')).toHaveCount(0);
   await expect(page.locator('.run-side-panel')).toHaveCount(0);

@@ -779,6 +779,42 @@ def test_preview_uses_revocable_session_and_cannot_authenticate_platform_api(
         == 204
     )
     assert len(fetches) == 1
+    assert "access-control-allow-origin" not in client.get("/api/v1/model-providers").headers
+    for error, status, code in [
+        (
+            DomainError("AGENT_BROWSER_RESPONSE_TOO_LARGE", "Response too large", 413),
+            413,
+            "AGENT_BROWSER_RESPONSE_TOO_LARGE",
+        ),
+        (
+            browser.DockerControllerError("backend unavailable"),
+            503,
+            "AGENT_BROWSER_BACKEND_UNAVAILABLE",
+        ),
+        (
+            DomainError("AGENT_BROWSER_TARGET_UNAVAILABLE", "Target unavailable", 502),
+            502,
+            None,
+        ),
+    ]:
+
+        def failed_fetch(_error=error, **_kwargs):
+            raise _error
+
+        monkeypatch.setattr(
+            browser,
+            "DockerControllerClient",
+            lambda _, fetch=failed_fetch: SimpleNamespace(browser_fetch=fetch),
+        )
+        result = client.get(path, headers={"Origin": "null"})
+        assert result.status_code == status
+        if code is not None:
+            assert result.json()["error"]["code"] == code
+        assert result.headers["access-control-allow-origin"] == "*"
+        assert result.headers["cache-control"] == "no-store"
+        assert "allow-same-origin" not in result.headers["content-security-policy"]
+        assert "access-control-allow-credentials" not in result.headers
+        assert "set-cookie" not in result.headers
     with Session(engine) as db:
         db.execute(
             delete(UserSession).where(

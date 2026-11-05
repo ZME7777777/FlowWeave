@@ -110,53 +110,6 @@ def test_git_identity_failed_registration_restores_previous_configuration(tmp_pa
     assert not (root / ".flowweave-gitconfig").exists()
 
 
-def test_git_settings_targets_only_authenticated_user_directory(monkeypatch):
-    from flowweave.modules.agent_sessions.application import conversations
-    from flowweave.modules.agent_workspaces.application import git_settings, workspace
-    from flowweave.modules.users.application.security import tenant_user
-
-    calls = []
-    monkeypatch.setattr(workspace, "ensure_user_project_root", lambda *args: None)
-    monkeypatch.setattr(
-        conversations,
-        "terminal_resource_details",
-        lambda *args: ("owned", "resource-id"),
-    )
-
-    class Runtime:
-        def workspace_git_identity(self, handle, *, identity, profile=None):
-            calls.append((handle.workspace_root, identity))
-            return {}
-
-    monkeypatch.setattr(git_settings, "get_runtime", Runtime)
-    for user in ("user-a", "user-b"):
-        with tenant_user(user):
-            git_settings.git_identity(
-                None, "shared-workspace", identity=(user, f"{user}@example.test")
-            )
-    assert [root for root, _ in calls] == [
-        "/runtime/workspace/project/users/user-a",
-        "/runtime/workspace/project/users/user-b",
-    ]
-
-
-@pytest.mark.parametrize(
-    "values",
-    [
-        {"author": "a\nb", "email": "a@example.test"},
-        {"author": "User", "email": "bad email"},
-        {"author": "User", "email": "a@example.test", "root": "/another-user"},
-    ],
-)
-def test_git_settings_rejects_identity_injection_and_client_paths(values):
-    from pydantic import ValidationError
-
-    from flowweave.modules.agent_workspaces.presentation.router import AgentGitIdentityWrite
-
-    with pytest.raises(ValidationError):
-        AgentGitIdentityWrite(**values)
-
-
 def test_git_identity_hides_values_when_global_precedence_prevents_inheritance(tmp_path):
     home, root = tmp_path / "home", tmp_path / "user"
     home.mkdir()

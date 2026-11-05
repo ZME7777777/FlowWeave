@@ -18,9 +18,10 @@ export interface ComposerSuggestion {
 }
 
 function composerTrigger(value: string, cursor: number): { sigil: '$' | '/' | '@'; query: string; start: number; end: number } | undefined {
-  const match = /([$/@])([^\s]*)$/.exec(value.slice(0, cursor));
+  const match = /(?:^| )([$/@])([^\s]*)$/.exec(value.slice(0, cursor));
   if (!match) return undefined;
-  return { sigil: match[1] as '$' | '/' | '@', query: match[2], start: cursor - match[0].length, end: cursor };
+  const start = match.index + match[0].indexOf(match[1]);
+  return { sigil: match[1] as '$' | '/' | '@', query: match[2], start, end: cursor };
 }
 
 function isImeComposition(event: ReactKeyboardEvent<HTMLTextAreaElement>): boolean {
@@ -232,7 +233,7 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
   }}>
     <textarea ref={input} data-overflowing={inputOverflowing || undefined} aria-label={ariaLabel} aria-autocomplete="list" aria-controls={hasMenu ? 'agent-composer-capabilities' : undefined} aria-expanded={hasMenu} value={draft} maxLength={200_000} placeholder={placeholder} disabled={disabled} onChange={event => { setSelectionStart(event.target.selectionStart); updateDraft(event.target.value); }} onSelect={event => setSelectionStart(event.currentTarget.selectionStart)} onPaste={onPaste} onKeyDown={event => {
       if (isImeComposition(event)) return;
-      if (event.key === 'Enter' && (event.metaKey || event.altKey) && !event.shiftKey) { event.preventDefault(); onDirectSubmit?.(draftRef.current); return; }
+      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey || event.altKey) && !event.shiftKey) { event.preventDefault(); onDirectSubmit?.(draftRef.current); return; }
       if (hasMenu && event.key === 'Escape') { event.preventDefault(); updateDraft(`${draft.slice(0, trigger!.start)}${draft.slice(trigger!.end)}`); setSelectionStart(trigger!.start); return; }
       if (hasSuggestions && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab'].includes(event.key)) {
         event.preventDefault();

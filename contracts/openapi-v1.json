@@ -17874,6 +17874,217 @@
           }
         }
       }
+    },
+    "/api/v1/agent-workspaces/{workspace_id}/conversations/{binding_id}/messages/{submission_id}/cancel": {
+      "post": {
+        "summary": "Cancel Agent Message Submission",
+        "operationId": "cancel_agent_message_submission_api_v1_agent_workspaces__workspace_id__conversations__binding_id__messages__submission_id__cancel_post",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          },
+          {
+            "name": "submission_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Submission Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Cancel Agent Message Submission Api V1 Agent Workspaces  Workspace Id  Conversations  Binding Id  Messages  Submission Id  Cancel Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/flow-runs/{flow_run_id}/node-attempts/{attempt_id}/agent-sessions/{binding_id}/messages/{submission_id}/cancel": {
+      "post": {
+        "summary": "Cancel Node Message Submission",
+        "operationId": "cancel_node_message_submission_api_v1_flow_runs__flow_run_id__node_attempts__attempt_id__agent_sessions__binding_id__messages__submission_id__cancel_post",
+        "parameters": [
+          {
+            "name": "flow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Flow Run Id"
+            }
+          },
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attempt Id"
+            }
+          },
+          {
+            "name": "binding_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Binding Id"
+            }
+          },
+          {
+            "name": "submission_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Submission Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Cancel Node Message Submission Api V1 Flow Runs  Flow Run Id  Node Attempts  Attempt Id  Agent Sessions  Binding Id  Messages  Submission Id  Cancel Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/model-providers/{provider_id}/primary": {
+      "post": {
+        "summary": "Set Primary Provider",
+        "operationId": "set_primary_provider_api_v1_model_providers__provider_id__primary_post",
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Provider Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Set Primary Provider Api V1 Model Providers  Provider Id  Primary Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Clear Primary Provider",
+        "operationId": "clear_primary_provider_api_v1_model_providers__provider_id__primary_delete",
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Provider Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Clear Primary Provider Api V1 Model Providers  Provider Id  Primary Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -21449,13 +21660,19 @@
             "default": "API_KEY"
           },
           "api_protocol": {
-            "type": "string",
-            "enum": [
-              "CHAT_COMPLETIONS",
-              "RESPONSES"
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "CHAT_COMPLETIONS",
+                  "RESPONSES"
+                ]
+              },
+              {
+                "type": "null"
+              }
             ],
-            "title": "Api Protocol",
-            "default": "CHAT_COMPLETIONS"
+            "title": "Api Protocol"
           },
           "base_url": {
             "type": "string",
@@ -21472,6 +21689,16 @@
               }
             ],
             "title": "Api Key"
+          },
+          "usage_query": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderUsageQuery"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "row_version": {
             "anyOf": [
@@ -22320,6 +22547,22 @@
             "type": "boolean",
             "title": "Is Default",
             "default": false
+          },
+          "protocol": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "CHAT_COMPLETIONS",
+                  "RESPONSES",
+                  "ANTHROPIC"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Protocol"
           }
         },
         "additionalProperties": false,

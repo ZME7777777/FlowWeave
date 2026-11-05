@@ -901,6 +901,12 @@ def _materialize_mcp(capability: dict[str, Any], host_root: Path, runtime_root: 
     )
     return RuntimeMCP(
         name=str(capability.get("capability_key") or key),
+        capability_version_id=str(
+            capability.get("capability_version_id")
+            or (raw or {}).get("capability_version_id")
+            or ""
+        )
+        or None,
         config=config,
         workspace_path=str(runtime_directory),
     )

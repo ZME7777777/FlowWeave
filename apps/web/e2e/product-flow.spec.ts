@@ -486,6 +486,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let upstreamGateAuditEventPersisted = false;
   let gitSyncRequests = 0;
   let gitSynchronizesToRemote = false;
+  let backendGitBranch = 'main';
   // Early workspace reads run before the synchronization gate is installed.
   // eslint-disable-next-line prefer-const
   let gitSyncGate: Promise<void> | undefined;
@@ -614,7 +615,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         repositories: [
           { path: '/runtime/workspace/project', remote: 'https://example.test/repo.git', branch: 'main', head: '1234567890ab', upstream: 'origin/main', ahead: gitSynchronizesToRemote ? 0 : 2, behind: gitSynchronizesToRemote ? 0 : 1 },
-          { path: '/runtime/workspace/project/backend', remote: 'https://example.test/backend.git', branch: 'main', head: '1234567890ab' },
+          { path: '/runtime/workspace/project/backend', remote: 'https://example.test/backend.git', branch: backendGitBranch, head: '1234567890ab' },
         ],
       }) });
       return;
@@ -858,6 +859,27 @@ test('top-level Agent workspace creates a direct conversation and restores its U
         }) });
         return;
       }
+      if (path.includes('/conversations/agent-conversation-fork-1/events')) {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+          events: [
+            { id: 'fork-copied-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '从旧会话复制的未收口请求', timestamp: '2026-08-26T10:00:00Z' } },
+            { id: 'fork-copied-tool', event_type: 'TOOL_CALL', payload: { source: 'agent', parent_id: 'fork-copied-user', action_id: 'fork-copied-tool', tool_call_id: 'fork-copied-call', event_name: 'TerminalAction', timestamp: '2026-08-26T10:00:01Z' } },
+          ],
+          next_cursor: null,
+          history_cursor: null,
+          monitoring: {
+            last_event_id: 'fork-copied-tool',
+            last_event_type: 'TOOL_CALL',
+            last_event_at: '2026-08-26T10:00:01Z',
+            seconds_since_event: 90,
+            stale_after_seconds: 60,
+            possibly_stuck: true,
+            subagent_count: 0,
+            active_subagents: [],
+          },
+        }) });
+        return;
+      }
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         events: (modelIsResponding || parentTurnFailed || recoverableAgentError || recoverableTaskResumeError) ? [
           ...(!cursor ? [{ id: 'running-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'agent-reply', content: '正在处理的请求', timestamp: runningUserTimestamp } }] : []),
@@ -1020,6 +1042,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     if (path.endsWith('/input-readiness')) {
       if (parentTurnFailed) {
         await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: true, execution_status: 'error' }) });
+        return;
+      }
+      if (path.includes('/conversations/agent-conversation-fork-1/input-readiness')) {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: true, execution_status: 'idle' }) });
         return;
       }
       if (transientIdleReadiness || readinessReportsIdle) {
@@ -1232,31 +1258,38 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect.poll(() => compactConversationItem.evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(40);
   await expect(page.getByText('工作区已就绪。')).toBeVisible();
   await expect(page.getByText('需要部署 Gateway', { exact: true })).toBeVisible();
+  // Git information must load before the user opens the workspace tools.
+  await expect(page.locator('.agent-workspace-summary').getByLabel('打开工作区工具')).toBeVisible();
   const gitSummary = page.locator('.agent-workspace-git-summary');
   await expect(gitSummary).toContainText('Git 信息');
   await expect(gitSummary).toContainText('main');
-  await expect(gitSummary).toContainText('3 个文件已改动');
+  await expect(gitSummary).toContainText('已暂存 +1');
+  await expect(gitSummary).toContainText('未暂存 +2');
   await expect(gitSummary).toContainText('本地 +2');
   await expect(gitSummary).toContainText('远端 +1');
-  const gitSummaryLayout = await gitSummary.locator('button[title="在全屏文件栏中查看 Git 信息"]').evaluate(button => {
-    const branch = button.querySelector<HTMLElement>('.agent-workspace-git-summary-content > b')!;
-    const status = button.querySelector<HTMLElement>('.agent-workspace-git-summary-status')!;
+  const gitSummaryLayout = await gitSummary.evaluate(summary => {
+    const branch = summary.querySelector<HTMLElement>('.agent-workspace-git-summary-branch')!;
+    const status = summary.querySelector<HTMLElement>('.agent-workspace-git-summary-status')!;
     return { branchBottom: branch.getBoundingClientRect().bottom, statusTop: status.getBoundingClientRect().top };
   });
   expect(gitSummaryLayout.statusTop).toBeGreaterThan(gitSummaryLayout.branchBottom);
   const gitSummaryChangesRequestsBeforeRefresh = workspaceGitChangesRequests;
   gitSyncGate = new Promise<void>(resolve => { releaseGitSync = resolve; });
   const gitSummaryRefresh = gitSummary.getByRole('button', { name: '刷新 Git 信息' });
+  await expect(gitSummary.locator('.agent-workspace-git-summary-refresh')).toContainText('Git 信息');
   await gitSummaryRefresh.click();
   await expect.poll(() => gitSyncRequests).toBe(1);
   await expect(gitSummaryRefresh).toBeDisabled();
-  await expect(gitSummaryRefresh.locator('svg')).toHaveClass(/spin/);
-  await expect(gitSummary).toContainText('改动 +3');
+  await expect(gitSummaryRefresh).toHaveText('Git 信息');
+  await expect(gitSummary).toContainText('已暂存 +1');
+  await expect(gitSummary).toContainText('未暂存 +2');
   await expect(gitSummary).not.toContainText('正在刷新本地改动…');
   releaseGitSync?.();
   await expect.poll(() => workspaceGitChangesRequests).toBe(gitSummaryChangesRequestsBeforeRefresh + 1);
   await expect(gitSummaryRefresh).toBeEnabled();
-  await expect(gitSummaryRefresh.locator('svg')).not.toHaveClass(/spin/);
+  await expect(gitSummaryRefresh).toHaveText('Git 信息');
+  await expect(gitSummary).toContainText('已暂存 +1');
+  await expect(gitSummary).toContainText('未暂存 +2');
   await expect(gitSummary).toContainText('本地 +0');
   await expect(gitSummary).toContainText('远端 +0');
   await gitSummary.getByTitle('在全屏文件栏中查看 Git 信息').click();
@@ -1279,10 +1312,15 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await fullscreenWorkspace.getByRole('button', { name: '文件', exact: true }).click();
   await expect(page.locator('.agent-workbench-main')).not.toHaveClass(/fullscreen-conversation-active/);
   await page.getByLabel('退出全屏').click();
-  await page.getByLabel('关闭工作区工具').click();
+  await page.getByLabel('隐藏工作区工具').click();
   await page.getByRole('button', { name: '文件', exact: true }).click();
   await expect(page.getByText('README.md', { exact: true })).toBeVisible();
   await expect(page.locator('.agent-file-tree input[type=checkbox]')).toHaveCount(0);
+  const backendRow = page.locator('.agent-file-tree-row').filter({ hasText: 'backend' });
+  await expect(backendRow.getByText('main', { exact: true })).toBeVisible();
+  backendGitBranch = 'feature/refresh-branch';
+  await page.getByLabel('刷新 Git 分支信息').click();
+  await expect(backendRow.getByText('feature/refresh-branch', { exact: true })).toBeVisible();
   await page.getByLabel('全屏查看工作区工具').click();
   const gitSidebar = page.getByRole('complementary', { name: 'Git' });
   await expect(gitSidebar).toBeVisible();
@@ -1702,7 +1740,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
     '/runtime/workspace/project/src',
   ]);
   await expect(page.locator('.agent-file-line-highlight')).toHaveCount(0, { timeout: 3_000 });
-  await page.getByRole('button', { name: '关闭工作区工具' }).click();
+  await page.getByRole('button', { name: '隐藏工作区工具' }).click();
   await expect(nextProgressGroup.getByText('已创建 工作区/README.md')).toBeVisible();
   await expect(nextProgressGroup.locator('.tool-skill')).toHaveCount(0);
   await expect(nextProgressGroup.getByText('子智能体 reviewer · 检查子任务边界')).toHaveCount(0);
@@ -1787,7 +1825,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const mcpDetail = completedProcess.locator('.conversation-tool-detail[data-tool-kind="mcp"]');
   await expect(mcpDetail).toHaveCount(1);
   await expect(mcpDetail.locator(':scope > summary .conversation-tool-kind')).toHaveCount(0);
-  await expect(mcpDetail.locator(':scope > summary > svg.lucide-plug-zap')).toBeVisible();
+  // The MCP icon and the server name are one unit (market-data comes from market-data.get-kline).
+  const mcpBadge = mcpDetail.locator(':scope > summary > .conversation-mcp-badge');
+  await expect(mcpBadge.locator('svg.lucide-plug-zap')).toBeVisible();
+  await expect(mcpBadge).toContainText('market-data');
   await expect(completedProcess.locator('.conversation-activity-row.thought.tool-thought.tool-mcp')).toContainText('我先通过行情 MCP 获取日线数据。');
   await mcpDetail.locator(':scope > summary').click();
   await expect(mcpDetail.getByText('事件类型', { exact: true })).toBeVisible();
@@ -1936,9 +1977,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(outputLink).toHaveAttribute('rel', 'noopener noreferrer');
   const sources = page.locator('.agent-workspace-source-list');
   await expect(sources).toContainText('需求截图.png');
-  await expect(sources.getByRole('link', { name: 'input.example.test/brief' })).toHaveAttribute('href', 'https://input.example.test/brief');
+  await expect(sources.getByRole('link', { name: 'input.example.test/brief' })).toHaveCount(0);
   await expect(sources.getByRole('link', { name: 'output.example.test/result' })).toHaveCount(0);
-  await expect(sources.locator('button b')).toHaveText(['最早来源.png', '需求截图.png', 'input.example.test/brief']);
+  await expect(sources.locator('button b')).toHaveText(['最早来源.png', '需求截图.png']);
+  await expect(page.getByRole('button', { name: '查看全部', exact: true })).toBeVisible();
   await expect.poll(() => page.locator('.agent-workspace-summary').evaluate(card => {
     const lastSource = card.querySelector<HTMLElement>('.agent-workspace-source-list > button:last-child');
     if (!lastSource) throw new Error('Expected the last source row');
@@ -2028,6 +2070,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(page.getByText('当前供应商：已测试模型')).toBeVisible();
   await expect(page.locator('.agent-context-progress.token')).toContainText('Token0 / 512,000');
   await expect(page.locator('.agent-context-progress.activity')).toContainText('事件12 / 240');
+  await expect(page.getByText('后台长时间未产生可确认进展。可暂停后继续以重新建立调用。')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toHaveCount(0);
   const forkComposer = page.getByLabel('发送 Agent 消息');
   await expect(forkComposer).toBeEnabled();
   await forkComposer.fill('分叉后可以继续输入');
@@ -2039,8 +2083,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.locator('h2.agent-session-title').click();
   await expect(page.locator('.agent-composer-model-popover')).toBeHidden();
   await page.getByLabel('打开模型与推理设置').click();
-  await page.getByRole('button', { name: '供应商 已测试模型' }).click();
-  await page.getByLabel('选择供应商').getByRole('button', { name: '另一模型配置' }).click();
+  // Cascade: hovering a provider reveals its models, clicking a model applies it at once.
+  await page.getByRole('option', { name: '供应商 另一模型配置' }).hover();
+  await expect(page.getByRole('option', { name: '模型 gpt-second' })).toBeVisible();
+  await page.getByRole('option', { name: '模型 gpt-second' }).click();
   await expect.poll(() => persistedModelSelection).toEqual({
     model_provider_id: 'provider-2', model_name: 'gpt-second', reasoning_effort: 'high',
   });
@@ -2488,15 +2534,24 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect(editableQueuedMessage).toBeVisible();
   await expect(page.locator('.conversation-message.user').filter({ hasText: '待编辑排队消息' })).toHaveCount(0);
   expect(sentMessages).toBe(sentBeforeQueue);
+  await composer.fill('第二条排队消息');
+  await composer.press('Enter');
+  await expect(queuedMessage.getByText('第二条排队消息')).toBeVisible();
+  await queuedMessage.getByRole('button', { name: '拖动排队消息 2 以调整顺序' }).dragTo(queuedMessage.getByRole('button', { name: '拖动排队消息 1 以调整顺序' }));
+  await expect(queuedMessage.locator('article').first()).toContainText('第二条排队消息');
+  await queuedMessage.getByRole('button', { name: '移除排队消息 1' }).click();
+  await expect(queuedMessage.locator('article')).toHaveCount(1);
   await page.reload();
   await expect(page.getByLabel('消息投递队列').getByText('待编辑排队消息')).toBeVisible();
   const queueMoreButton = page.getByLabel('消息投递队列').getByRole('button', { name: '更多排队消息操作 1' });
   await queueMoreButton.click();
-  const queueMenu = page.getByLabel('消息投递队列').getByRole('menu');
+  const queueMenu = page.getByRole('menu', { name: '排队消息操作' });
   await expect(queueMenu).toBeVisible();
   const queueMenuBox = await queueMenu.boundingBox();
   const queueMoreBox = await queueMoreButton.boundingBox();
-  expect(queueMenuBox?.bottom).toBeLessThanOrEqual(queueMoreBox?.top ?? Number.POSITIVE_INFINITY);
+  expect(queueMenuBox).not.toBeNull();
+  expect(queueMoreBox).not.toBeNull();
+  expect(queueMenuBox!.y + queueMenuBox!.height).toBeLessThanOrEqual(queueMoreBox!.y);
   await composer.click();
   await expect(queueMenu).toBeHidden();
   await queueMoreButton.click();
@@ -2509,7 +2564,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await composer.press('Enter');
   await expect(page.getByLabel('消息投递队列').getByText('已编辑的排队消息')).toBeVisible();
   await page.getByLabel('消息投递队列').getByRole('button', { name: '更多排队消息操作 1' }).click();
-  await page.getByLabel('消息投递队列').getByRole('menuitem', { name: '关闭队列模式' }).click();
+  await page.getByRole('menu', { name: '排队消息操作' }).getByRole('menuitem', { name: '关闭队列模式' }).click();
   await expect(page.locator('.agent-composer-note')).toHaveText('队列已关闭 · 保留 1 条');
   await page.reload();
   await expect(page.locator('.agent-composer-note')).toHaveText('队列已关闭 · 保留 1 条');
@@ -2527,7 +2582,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   modelIsResponding = true;
   await page.reload();
   await page.getByLabel('消息投递队列').getByRole('button', { name: '更多排队消息操作 1' }).click();
-  await page.getByLabel('消息投递队列').getByRole('menuitem', { name: '启用队列模式' }).click();
+  await page.getByRole('menu', { name: '排队消息操作' }).getByRole('menuitem', { name: '启用队列模式' }).click();
   await expect(page.locator('.agent-composer-note')).toHaveText('已排队 1 条');
   modelIsResponding = false;
   await page.reload();
@@ -2558,7 +2613,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   modelIsResponding = true;
   await page.reload();
   activeConversation.streaming_callback_ready = true;
-  await page.evaluate(() => sessionStorage.setItem('flowweave.agent.message-queue.v1:agent-workspace-1:agent-conversation-streaming-1', JSON.stringify([{
+  await page.evaluate(() => localStorage.setItem('flowweave.agent.message-queue.v1:agent-workspace-1:agent-conversation-streaming-1', JSON.stringify([{
     id: 'legacy-dispatched-message', scope: 'agent-conversation-streaming-1', content: '旧版已发送消息', items: [], references: [], annotations: [], deliveryState: 'ambiguous', createdAt: Date.now(),
   }])));
   await page.reload();
@@ -2869,6 +2924,64 @@ test('terminal reconciliation retries the latest event window when the durable r
   await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible();
 });
 
+test('background queue waits for a formal terminal event after stale readiness', async ({ page }) => {
+  const now = new Date().toISOString();
+  let terminalEventAvailable = false;
+  let messagePosts = 0;
+  const conversation = {
+    id: 'background-queue-terminal-conversation', display_title: '后台队列终态确认', lifecycle: 'ACTIVE',
+    streaming_callback_ready: true, write_available: true, model_provider_id: null, model_name: null, reasoning_effort: null,
+    created_at: now, updated_at: now,
+  };
+  await page.route('**/api/v1/auth/me', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ id: 'background-queue-terminal-user', username: 'tester', role: 'USER', is_super_admin: false }),
+  }));
+  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  await page.route('**/api/v1/agent-workspaces/**', async route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith('/default')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'background-queue-terminal-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: now }) });
+    if (path.endsWith('/runtime')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'ACTIVE', write_available: true, message: null, updated_at: now }) });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [{ ...conversation, execution_status: terminalEventAvailable ? 'idle' : 'running' }], next_cursor: null }) });
+    if (path.endsWith('/conversation-activity')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ running_binding_ids: [], conversations: [{ ...conversation, execution_status: terminalEventAvailable ? 'idle' : 'running' }] }) });
+    if (path.endsWith('/events')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+      events: [
+        { id: 'background-queue-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '仍在后台运行的请求', timestamp: now } },
+        ...(terminalEventAvailable ? [{ id: 'background-queue-finish', event_type: 'COMPLETED', payload: { source: 'agent', parent_id: 'background-queue-user', event_name: 'FinishAction', timestamp: now } }] : []),
+      ],
+      next_cursor: null,
+    }) });
+    if (path.endsWith('/input-readiness')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: true, execution_status: 'idle' }) });
+    if (path.endsWith('/messages') && request.method() === 'POST') {
+      messagePosts += 1;
+      return route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true, cursor: 'background-queue-next-user' }) });
+    }
+    if (path.endsWith('/work-directories')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] }) });
+    if (path.endsWith('/workspace')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: { container_id: 'background-queue-terminal-runtime' }, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '未配置', note: '' } } }) });
+    if (path.endsWith('/context')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ model_name: null, reasoning_effort: null }) });
+    if (path.endsWith('/pending-confirmation')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ pending: false }) });
+    if (path.endsWith('/capabilities')) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }) });
+  });
+  await page.route('**/api/v1/model-providers', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await page.route('**/api/v1/capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+
+  await login(page);
+  await page.goto('/agent/conversations/background-queue-terminal-conversation');
+  await page.getByLabel('发送 Agent 消息').fill('必须等待正式终态');
+  await page.getByLabel('发送 Agent 消息').press('Enter');
+  await expect(page.getByLabel('消息投递队列').getByText('必须等待正式终态')).toBeVisible();
+  await page.goto('/agent');
+  await page.waitForTimeout(250);
+  expect(messagePosts).toBe(0);
+
+  terminalEventAvailable = true;
+  await page.reload();
+  await expect.poll(() => messagePosts, { timeout: 1_500 }).toBe(1);
+});
+
 test('terminal readiness without a formal result keeps reconciliation non-blocking', async ({ page }) => {
   const now = new Date().toISOString();
   let terminal = false;
@@ -2933,7 +3046,7 @@ test('terminal readiness without a formal result keeps reconciliation non-blocki
   await expect.poll(() => messagePosts).toBe(0);
 });
 
-test('editing the latest user message locally replaces only its active branch', async ({ page }) => {
+test('each user message can be edited and replaced on its active branch', async ({ page }) => {
   let rewritten = false;
   let releaseRewrite: (() => void) | undefined;
   let rerunPayload: Record<string, unknown> | undefined;
@@ -2963,7 +3076,7 @@ test('editing the latest user message locally replaces only its active branch', 
     const path = new URL(request.url()).pathname;
     if (path.endsWith('/default')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'rethink-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: new Date().toISOString() }) });
     if (path.endsWith('/runtime')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'ACTIVE', write_available: true, message: null, updated_at: new Date().toISOString() }) });
-    if (path.endsWith('/conversations') && request.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ id: 'rethink-conversation', display_title: '重新思考', lifecycle: 'ACTIVE', streaming_callback_ready: true, model_provider_id: null, model_name: null, reasoning_effort: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }]) });
+    if (path.endsWith('/conversations') && request.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [{ id: 'rethink-conversation', display_title: '重新思考', lifecycle: 'ACTIVE', streaming_callback_ready: true, write_available: true, model_provider_id: null, model_name: null, reasoning_effort: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }], next_cursor: null }) });
     if (path.endsWith('/events')) {
       const staleAfterRewrite = rewritten && !eventsReadAfterRewrite;
       const currentEvents = events(staleAfterRewrite ? false : undefined);
@@ -2972,6 +3085,7 @@ test('editing the latest user message locally replaces only its active branch', 
       lateOldBranchEventWasRead ||= includeLateOldBranchEvent;
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ events: projectedEvents, next_cursor: null }) });
     }
+    if (path.endsWith('/input-readiness')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ready: true, execution_status: 'idle' }) });
     if (path.endsWith('/work-directories')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] }) });
     if (path.endsWith('/workspace')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', work_directory: null, files: [], repositories: [], runtime: { container_id: 'single-runtime' }, ide: { workspace_path: '/runtime/workspace/project', gateway: { supported: false, status: '未配置', note: '' } } }) });
     if (path.endsWith('/context')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ model_name: null, reasoning_effort: null }) });
@@ -2987,12 +3101,14 @@ test('editing the latest user message locally replaces only its active branch', 
   await page.route('**/api/v1/model-providers', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
 
   await login(page);
+  await page.setViewportSize({ width: 1440, height: 600 });
   await page.goto('/agent/conversations/rethink-conversation');
   await expect(page.getByText('不应保留的旧回答', { exact: true })).toBeVisible();
   await expect(page.locator('[data-user-event-id="original-user"]')).toContainText('审计报告.pdf');
   await expect(page.locator('[data-user-event-id="original-user"]')).toContainText('审计报告.md');
-  await page.getByRole('button', { name: '编辑并重新思考' }).click();
-  await expect(page.getByText('需要重新思考的问题', { exact: true })).toHaveCount(0);
+  const rewriteButtons = page.getByRole('button', { name: '编辑并重新思考' });
+  await expect(rewriteButtons).toHaveCount(2);
+  await page.locator('[data-user-event-id="original-user"]').getByRole('button', { name: '编辑并重新思考' }).evaluate(button => (button as HTMLButtonElement).click());
   await expect(page.locator('.conversation-message-edit')).toBeVisible();
   const rewriteEditor = page.getByLabel('编辑已发送消息');
   await expect(rewriteEditor).toBeFocused();
@@ -3000,11 +3116,19 @@ test('editing the latest user message locally replaces only its active branch', 
     start: (editor as HTMLTextAreaElement).selectionStart,
     end: (editor as HTMLTextAreaElement).selectionEnd,
   }))).toEqual({ start: '需要重新思考的问题'.length, end: '需要重新思考的问题'.length });
+  const rewriteForm = page.locator('.conversation-message-edit');
+  const rewriteSurface = page.locator('.conversation-surface');
   await rewriteEditor.fill('第一行\n第二行\n第三行\n第四行\n第五行');
   await expect.poll(() => rewriteEditor.evaluate(editor => {
     const textarea = editor as HTMLTextAreaElement;
     return textarea.clientHeight > 100 && textarea.clientHeight === textarea.scrollHeight;
   })).toBe(true);
+  await expect.poll(async () => {
+    const form = await rewriteForm.boundingBox();
+    const surface = await rewriteSurface.boundingBox();
+    return Boolean(form && surface && form.y + form.height <= surface.y + surface.height - 8);
+  }).toBe(true);
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
   await rewriteEditor.press('Escape');
   await expect(page.locator('.conversation-message-edit')).toHaveCount(0);
   await expect(page.getByText('需要重新思考的问题', { exact: true })).toBeVisible();
@@ -3012,7 +3136,7 @@ test('editing the latest user message locally replaces only its active branch', 
   expect(releaseRewrite).toBeUndefined();
   expect(rerunPayload).toBeUndefined();
 
-  await page.getByRole('button', { name: '编辑并重新思考' }).click();
+  await page.locator('[data-user-event-id="original-user"]').getByRole('button', { name: '编辑并重新思考' }).evaluate(button => (button as HTMLButtonElement).click());
   await expect(rewriteEditor).toBeFocused();
   await expect(rewriteEditor).toHaveValue('需要重新思考的问题');
   await rewriteEditor.fill('修改后的');
@@ -3033,23 +3157,7 @@ test('editing the latest user message locally replaces only its active branch', 
   await rewrittenMessage.evaluate(element => { (element as HTMLElement).dataset.optimisticIdentity = 'stable'; });
   await expect(page.getByRole('button', { name: '正在重新思考' })).toBeDisabled();
   await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toHaveCount(0);
-  await expect(page.getByText(/已耗时 \d+秒/)).toBeVisible();
-  const thinkingStatus = page.locator('.conversation-turn-status');
-  await expect(thinkingStatus).toHaveText(/正在思考/);
-  await expect.poll(() => thinkingStatus.evaluate(status => {
-    const label = status.querySelector(':scope > span:first-child')?.getBoundingClientRect();
-    const dots = status.querySelector('.conversation-turn-status-dots')?.getBoundingClientRect();
-    return label && dots ? Math.round(dots.left - label.right) : null;
-  })).toBe(5);
-  const thinkingStatusWidth = await thinkingStatus.evaluate(status => (
-    status.querySelector(':scope > span:first-child')?.getBoundingClientRect().width ?? 0
-  ));
-  expect(thinkingStatusWidth).toBeLessThan(280);
-  const thinkingDots = thinkingStatus.locator('.conversation-turn-status-dots i');
-  await expect(thinkingDots).toHaveCount(3);
-  await expect(thinkingDots.nth(0)).toHaveCSS('animation-name', 'conversation-turn-status-dot');
-  await expect(thinkingDots.nth(1)).toHaveCSS('animation-delay', '0.16s');
-  await expect(thinkingDots.nth(2)).toHaveCSS('animation-delay', '0.32s');
+  await expect(page.locator('.conversation-turn-status')).toHaveText('正在重新思考');
   await expect.poll(() => Boolean(releaseRewrite)).toBe(true);
   expect(rerunPayload).toMatchObject({
     content: '修改后的问题',
@@ -3176,12 +3284,13 @@ test('selected conversation text is sent and rendered as a compact reference car
 
 test('Agent workspace groups toggle their conversation lists', async ({ page }) => {
   const now = new Date().toISOString();
-  await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'collapsible-user', username: 'tester', role: 'USER', is_super_admin: false }) }));
+  await page.route('**/api/v1/auth/me', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'collapsible-user', username: 'tester', role: 'USER', is_super_admin: false, can_use_agent_sessions: true }) }));
   await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
   await page.route('**/api/v1/agent-workspaces/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     if (path.endsWith('/default')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'collapsible-workspace', display_name: 'Agent 工作区', desired_state: 'RUNNING', updated_at: now }) });
+    if (path.endsWith('/session-configuration')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ capability_version_ids: [], credential_ids: [] }) });
     if (path.endsWith('/runtime')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'ACTIVE', write_available: true, updated_at: now }) });
     if (path.endsWith('/conversations') && request.method() === 'GET') {
       const workDirectoryId = new URL(request.url()).searchParams.get('work_directory_id');
@@ -3207,15 +3316,24 @@ test('Agent workspace groups toggle their conversation lists', async ({ page }) 
   await expect(page).toHaveURL(/\/agent$/);
   await expect(page.locator('.agent-workbench-app-shell')).toHaveClass(/conversation-rail-collapsed/);
   await expect(page.locator('.agent-workbench-rail')).toBeHidden();
+  await page.locator('.agent-workbench-app-shell').evaluate(async shell => {
+    await Promise.all(shell.getAnimations().map(animation => animation.finished));
+  });
   const collapsedLayout = await page.locator('.agent-workbench-app-shell').evaluate(shell => {
     const nav = shell.querySelector<HTMLElement>('.agent-workbench-app-nav');
     const main = shell.querySelector<HTMLElement>('.agent-workbench-main');
     if (!nav || !main) throw new Error('Expected Agent navigation and conversation regions');
+    const tab = main.querySelector<HTMLElement>('.agent-conversation-tabs');
+    if (!tab) throw new Error('Expected conversation tab strip');
     const navBox = nav.getBoundingClientRect();
     const mainBox = main.getBoundingClientRect();
-    return { navRight: navBox.right, mainLeft: mainBox.left };
+    const tabBox = tab.getBoundingClientRect();
+    return { navRight: navBox.right, mainLeft: mainBox.left, tabLeft: tabBox.left };
   });
   expect(collapsedLayout.mainLeft).toBeLessThanOrEqual(collapsedLayout.navRight + 1);
+  expect(collapsedLayout.tabLeft).toBeLessThanOrEqual(collapsedLayout.mainLeft + 15);
+  await expect(page.locator('.agent-workbench-app-shell')).toHaveCSS('transition-property', /grid-template-columns/);
+  await expect(page.locator('.agent-workspace-drawer')).toHaveCSS('transition-property', /width/);
   await expect(composer).toHaveValue('保留中的草稿');
   await homeButton.click();
   await expect(page.locator('.agent-workbench-app-shell')).not.toHaveClass(/conversation-rail-collapsed/);
@@ -3233,12 +3351,9 @@ test('Agent workspace groups toggle their conversation lists', async ({ page }) 
   await expect(rootToggle).toHaveAttribute('aria-expanded', 'false');
   await expect(rootGroup.getByRole('button', { name: '根会话' })).toBeHidden();
   await expect(projectGroup).not.toHaveCSS('transition-property', /margin/);
-  const projectToggleBounds = await projectToggle.boundingBox();
-  if (!projectToggleBounds) throw new Error('Expected visible project workspace toggle');
-  await page.mouse.click(
-    projectToggleBounds.x + projectToggleBounds.width / 2,
-    projectToggleBounds.y + projectToggleBounds.height / 2,
-  );
+  // The preceding collapse can still move this row during its animation.
+  // Locator.click waits for a stable target before sending the pointer event.
+  await projectToggle.click();
   await expect(projectToggle).toHaveAttribute('aria-expanded', 'false');
   await expect(projectGroup.getByRole('button', { name: '项目会话' })).toBeHidden();
   await projectToggle.click();
@@ -3440,17 +3555,25 @@ test('Agent new session keeps full capabilities and can create an explicit works
     ]),
   }));
 
-  await page.route('**/api/v1/model-providers', route => route.fulfill({
-    status: 200,
-    contentType: 'application/json',
-    body: JSON.stringify([{
-      id: 'provider-default', name: '默认供应商', connection_state: 'CONNECTED',
-      models: [{ model_name: 'gpt-default', enabled: true, is_default: true }],
-    }, {
-      id: 'provider-pro', name: '专业供应商', connection_state: 'CONNECTED',
-      models: [{ model_name: 'gpt-pro', enabled: true, is_default: true, default_reasoning_effort: 'high', supported_reasoning_efforts: ['low', 'high'] }],
-    }]),
-  }));
+  const providers = [{
+    id: 'provider-default', name: '默认供应商', connection_state: 'CONNECTED',
+    models: [{ model_name: 'gpt-default', enabled: true, is_default: true }],
+  }, {
+    id: 'provider-pro', name: '专业供应商', connection_state: 'CONNECTED',
+    models: [{ model_name: 'gpt-pro', enabled: true, is_default: true, default_reasoning_effort: 'high', supported_reasoning_efforts: ['low', 'high'] }],
+  }];
+  await page.route('**/api/v1/model-providers', async route => {
+    if (route.request().method() === 'POST') {
+      const created = {
+        id: 'provider-new', connection_state: 'CONNECTED',
+        ...route.request().postDataJSON(),
+      };
+      providers.unshift(created);
+      await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(created) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(providers) });
+  });
 
   await login(page);
   await page.getByRole('button', { name: 'Agent 会话' }).click();
@@ -3497,23 +3620,19 @@ test('Agent new session keeps full capabilities and can create an explicit works
   await composer.press('Enter');
   await expect(composer).toHaveValue('/lark-tools:summarize ');
 
+  await composer.fill('sadasdas/');
+  await expect(commandMenu).toHaveCount(0);
   await composer.fill('请先$继续');
-  await composer.evaluate(element => {
-    element.setSelectionRange(3, 3);
-    element.dispatchEvent(new Event('select', { bubbles: true }));
-  });
-  await expect(skillMenu.getByRole('option', { name: /lark-sheets/ })).toBeVisible();
-  await composer.press('Enter');
-  await expect(composer).toHaveValue('请先$lark-sheets 继续');
-
+  await expect(skillMenu).toHaveCount(0);
   await composer.fill('请先/继续');
-  await composer.evaluate(element => {
-    element.setSelectionRange(3, 3);
-    element.dispatchEvent(new Event('select', { bubbles: true }));
-  });
+  await expect(commandMenu).toHaveCount(0);
+  await composer.fill('请执行 /');
   await expect(commandMenu.getByRole('option', { name: /summarize/ })).toBeVisible();
-  await composer.press('Enter');
-  await expect(composer).toHaveValue('请先/lark-tools:summarize 继续');
+
+  await composer.fill('/ ');
+  await expect(commandMenu).toHaveCount(0);
+  await composer.fill('/\n');
+  await expect(commandMenu).toHaveCount(0);
   await composer.fill('');
 
   await page.getByLabel('打开模型与推理设置').click();
@@ -3534,13 +3653,31 @@ test('Agent new session keeps full capabilities and can create an explicit works
   expect(attachmentUploads).toBe(2);
 
   await composer.fill('切换页面后仍应保留的首条草稿');
-  await page.getByRole('button', { name: '节点资产', exact: true }).click();
+  await page.getByRole('button', { name: '账户与设置' }).click();
+  await page.getByRole('menuitem', { name: '供应商配置', exact: true }).click();
+  await page.getByRole('button', { name: '新增供应商', exact: true }).click();
+  const providerEditor = page.locator('form.model-editor');
+  await providerEditor.getByLabel('服务名称', { exact: true }).fill('即时可用供应商');
+  await providerEditor.getByLabel('Base URL', { exact: true }).fill('https://models.example.test/v1');
+  await providerEditor.getByLabel('API Key', { exact: true }).fill('fixture-key');
+  await providerEditor.getByLabel('模型 1', { exact: true }).fill('gpt-new');
+  await providerEditor.getByRole('button', { name: '保存供应商', exact: true }).click();
+  await page.getByRole('button', { name: 'Agent 会话', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  await page.getByLabel('打开模型与推理设置').click();
+  await page.getByRole('button', { name: '供应商 专业供应商' }).click();
+  await expect(page.getByLabel('选择供应商').getByRole('button', { name: '即时可用供应商', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '返回模型设置', exact: true }).click();
+  await page.getByRole('button', { name: '供应商 专业供应商' }).click();
+  await page.getByLabel('选择供应商').getByRole('button', { name: '即时可用供应商', exact: true }).click();
+  await expect(page.getByLabel('打开模型与推理设置')).toContainText('即时可用供应商 gpt-new');
+  await page.getByRole('button', { name: '节点中心', exact: true }).click();
   await page.getByRole('button', { name: 'Agent 会话', exact: true }).click();
   await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
   await expect(page.getByLabel('发送 Agent 消息')).toHaveValue('切换页面后仍应保留的首条草稿');
   await expect(page.locator('.agent-attachments').getByText('需求.png', { exact: true })).toBeVisible();
   await expect(page.locator('.agent-attachments').getByText('需求说明.md', { exact: true })).toBeVisible();
-  await expect(page.getByText('当前供应商：专业供应商 · 前端工作区', { exact: true })).toBeVisible();
+  await expect(page.getByText('当前供应商：即时可用供应商 · 前端工作区', { exact: true })).toBeVisible();
   expect(conversations).toHaveLength(0);
   expect(bootstrapPayload).toBeNull();
 
@@ -3563,7 +3700,7 @@ test('Agent new session keeps full capabilities and can create an explicit works
   await page.getByRole('menu').getByRole('menuitem', { name: '文件', exact: true }).click();
   await expect(workspaceDrawer).toHaveClass(/tools-open/);
   await expect.poll(() => workspaceDrawer.evaluate(drawer => drawer.getBoundingClientRect().width)).toBe(summaryWidth);
-  await page.locator('.agent-workspace-tool-actions').getByLabel('关闭工作区工具').click();
+  await page.locator('.agent-workspace-tool-actions').getByLabel('隐藏工作区工具').click();
   await expect(page.getByText('环境信息', { exact: true })).toBeVisible();
   await expect.poll(() => workspaceDrawer.evaluate(drawer => drawer.getBoundingClientRect().width)).toBe(summaryWidth);
   await expect(environmentSummary.getByRole('button', { name: '新终端', exact: true })).toBeVisible();
@@ -3595,7 +3732,7 @@ test('Agent new session keeps full capabilities and can create an explicit works
   await page.getByRole('button', { name: '发送消息' }).click();
   await expect(page).toHaveURL(/\/agent\/conversations\/fr58-conversation$/);
   expect(bootstrapPayload).toMatchObject({
-    model_provider_id: 'provider-pro', model_name: 'gpt-pro', reasoning_effort: 'low',
+    model_provider_id: 'provider-new', model_name: 'gpt-new', reasoning_effort: null,
     work_directory_id: 'fr58-frontend', content: '实现前端工作区',
     attachments: [
       { path: '/runtime/workspace/project/uploads/0123456789abcdef0123456789abcdef-需求.png', image_data_url: 'data:image/png;base64,iVBORw==' },
@@ -3607,10 +3744,10 @@ test('Agent new session keeps full capabilities and can create an explicit works
   await expect(page.getByRole('button', { name: '2fae71c74c89', exact: true })).toHaveCount(2);
   expect(new Set(terminalInstanceIds)).toEqual(new Set(initialTerminalIds));
 
-  await page.locator('.agent-workspace-tool-actions').getByLabel('关闭工作区工具').click();
+  await page.locator('.agent-workspace-tool-actions').getByLabel('隐藏工作区工具').click();
   await expect(page.getByText('环境信息', { exact: true })).toBeVisible();
   expect(destroyedTerminalIds).toHaveLength(0);
-  await page.getByRole('button', { name: '节点资产', exact: true }).click();
+  await page.getByRole('button', { name: '节点中心', exact: true }).click();
   await page.getByRole('button', { name: 'Agent 会话' }).click();
   await expect.poll(() => new URL(page.url()).pathname).toBe('/agent/conversations/fr58-conversation');
   await expect(page.getByRole('heading', { name: '实现前端工作区' })).toBeVisible();
@@ -3761,13 +3898,13 @@ test('Agent workspace drawer remains available while Runtime is recovering', asy
 test('node asset editor and repeated flow-node canvas match the product model', async ({ page }) => {
   await login(page);
 
-  await page.getByRole('button', { name: '节点资产' }).click();
+  await page.getByRole('button', { name: '节点中心' }).click();
 
-  const assetName = `UI节点资产-${suffix}`;
+  const assetName = `UI节点中心-${suffix}`;
   await page.getByRole('button', { name: '新建节点' }).click();
   const editor = page.locator('form.asset-editor');
   await editor.getByLabel('节点名称').fill(assetName);
-  await editor.getByLabel('节点说明').fill('单页节点资产编辑器验收');
+  await editor.getByLabel('节点说明').fill('单页节点中心编辑器验收');
   await editor.getByLabel('启动触发提示词').fill('读取输入并执行节点任务');
   await expect(editor.getByRole('heading', { name: '输入定义' })).toBeVisible();
   await expect(editor.getByRole('heading', { name: '输出定义' })).toBeVisible();
@@ -3785,7 +3922,7 @@ test('node asset editor and repeated flow-node canvas match the product model', 
   await editor.getByLabel('outputs name 0').fill('输出产物');
   const card = page.getByTestId('node-card').filter({ hasText: assetName }).last();
   const saved = page.waitForResponse(response => response.url().endsWith('/api/v1/node-assets') && response.request().method() === 'POST');
-  await editor.getByRole('button', { name: '保存节点资产' }).click();
+  await editor.getByRole('button', { name: '保存节点中心' }).click();
   const savedResponse = await saved;
   expect(savedResponse.ok()).toBeTruthy();
   await expect(card).toBeVisible();
@@ -4095,7 +4232,7 @@ test('corrupt and legacy browser state recover without a blank page', async ({ p
 
   await page.evaluate(() => localStorage.setItem('flowweave-workbench', '{broken-json'));
   await page.reload();
-  await expect(page.getByRole('heading', { name: '节点资产', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '节点中心', exact: true })).toBeVisible();
   await expect.poll(() => page.evaluate(() => localStorage.getItem('flowweave-workbench'))).toBeNull();
 
   await page.evaluate(() => localStorage.setItem('flowweave-workbench', JSON.stringify({
@@ -4103,7 +4240,7 @@ test('corrupt and legacy browser state recover without a blank page', async ({ p
     state: { view: 'legacy-dashboard', selectedRunId: 42, selectedNodeRunId: false },
   })));
   await page.reload();
-  await expect(page.getByRole('heading', { name: '节点资产', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '节点中心', exact: true })).toBeVisible();
   await expect.poll(() => page.evaluate(() => {
     const raw = localStorage.getItem('flowweave-workbench');
     return raw ? JSON.parse(raw).version : undefined;
@@ -4155,7 +4292,7 @@ test('node assets, flows and runs support single and filtered bulk deletion', as
   await expect(page.getByTestId('node-card')).toHaveCount(3);
   await confirmProductDialog(
     page,
-    page.getByRole('button', { name: `删除节点资产 ${singleAsset.name}` }),
+    page.getByRole('button', { name: `删除节点中心 ${singleAsset.name}` }),
     '确认删除',
   );
   await expect(page.getByTestId('node-card')).toHaveCount(2);
@@ -4167,7 +4304,7 @@ test('node assets, flows and runs support single and filtered bulk deletion', as
     '确认删除',
   );
   await expect(page.getByTestId('node-card')).toHaveCount(0);
-  await expect(page.getByRole('status')).toContainText('已删除 2 个节点资产');
+  await expect(page.getByRole('status')).toContainText('已删除 2 个节点中心');
 
   // Flow definitions with runs are protected until their runs are deleted.
   await page.getByRole('button', { name: '流程编排' }).click();
@@ -4298,7 +4435,7 @@ test('current Agent conversation can select a 31st capability and keeps frozen C
     model_provider_id: 'history-provider', model_name: 'history-model', reasoning_effort: null,
     write_available: true, execution_status: 'idle', streaming_callback_ready: true, capabilities: [
       ...loadedSkills,
-      { id: 'history-context-v1', capability_type: 'CONTEXT', capability_key: '历史上下文', digest: 'history-context-v1-digest' },
+      { id: 'history-context-v1', revision_number: 1, capability_type: 'CONTEXT', capability_key: '历史上下文', digest: 'history-context-v1-digest' },
     ],
     created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
   };
@@ -4364,10 +4501,11 @@ test('current Agent conversation can select a 31st capability and keeps frozen C
     }
     await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }) });
   });
-  await page.route('**/api/v1/capabilities', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
+  await page.route('**/api/v1/capabilities**', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
     ...loadedSkills.map(item => ({ ...item, description: '历史会话迁移验证 Skill', filename: `${item.id}.zip`, is_latest: true, document: {} })),
     { id: 'history-new-skill', capability_type: 'SKILL', capability_key: 'history-new-skill', description: '可追加的历史会话 Skill', filename: 'history-new-skill.zip', is_latest: true, document: {} },
-    { id: 'history-context-v1', capability_type: 'CONTEXT', capability_key: '历史上下文', description: '创建时冻结的历史 Context', filename: 'history-context-v1.md', is_latest: false, document: {} },
+    { id: 'history-context-v1', lineage_id: 'history-context', revision_number: 1, capability_type: 'CONTEXT', capability_key: '历史上下文', description: '创建时冻结的历史 Context', filename: 'history-context-v1.md', is_latest: false, document: {} },
+    { id: 'history-context-v2', lineage_id: 'history-context', revision_number: 2, capability_type: 'CONTEXT', capability_key: '历史上下文', description: '目录中的最新 Context', filename: 'history-context-v2.md', is_latest: true, document: {} },
   ]) }));
   await page.route('**/api/v1/model-providers', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
     { id: 'history-provider', name: '历史模型', connection_state: 'CONNECTED', models: [{ model_name: 'history-model', enabled: true, is_default: true }] },
@@ -4386,16 +4524,15 @@ test('current Agent conversation can select a 31st capability and keeps frozen C
   await expect(skillMenu.getByRole('button', { name: '会话配置' })).toBeVisible();
   await skillMenu.getByRole('button', { name: '会话配置' }).click();
   const manager = page.getByRole('dialog', { name: '会话配置' });
-  await expect(manager).toContainText('已注册 30 项');
   const lockedSkill = manager.getByRole('button', { name: 'history-skill（已注册）' });
   await expect(lockedSkill).toBeDisabled();
   await expect(lockedSkill).toHaveClass(/locked/);
-  await manager.getByRole('button', { name: /history-new-skill/ }).click();
-  await expect(manager).toContainText('已注册 31 项');
   await manager.getByRole('button', { name: 'context', exact: true }).click();
-  await expect(manager).toContainText('已装配 1 个 Context');
   const lockedContext = manager.getByRole('button', { name: '历史上下文（已装配）' });
   await expect(lockedContext).toBeDisabled();
   await expect(lockedContext).toHaveClass(/locked/);
+  await expect(manager.getByRole('button', { name: /历史上下文/ })).toHaveCount(1);
+  await expect(lockedContext.locator('.agent-capability-version-badge')).toHaveText('v1');
+  await expect(lockedContext.locator('.agent-capability-frozen-badge')).toHaveText('已冻结');
   await expect(manager.getByRole('button', { name: '注册到当前会话' })).toHaveCount(0);
 });

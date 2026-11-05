@@ -73,6 +73,12 @@ for (const formalReadsFail of [false, true]) {
 
     await page.getByRole('button', { name: '暂停当前 Agent' }).click();
     await expect.poll(() => paused).toBe(true);
+    if (formalReadsFail) {
+      await expect(page.getByRole('button', { name: '暂停请求已发送' })).toBeDisabled();
+    } else {
+      await expect(page.getByRole('button', { name: '继续当前 Agent' })).toBeVisible();
+    }
+    await expect(page.getByRole('button', { name: '暂停当前 Agent' })).toHaveCount(0);
   });
 
 }

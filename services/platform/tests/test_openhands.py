@@ -759,9 +759,7 @@ def _handle(
     )
 
 
-def test_openhands_uploads_valid_pptx_with_extended_runtime_timeout(
-    openhands_settings, monkeypatch
-):
+def test_openhands_uploads_attachment_to_frozen_working_directory(openhands_settings, monkeypatch):
     runtime = OpenHandsRuntime(openhands_settings)
     calls: list[dict[str, object]] = []
 
@@ -780,8 +778,13 @@ def test_openhands_uploads_valid_pptx_with_extended_runtime_timeout(
     monkeypatch.setattr(openhands_module, "uuid4", lambda: SimpleNamespace(hex="a" * 32))
 
     content = b"PK\x03\x04" + b"pptx-content"
+    handle = _handle()
+    handle = replace(
+        handle,
+        working_directory=f"{handle.workspace_root}/materials",
+    )
     path = runtime.upload_workspace_file(
-        _handle(),
+        handle,
         filename="郑蒙恩-Java开发工程师职级晋升答辩.pptx",
         content_type=("application/vnd.openxmlformats-officedocument.presentationml.presentation"),
         content=content,
@@ -789,7 +792,7 @@ def test_openhands_uploads_valid_pptx_with_extended_runtime_timeout(
 
     safe_filename = "Java" + "_" * len("开发工程师职级晋升答辩") + ".pptx"
     assert path == (
-        "/runtime/workspace/10000000-0000-4000-8000-000000000001/uploads/"
+        "/runtime/workspace/10000000-0000-4000-8000-000000000001/materials/.uploads/"
         "10000000-0000-4000-8000-000000000002-"
         f"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa--{safe_filename}"
     )
@@ -1328,7 +1331,7 @@ def test_openhands_starts_real_agent_with_selected_provider_and_skill(
         "reasoning_effort": "high",
         "api_mode": "chat",
         "stream": True,
-        "num_retries": 5,
+        "num_retries": 3,
         "retry_multiplier": 2.0,
         "retry_min_wait": 1,
         "retry_max_wait": 4,
@@ -2347,7 +2350,7 @@ def test_openhands_configures_codex_oauth_for_responses(openhands_settings, monk
         "supports_responses_api": True,
         "supports_sampling_params": False,
     }
-    assert llm["num_retries"] == 5
+    assert llm["num_retries"] == 3
     assert llm["retry_multiplier"] == 2.0
     assert llm["retry_min_wait"] == 1
     assert llm["retry_max_wait"] == 4
@@ -3081,7 +3084,7 @@ def test_openhands_reads_a_bounded_active_window_and_explicit_older_history(
     requests: list[dict[str, object] | None] = []
     responses = iter(
         [
-            _state(leaf_event_id="event-3"),
+            _state(leaf_event_id="event-3", stored_event_count=12345),
             {
                 "items": [
                     {
@@ -3101,7 +3104,7 @@ def test_openhands_reads_a_bounded_active_window_and_explicit_older_history(
                 ],
                 "next_page_id": "old-branch-event",
             },
-            _state(leaf_event_id="event-3"),
+            _state(leaf_event_id="event-3", stored_event_count=12345),
             {
                 "items": [
                     {
@@ -3127,6 +3130,8 @@ def test_openhands_reads_a_bounded_active_window_and_explicit_older_history(
     older = runtime.read_active_events(replace(_handle(), history_cursor="event-1"))
 
     assert [event.cursor for event in current.events] == ["event-2", "event-3"]
+    assert current.stored_event_count == 12345
+    assert older.stored_event_count == 12345
     assert current.cursor == "event-3"
     assert current.history_cursor == "event-1"
     assert [event.cursor for event in older.events] == ["event-1"]
@@ -3138,6 +3143,272 @@ def test_openhands_reads_a_bounded_active_window_and_explicit_older_history(
         None,
         {"limit": 100, "sort_order": "TIMESTAMP_DESC", "page_id": "event-1"},
     ]
+
+
+def _goal_update(event_id: str, parent_id: str, *, status: str = "running") -> dict[str, object]:
+    return {
+        "kind": "ConversationStateUpdateEvent",
+        "id": event_id,
+        "parent_id": parent_id,
+        "source": "environment",
+        "timestamp": "2026-11-03T10:34:46",
+        "key": "goal",
+        "value": {
+            "active": status == "running",
+            "status": status,
+            "iteration": 0,
+            "max_iterations": 3,
+            "objective": "找到测试分支",
+            "verdict": None,
+        },
+    }
+
+
+def test_openhands_active_window_keeps_goal_status_updates_off_the_parent_chain(
+    openhands_settings, monkeypatch
+):
+    """Goal updates are state artifacts that never become HEAD, so the parent walk skips them."""
+
+    runtime = OpenHandsRuntime(openhands_settings)
+    responses = iter(
+        [
+            _state(leaf_event_id="user-1"),
+            {
+                "items": [
+                    {
+                        "kind": "MessageEvent",
+                        "id": "user-1",
+                        "parent_id": "agent-1",
+                        "source": "user",
+                        "llm_message": {"role": "user", "content": "继续"},
+                    },
+                    _goal_update("goal-1", "agent-1"),
+                    # Hangs off an event that is not on the active branch.
+                    _goal_update("goal-detached", "detached-event"),
+                    {
+                        "kind": "MessageEvent",
+                        "id": "agent-1",
+                        "parent_id": "__root__",
+                        "source": "agent",
+                        "llm_message": {"role": "assistant", "content": "好的"},
+                    },
+                ],
+                "next_page_id": None,
+            },
+        ]
+    )
+    monkeypatch.setattr(runtime, "_request", lambda *_a, **_k: next(responses))
+
+    batch = runtime.read_active_events(_handle())
+
+    assert [event.cursor for event in batch.events] == ["agent-1", "goal-1", "user-1"]
+    goal = batch.events[1]
+    assert goal.payload["goal_status"]["status"] == "running"
+    assert goal.payload["goal_status"]["active"] is True
+
+
+def _goal_audit(event_id: str, parent_id: str, *, iteration: int, missing: str) -> dict[str, object]:
+    item = _goal_update(event_id, parent_id)
+    cast_value = item["value"]
+    assert isinstance(cast_value, dict)
+    cast_value.update(
+        {
+            "iteration": iteration,
+            "verdict": {"score": 0.88, "complete": False, "missing": missing},
+        }
+    )
+    return item
+
+
+def test_openhands_marks_the_goal_loop_followup_from_formal_structure(
+    openhands_settings, monkeypatch
+):
+    """The Judge follow-up is a loop control input: identify it structurally, never by its text."""
+
+    runtime = OpenHandsRuntime(openhands_settings)
+    responses = iter(
+        [
+            _state(leaf_event_id="followup-1"),
+            {
+                "items": [
+                    {
+                        "kind": "MessageEvent",
+                        "id": "followup-1",
+                        "parent_id": "agent-final",
+                        "source": "user",
+                        # Deliberately not the OpenHands template: text is not parsed.
+                        "llm_message": {"role": "user", "content": "任意内容"},
+                    },
+                    _goal_audit("goal-audit", "agent-final", iteration=1, missing="hq-support 未验证"),
+                    {
+                        "kind": "MessageEvent",
+                        "id": "agent-final",
+                        "parent_id": "goal-start",
+                        "source": "agent",
+                        "llm_message": {"role": "assistant", "content": "完成一轮"},
+                    },
+                    {
+                        "kind": "MessageEvent",
+                        "id": "goal-start",
+                        "parent_id": "__root__",
+                        "source": "user",
+                        "llm_message": {"role": "user", "content": "找到测试分支"},
+                    },
+                ],
+                "next_page_id": None,
+            },
+        ]
+    )
+    monkeypatch.setattr(runtime, "_request", lambda *_a, **_k: next(responses))
+
+    batch = runtime.read_active_events(_handle())
+    by_id = {event.cursor: event for event in batch.events}
+
+    assert [event.cursor for event in batch.events] == [
+        "goal-start",
+        "agent-final",
+        "goal-audit",
+        "followup-1",
+    ]
+    assert by_id["followup-1"].payload["goal_followup"] == {
+        "iteration": 1,
+        "max_iterations": 3,
+        "missing": "hq-support 未验证",
+    }
+    # The message the person typed to start the goal is never marked.
+    assert "goal_followup" not in by_id["goal-start"].payload
+
+
+def test_openhands_does_not_mark_a_user_message_without_a_failed_audit(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    complete = _goal_update("goal-done", "agent-final", status="complete")
+    value = complete["value"]
+    assert isinstance(value, dict)
+    value["verdict"] = {"score": 0.99, "complete": True, "missing": ""}
+    responses = iter(
+        [
+            _state(leaf_event_id="typed-later"),
+            {
+                "items": [
+                    {
+                        "kind": "MessageEvent",
+                        "id": "typed-later",
+                        "parent_id": "agent-final",
+                        "source": "user",
+                        "llm_message": {"role": "user", "content": "好的，谢谢"},
+                    },
+                    complete,
+                    {
+                        "kind": "MessageEvent",
+                        "id": "agent-final",
+                        "parent_id": "__root__",
+                        "source": "agent",
+                        "llm_message": {"role": "assistant", "content": "目标完成"},
+                    },
+                ],
+                "next_page_id": None,
+            },
+        ]
+    )
+    monkeypatch.setattr(runtime, "_request", lambda *_a, **_k: next(responses))
+
+    batch = runtime.read_active_events(_handle())
+
+    typed = next(event for event in batch.events if event.cursor == "typed-later")
+    assert "goal_followup" not in typed.payload
+
+
+def test_openhands_active_window_keeps_a_goal_update_written_after_the_leaf(
+    openhands_settings, monkeypatch
+):
+    """The terminal goal update is appended after the last real event, so it sits past the leaf."""
+
+    runtime = OpenHandsRuntime(openhands_settings)
+    complete = _goal_update("goal-complete", "final-reply", status="complete")
+    value = complete["value"]
+    assert isinstance(value, dict)
+    value.update({"iteration": 2, "verdict": {"score": 0.99, "complete": True, "missing": ""}})
+    calls: list[dict[str, object] | None] = []
+    responses = {
+        # The window anchored at the leaf walks backwards and never sees the update.
+        "leaf": {
+            "items": [
+                {
+                    "kind": "MessageEvent",
+                    "id": "final-reply",
+                    "parent_id": "goal-start",
+                    "source": "agent",
+                    "llm_message": {"role": "assistant", "content": "完成"},
+                },
+                {
+                    "kind": "MessageEvent",
+                    "id": "goal-start",
+                    "parent_id": "__root__",
+                    "source": "user",
+                    "llm_message": {"role": "user", "content": "目标"},
+                },
+            ],
+            "next_page_id": None,
+        },
+        # The newest events of the log, newest first, include the update past the leaf.
+        "tail": {"items": [complete], "next_page_id": "final-reply"},
+    }
+
+    def fake_request(_method: str, path: str, **kwargs: object) -> dict[str, object]:
+        params = kwargs.get("params") if isinstance(kwargs.get("params"), dict) else None
+        calls.append(params)
+        if path.endswith("/events/search"):
+            assert params is not None
+            return responses["leaf" if params.get("page_id") == "final-reply" else "tail"]
+        return _state(leaf_event_id="final-reply", execution_status="finished")
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    batch = runtime.read_active_events(_handle())
+
+    assert [event.cursor for event in batch.events] == ["goal-start", "final-reply", "goal-complete"]
+    assert batch.events[-1].payload["goal_status"]["status"] == "complete"
+    assert batch.events[-1].payload["goal_status"]["active"] is False
+
+
+def test_openhands_cursor_reconciliation_keeps_goal_status_updates(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    responses = iter(
+        [
+            _state(leaf_event_id="user-1"),
+            {
+                "items": [
+                    {
+                        "kind": "MessageEvent",
+                        "id": "user-1",
+                        "parent_id": "anchor",
+                        "source": "user",
+                        "llm_message": {"role": "user", "content": "继续"},
+                    },
+                    # Parented on the cursor itself: it must follow the anchor.
+                    _goal_update("goal-after-anchor", "anchor", status="complete"),
+                    {
+                        "kind": "MessageEvent",
+                        "id": "anchor",
+                        "parent_id": "__root__",
+                        "source": "agent",
+                        "llm_message": {"role": "assistant", "content": "好的"},
+                    },
+                ],
+                "next_page_id": None,
+            },
+        ]
+    )
+    monkeypatch.setattr(runtime, "_request", lambda *_a, **_k: next(responses))
+
+    batch = runtime.read_active_events(replace(_handle(), cursor="anchor"))
+
+    assert [event.cursor for event in batch.events] == ["goal-after-anchor", "user-1"]
+    assert batch.events[0].payload["goal_status"]["status"] == "complete"
 
 
 def test_openhands_active_cursor_reconciliation_excludes_detached_branch_events(
@@ -4293,7 +4564,7 @@ def test_openhands_stream_projection_forwards_only_valid_model_retry_progress():
         {
             "type": "retry",
             "attempt": 3,
-            "max_attempts": 5,
+            "max_attempts": 3,
             "failure_kind": "timeout",
             "final": False,
             "model_role": "primary",
@@ -4303,7 +4574,7 @@ def test_openhands_stream_projection_forwards_only_valid_model_retry_progress():
         {
             "type": "model_retry",
             "attempt": 3,
-            "max_attempts": 5,
+            "max_attempts": 3,
             "failure_kind": "timeout",
             "final": False,
             "model_role": "primary",
@@ -4313,8 +4584,8 @@ def test_openhands_stream_projection_forwards_only_valid_model_retry_progress():
         projection.project(
             {
                 "type": "retry",
-                "attempt": 6,
-                "max_attempts": 5,
+                "attempt": 4,
+                "max_attempts": 3,
                 "failure_kind": "timeout",
                 "final": False,
                 "model_role": "primary",
@@ -4687,7 +4958,7 @@ def test_openhands_switches_llm_in_place_with_reasoning(openhands_settings, monk
     assert payload["llm"]["stream"] is True
     assert payload["llm"]["temperature"] is None
     assert payload["llm"]["max_output_tokens"] is None
-    assert payload["llm"]["num_retries"] == 5
+    assert payload["llm"]["num_retries"] == 3
     assert payload["llm"]["retry_multiplier"] == 2.0
     assert payload["llm"]["retry_min_wait"] == 1
     assert payload["llm"]["retry_max_wait"] == 4
@@ -5173,9 +5444,34 @@ def test_openhands_run_does_not_retrigger_running_conversation(openhands_setting
     assert requests == [("GET", "/api/conversations/10000000-0000-4000-8000-000000000002")]
 
 
+def test_openhands_run_continues_error_conversation(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    requests: list[tuple[str, str, object]] = []
+    responses = iter(
+        [
+            _state(execution_status="error", leaf_event_id="gateway-error"),
+            {"success": True},
+        ]
+    )
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        requests.append((method, path, kwargs.get("json")))
+        return next(responses)
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+
+    assert runtime.run(_handle("gateway-error")) == RuntimeResult(
+        status="RUNNING", cursor="gateway-error"
+    )
+    assert requests == [
+        ("GET", "/api/conversations/10000000-0000-4000-8000-000000000002", None),
+        ("POST", "/api/conversations/10000000-0000-4000-8000-000000000002/run", {}),
+    ]
+
+
 @pytest.mark.parametrize(
     "status",
-    ["finished", "error", "stuck", "waiting_for_confirmation"],
+    ["finished", "stuck", "waiting_for_confirmation"],
 )
 def test_openhands_run_does_not_retrigger_non_resumable_conversation(
     openhands_settings, monkeypatch, status
@@ -5252,7 +5548,7 @@ def test_openhands_serializes_frozen_summarizing_condenser(openhands_settings, m
             "reasoning_effort": "high",
             "api_mode": "chat",
             "stream": True,
-            "num_retries": 5,
+            "num_retries": 3,
             "retry_multiplier": 2.0,
             "retry_min_wait": 1,
             "retry_max_wait": 4,
@@ -5695,6 +5991,7 @@ def test_openhands_read_events_projects_only_native_task_cumulative_usage(
             {"items": [], "next_page_id": None},
             _state(
                 leaf_event_id="task-observation-1",
+                stored_event_count=7654,
                 stats={
                     "usage_to_metrics": {
                         "flowweave:provider-1": {"accumulated_cost": 9.0},
@@ -5720,6 +6017,7 @@ def test_openhands_read_events_projects_only_native_task_cumulative_usage(
 
     batch = runtime.read_events(_handle())
 
+    assert batch.stored_event_count == 7654
     assert len(batch.task_usage) == 1
     usage = batch.task_usage[0]
     assert usage.task_id == "task_00000001"
@@ -6440,6 +6738,31 @@ def test_openhands_does_not_turn_an_explicit_pause_into_a_runtime_failure(openha
             }
         ],
         "pause-observation-1",
+    )
+
+    assert result is None
+
+
+def test_openhands_keeps_retryable_agent_tool_error_non_terminal(openhands_settings):
+    runtime = OpenHandsRuntime(openhands_settings)
+    result = runtime._result_from_events(
+        _handle(),
+        [
+            {
+                "kind": "AgentErrorEvent",
+                "id": "tool-validation-1",
+                "parent_id": "tool-action-1",
+                "tool_call_id": "tool-call-1",
+                "tool_name": "read_referenced_conversation",
+                "error": "Error validating tool arguments",
+                "classification": {
+                    "kind": "agent_action",
+                    "retryable": True,
+                    "user_action": "retry",
+                },
+            }
+        ],
+        "tool-validation-1",
     )
 
     assert result is None
@@ -7387,7 +7710,8 @@ def test_credential_metadata_sync_requires_native_dynamic_context(
 
     monkeypatch.setattr(runtime, "_request", request)
     handle = RuntimeHandle(
-        job_id="agent-workspace:test", conversation_id="native",
+        job_id="agent-workspace:test",
+        conversation_id="native",
         runtime_resource_name="test-runtime",
     )
     if supported:
@@ -7414,3 +7738,204 @@ def test_credential_metadata_sync_requires_native_dynamic_context(
             )
         assert raised.value.code == "AGENT_CREDENTIAL_CONTEXT_UNSUPPORTED"
         assert len(calls) == 1
+
+
+def test_case_append_uses_formal_run_false_and_exact_user_identity(
+    openhands_settings,
+    monkeypatch,
+    formal_user_event_windows,
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    calls = []
+
+    def request(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        return {"id": "case-user-event"}
+
+    monkeypatch.setattr(runtime, "_request", request)
+    result = runtime.append_message(_handle("previous"), "case facts")
+    assert result.status == "IDLE" and result.cursor == "case-user-event"
+    assert calls[0][2]["json"]["run"] is False
+    assert calls[0][2]["timeout"] == 30
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "status,leaf,expected_posts,expected_status",
+    [
+        ("idle", "case-user", 1, "RUNNING"),
+        ("running", "case-tool", 0, "RUNNING"),
+        ("finished", "case-answer", 0, "COMPLETED"),
+        ("paused", "case-user", 0, "WAITING"),
+        ("paused", "case-tool", 0, "WAITING"),
+        ("waiting_for_confirmation", "case-tool", 0, "WAITING"),
+        ("idle", "case-tool", 0, "WAITING"),
+    ],
+)
+def test_case_run_acknowledged_message_uses_formal_ancestry_and_preserves_pauses(
+    openhands_settings,
+    monkeypatch,
+    status,
+    leaf,
+    expected_posts,
+    expected_status,
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    monkeypatch.setattr(
+        runtime,
+        "_conversation_state",
+        lambda _, **kwargs: {
+            "execution_status": status,
+            "leaf_event_id": leaf,
+        },
+    )
+    calls = []
+
+    def request(method, path, **kwargs):
+        calls.append((method, path))
+        event_id = path.rsplit("/", 1)[-1]
+        if method == "POST":
+            return {"success": True}
+        return {
+            "id": event_id,
+            "parent_id": "case-user" if event_id != "case-user" else None,
+            "kind": "MessageEvent" if event_id == "case-user" else "OtherEvent",
+            "source": "user" if event_id == "case-user" else "agent",
+        }
+
+    monkeypatch.setattr(runtime, "_request", request)
+    result = runtime.run_pending_message(_handle("unused"), "case-user")
+    assert result.status == expected_status and result.cursor == "case-user"
+    assert len([c for c in calls if c[0] == "POST"]) == expected_posts
+    assert all(not path.endswith("/events") for _, path in calls)
+
+
+def test_case_run_rejects_other_branch_without_text_or_order_matching(
+    openhands_settings,
+    monkeypatch,
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    monkeypatch.setattr(
+        runtime,
+        "_conversation_state",
+        lambda _, **kwargs: {
+            "execution_status": "idle",
+            "leaf_event_id": "different-user",
+        },
+    )
+    calls = []
+
+    def request(method, path, **kwargs):
+        calls.append(method)
+        return {"id": "different-user", "parent_id": None, "source": "user", "kind": "MessageEvent"}
+
+    monkeypatch.setattr(runtime, "_request", request)
+    with pytest.raises(DomainError, match="bounded current native branch"):
+        runtime.run_pending_message(_handle("unused"), "case-user")
+    assert calls == ["GET"]
+
+
+def test_case_append_preflight_failure_is_known_not_submitted(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    calls = []
+
+    def unavailable(method, path, **kwargs):
+        calls.append(method)
+        raise DomainError("READ_TIMEOUT", "read failed", 504, {"outcome_unknown": True})
+
+    monkeypatch.setattr(runtime, "_request", unavailable)
+    with pytest.raises(DomainError) as failure:
+        runtime.append_message(_handle("unused"), "facts")
+    assert failure.value.details == {"native_append_started": False}
+    assert calls == ["GET"]
+
+
+@pytest.mark.parametrize(
+    "workspace_root",
+    [
+        "/runtime/workspace/10000000-0000-4000-8000-000000000001",
+        "/runtime/workspace/project/10000000-0000-4000-8000-000000000001",
+        "/runtime/workspace/project/users/10000000-0000-4000-8000-000000000001",
+    ],
+)
+def test_openhands_uploads_flow_input_to_record_root_without_working_directory(
+    openhands_settings, monkeypatch, workspace_root
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    calls: list[dict[str, object]] = []
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+    class Client:
+        def post(self, url: str, **kwargs: object) -> Response:
+            calls.append({"url": url, **kwargs})
+            return Response()
+
+    monkeypatch.setattr(runtime, "_transport", lambda: SimpleNamespace(regular=Client()))
+    monkeypatch.setattr(runtime, "_base_url_for_handle", lambda _handle: "http://runtime:8000")
+    monkeypatch.setattr(runtime, "_session_key_for_handle", lambda _handle: "session-key")
+    handle = replace(_handle(), workspace_root=workspace_root, working_directory="")
+    path = runtime.upload_workspace_file(
+        handle,
+        filename="input.md",
+        content_type="text/markdown",
+        content=b"x",
+        attachment_owner_id="10000000-0000-4000-8000-000000000003",
+    )
+    assert path.startswith(f"{workspace_root}/.uploads/10000000-0000-4000-8000-000000000003-")
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("supported,present", [(False, False), (True, False), (True, True)])
+def test_openhands_restores_condenser_with_native_confirmation(
+    openhands_settings, monkeypatch, supported, present
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    posts = []
+
+    def request(method, path, **kwargs):
+        if path == "/server_info":
+            return {
+                "capabilities": ["conversation_condenser_credentials_restore_v1"]
+                if supported
+                else []
+            }
+        if method == "POST":
+            posts.append(kwargs["json"])
+            return {"success": True, "condenser_credentials_present": present}
+        return _state(
+            agent={
+                "condenser": {
+                    "llm": {
+                        "model": "openai/gpt-4o-mini",
+                        "base_url": "https://model.invalid",
+                        "reasoning_effort": "high",
+                    }
+                }
+            }
+        )
+
+    monkeypatch.setattr(runtime, "_request", request)
+    provider = RuntimeProvider(
+        provider_id="provider-1",
+        model="gpt-4o-mini",
+        base_url="https://model.invalid",
+        api_key="only-at-call-boundary",
+        auth_type="OPENAI_API_KEY",
+    )
+    if supported and present:
+        runtime.restore_condenser_credentials(_handle("cursor-1"), provider)
+    else:
+        with pytest.raises(DomainError) as error:
+            runtime.restore_condenser_credentials(_handle("cursor-1"), provider)
+        assert error.value.code == (
+            "RUNTIME_CONDENSER_RESTORE_FAILED"
+            if supported
+            else "RUNTIME_CONDENSER_RESTORE_UNSUPPORTED"
+        )
+    assert len(posts) == int(supported)
+    if posts:
+        assert posts[0]["restore_missing_condenser_credentials"] is True
+        assert posts[0]["llm"]["api_key"] == provider.api_key

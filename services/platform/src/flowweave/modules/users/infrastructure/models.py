@@ -27,6 +27,7 @@ class User(Base):
     display_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     agent_sessions_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    market_sources_json: Mapped[list[dict]] = mapped_column(JSON, default=list)
     ldap_organization_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

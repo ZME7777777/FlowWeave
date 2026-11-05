@@ -1,9 +1,24 @@
 """Stable public facade for Case control-plane services."""
 
+from flowweave.modules.cases.application.event_inbox import record_case_execution_event
+from flowweave.modules.cases.application.materials import (
+    assert_no_case_artifact_references,
+    list_case_artifact_materials,
+    project_flow_run_artifacts,
+)
+from flowweave.modules.cases.application.native_tools import (
+    assert_coordinator_tools as assert_case_native_tools,
+)
+from flowweave.modules.cases.application.native_tools import (
+    prepare_coordinator_tools as prepare_case_native_tools,
+)
 from flowweave.modules.cases.application.service import (
+    CaseActionFailure,
     advance_case_stepwise_execution,
     attach_case_flow_run,
     bind_case_stage_flow_run,
+    confirm_case_conclusion,
+    copy_case,
     create_case,
     create_case_control_conversation,
     create_case_control_plan,
@@ -13,19 +28,27 @@ from flowweave.modules.cases.application.service import (
     delete_case_control_conversation,
     execute_case_control_plan,
     execute_case_decision_proposal,
+    export_cases,
     get_case,
+    import_cases,
     ingest_case_control_suggestion,
     launch_case_stage,
     list_case_stage_templates,
     list_cases,
+    note_case_control_reply,
+    note_case_control_waiting,
     project_case_observations,
     project_flow_run_event,
     project_flow_run_observations,
     read_case_material,
     reconcile_case_execution_state,
+    reject_case_conclusion,
+    request_case_start,
+    rerun_case_stage,
     retry_case_control_plan,
     save_case_path,
     save_case_session_config,
+    set_case_coordination_state,
     set_case_stage_state,
     start_case_stage_execution,
     update_case,
@@ -33,9 +56,22 @@ from flowweave.modules.cases.application.service import (
 )
 
 __all__ = (
+    "CaseActionFailure",
+    "assert_no_case_artifact_references",
+    "list_case_artifact_materials",
+    "project_flow_run_artifacts",
+    "prepare_case_native_tools",
+    "assert_case_native_tools",
     "advance_case_stepwise_execution",
     "attach_case_flow_run",
     "bind_case_stage_flow_run",
+    "confirm_case_conclusion",
+    "reject_case_conclusion",
+    "copy_case",
+    "note_case_control_reply",
+    "note_case_control_waiting",
+    "export_cases",
+    "import_cases",
     "create_case",
     "create_case_control_conversation",
     "delete_case",
@@ -57,9 +93,13 @@ __all__ = (
     "list_cases",
     "project_case_observations",
     "project_flow_run_event",
+    "record_case_execution_event",
     "project_flow_run_observations",
     "reconcile_case_execution_state",
+    "request_case_start",
+    "rerun_case_stage",
     "retry_case_control_plan",
     "set_case_stage_state",
+    "set_case_coordination_state",
     "start_case_stage_execution",
 )

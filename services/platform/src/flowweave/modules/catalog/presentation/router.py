@@ -8,7 +8,11 @@ from flowweave.bootstrap.container import Container
 from flowweave.modules.catalog.application import (
     agent_profiles,
     capability_collections,
+    capability_directory,
+    capability_files,
     capability_imports,
+    market_sources,
+    mcp_authentication,
     mcp_oauth_authorizations,
     mcp_oauth_secrets,
     mcp_validations,
@@ -16,10 +20,13 @@ from flowweave.modules.catalog.application import (
     plugin_sources,
     plugin_validations,
     service,
+    skill_market,
 )
+from flowweave.modules.users.application.security import current_principal
 from flowweave.runtime.base import RuntimeMCPOAuthCallbackRequest
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import Db, get_container, run_sync
+from flowweave.shared.market_schemas import MarketSkillImportWrite, MarketSourcesWrite
 from flowweave.shared.schemas import (
     AgentProfileCopyWrite,
     AgentProfileRetireWrite,
@@ -28,12 +35,14 @@ from flowweave.shared.schemas import (
     CapabilityCollectionWrite,
     CapabilityCommitWrite,
     CapabilityMcpRevisionWrite,
+    CapabilityPackageRevisionWrite,
     CapabilitySkillRevisionWrite,
     CapabilityValidateWrite,
     DirectoryWrite,
     MarketplaceCatalogRead,
     MarketplaceCatalogWrite,
     MarketplacePluginSourceResolveWrite,
+    MCPAuthenticationWrite,
     MCPOAuthAuthorizationCallbackWrite,
     MCPOAuthAuthorizationStartWrite,
     MCPOAuthSecretReferenceRevokeWrite,
@@ -271,9 +280,18 @@ async def delete_assets(payload: NodeAssetBulkDeleteWrite, db: Db) -> dict[str, 
 
 
 @router.post("/capability-imports/validate")
-async def validate_capability(payload: CapabilityValidateWrite, db: Db) -> dict[str, Any]:
+async def validate_capability(
+    payload: CapabilityValidateWrite, db: Db, platform_managed: bool = False
+) -> dict[str, Any]:
     await db.rollback()
-    prepared = await asyncio.to_thread(capability_imports.prepare_validation, payload)
+    if platform_managed:
+        # Governed publication of built-in MCP versions is an operator action.
+        principal = current_principal()
+        if principal is None or not principal.is_super_admin:
+            raise DomainError("AUTHORIZATION_REQUIRED", "只有超级管理员可以发布平台内置能力", 403)
+    prepared = await asyncio.to_thread(
+        capability_imports.prepare_validation, payload, allow_platform_managed=platform_managed
+    )
     stored = await asyncio.to_thread(capability_imports.store_validation_source, prepared)
     try:
         return await run_sync(
@@ -291,7 +309,10 @@ async def commit_capability(payload: CapabilityCommitWrite, db: Db) -> dict[str,
     )
     final_key = await asyncio.to_thread(capability_imports.finalize_commit_source, plan)
     return await run_sync(
-        db, lambda session: capability_imports.confirm_commit(session, plan, final_key)
+        db,
+        lambda session: capability_imports.confirm_commit(
+            session, plan, final_key, payload.mcp_authentication
+        ),
     )
 
 
@@ -355,9 +376,50 @@ async def publish_plugin_source(
     )
 
 
+@router.get("/capability-directory")
+async def capability_directory_page(
+    db: Db,
+    capability_type: capability_directory.CapabilityModule,
+    q: str = Query(default="", max_length=200),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    sort: capability_directory.CapabilitySort = "created_at",
+    direction: capability_directory.SortDirection = "desc",
+    include_builtin: bool = True,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: capability_directory.list_directory(
+            session, capability_type, q, page, page_size, sort, direction, include_builtin
+        ),
+    )
+
+
+@router.get("/capability-collection-directory")
+async def capability_collection_directory_page(
+    db: Db,
+    q: str = Query(default="", max_length=200),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    sort: capability_directory.CollectionSort = "created_at",
+    direction: capability_directory.SortDirection = "desc",
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: capability_directory.list_collection_directory(
+            session, q, page, page_size, sort, direction
+        ),
+    )
+
+
 @router.get("/capabilities")
 async def capabilities(db: Db) -> list[dict[str, Any]]:
     return await run_sync(db, capability_imports.list_capabilities)
+
+
+@router.get("/user-configurable-capabilities")
+async def user_configurable_capabilities(db: Db) -> list[dict[str, Any]]:
+    return await run_sync(db, capability_imports.list_user_configurable_capabilities)
 
 
 @router.post("/capabilities/{capability_id}/mcp-oauth-secret-references", status_code=201)
@@ -555,10 +617,74 @@ async def probe_plugin_capability(
         )
 
 
+@router.get("/capabilities/{capability_id}/files")
+async def capability_file_list(capability_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: capability_files.read_package_files(session, capability_id)
+    )
+
+
+@router.get("/capabilities/{capability_id}/file")
+async def capability_file(capability_id: str, path: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: capability_files.read_package_file(session, capability_id, path)
+    )
+
+
+@router.get("/capabilities/{capability_id}/version-comparison")
+async def capability_comparison(capability_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: capability_files.compare_package_versions(session, capability_id)
+    )
+
+
+@router.get("/capabilities/{capability_id}/file-diff")
+async def capability_file_diff(capability_id: str, path: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: capability_files.compare_package_file(session, capability_id, path)
+    )
+
+
+@router.put("/capabilities/{capability_id}/files")
+async def update_capability_files(
+    capability_id: str, payload: CapabilityPackageRevisionWrite, db: Db
+) -> dict[str, Any]:
+    update_plan = await run_sync(
+        db,
+        lambda session: capability_imports.prepare_skill_files_update(
+            session, capability_id, payload.files, payload.expected_digest
+        ),
+    )
+    stored = await asyncio.to_thread(capability_imports.store_skill_update_source, update_plan)
+    try:
+        final_key = await asyncio.to_thread(capability_imports.finalize_skill_update_source, stored)
+        return await run_sync(
+            db, lambda session: capability_imports.confirm_skill_update(session, stored, final_key)
+        )
+    except BaseException:
+        if stored.prepared.storage_key is not None:
+            await asyncio.to_thread(capability_imports.discard_validation_source, stored.prepared)
+        raise
+
+
 @router.get("/capabilities/{capability_id}/source")
 async def capability_source(capability_id: str, db: Db) -> dict[str, Any]:
     return await run_sync(
         db, lambda session: capability_imports.read_skill_source(session, capability_id)
+    )
+
+
+@router.get("/capabilities/{capability_id}/skill-version-comparison")
+async def skill_version_comparison(capability_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: capability_imports.compare_skill_versions(session, capability_id)
+    )
+
+
+@router.post("/capabilities/{capability_id}/rollback")
+async def rollback_skill_version(capability_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: capability_imports.rollback_skill_version(session, capability_id)
     )
 
 
@@ -569,7 +695,9 @@ async def capability_package(capability_id: str, db: Db) -> Response:
     )
     return Response(
         content=content,
-        media_type="application/zip",
+        media_type="application/zip"
+        if filename.lower().endswith(".zip")
+        else "text/plain; charset=utf-8",
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
     )
 
@@ -626,7 +754,9 @@ async def update_mcp_source(
         final_key = await asyncio.to_thread(capability_imports.finalize_skill_update_source, stored)
         return await run_sync(
             db,
-            lambda session: capability_imports.confirm_mcp_update(session, stored, final_key),
+            lambda session: capability_imports.confirm_mcp_update(
+                session, stored, final_key, payload.mcp_authentication
+            ),
         )
     except BaseException:
         if stored.prepared.storage_key is not None:
@@ -653,4 +783,80 @@ async def delete_capability(capability_id: str, db: Db) -> Response:
 async def delete_capability_batch(payload: CapabilityBulkDeleteWrite, db: Db) -> dict[str, Any]:
     return await run_sync(
         db, lambda session: capability_imports.delete_capabilities(session, payload.ids)
+    )
+
+
+@router.get("/market-sources")
+async def market_source_preferences(db: Db) -> dict:
+    return await run_sync(db, market_sources.read_sources)
+
+
+@router.put("/market-sources")
+async def update_market_source_preferences(payload: MarketSourcesWrite, db: Db) -> dict:
+    return await run_sync(db, lambda session: market_sources.save_sources(session, payload))
+
+
+@router.get("/market-sources/{source_id}/plugins")
+async def browse_market_plugins(
+    source_id: str,
+    db: Db,
+    q: str = Query(default="", max_length=200),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=50),
+    commit: str | None = Query(default=None, pattern=r"^[0-9a-f]{40}$"),
+) -> dict:
+    source = await run_sync(
+        db, lambda session: market_sources.select_source(session, source_id, {"PLUGIN_GIT"})
+    )
+    await db.rollback()
+    from flowweave.modules.catalog.application.market_browse import plugin_page
+
+    return await asyncio.to_thread(plugin_page, source, q, page, page_size, commit)
+
+
+@router.get("/market-sources/{source_id}/skills")
+async def browse_market_skills(
+    source_id: str, db: Db, q: str = Query(default="", max_length=200)
+) -> dict:
+    source = await run_sync(
+        db,
+        lambda session: market_sources.select_source(
+            session, source_id, {"SKILL_GIT", "SKILLS_SH"}
+        ),
+    )
+    await db.rollback()
+    return await asyncio.to_thread(skill_market.search, source, q)
+
+
+@router.post("/market-skill-imports/validate")
+async def validate_market_skill(payload: MarketSkillImportWrite, db: Db) -> dict:
+    source = await run_sync(
+        db,
+        lambda session: market_sources.select_source(
+            session, payload.source_id, {"SKILL_GIT", "SKILLS_SH"}
+        ),
+    )
+    await db.rollback()
+    prepared = await asyncio.to_thread(skill_market.prepare_import, source, payload)
+    stored = await asyncio.to_thread(capability_imports.store_validation_source, prepared)
+    try:
+        return await run_sync(
+            db, lambda session: capability_imports.register_validation(session, stored)
+        )
+    except BaseException:
+        await asyncio.to_thread(capability_imports.discard_validation_source, stored)
+        raise
+
+
+@router.get("/capabilities/{capability_id}/mcp-authentication")
+async def mcp_authentication_read(capability_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(db, lambda session: mcp_authentication.read(session, capability_id))
+
+
+@router.put("/capabilities/{capability_id}/mcp-authentication")
+async def mcp_authentication_write(
+    capability_id: str, payload: MCPAuthenticationWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db, lambda session: mcp_authentication.save(session, capability_id, payload)
     )

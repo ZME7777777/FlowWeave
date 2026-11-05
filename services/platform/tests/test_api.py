@@ -252,7 +252,9 @@ def test_stepwise_template_readiness_reports_every_reachable_node(client, skill_
     assert all(node["status"] == "MISSING_DRAFT" for node in result["nodes"])
 
 
-def test_case_stage_launch_copies_configured_continuous_template(client, skill_capability):
+def test_case_stage_launch_copies_configured_continuous_template(
+    client, skill_capability, db_session_factory
+):
     asset = create_asset(client, skill_capability, "连续模板节点")
     flow = create_flow(client, asset["id"])
     provider = client.post(
@@ -297,13 +299,22 @@ def test_case_stage_launch_copies_configured_continuous_template(client, skill_c
     )
     assert bound.status_code == 200, bound.text
 
-    launched = client.post(
-        f"/api/v1/cases/{case.json()['id']}/stages/{stage['id']}/launch", json={}
-    )
-    assert launched.status_code == 201, launched.text
-    launched_stage = launched.json()["stages"][0]
-    assert launched_stage["flow_run_id"] == template.json()["id"]
-    assert launched_stage["current_execution_flow_run_id"] not in {None, template.json()["id"]}
+    case_id = case.json()["id"]
+    # The platform exposes no direct launch/start endpoint: the coordinator Agent drives both
+    # through control plans, which call these same service functions.
+    for removed in ("launch", "execution/start"):
+        gone = client.post(f"/api/v1/cases/{case_id}/stages/{stage['id']}/{removed}", json={})
+        assert gone.status_code in {404, 405}, gone.text
+    from flowweave.modules.cases.application import service as case_service
+    from flowweave.modules.users.application.security import tenant_user
+    from flowweave.shared.schemas import CaseStageLaunchWrite
+
+    owner = client.get("/api/v1/auth/me").json()["id"]
+    with tenant_user(owner), db_session_factory() as db:
+        launched_body = case_service.launch_case_stage(
+            db, case_id, stage["id"], CaseStageLaunchWrite()
+        )
+    launched_stage = launched_body["stages"][0]
     execution = client.get(f"/api/v1/flow-runs/{launched_stage['current_execution_flow_run_id']}")
     assert execution.status_code == 200, execution.text
     execution_plan = execution.json()["automation_plan"]
@@ -319,24 +330,28 @@ def test_case_stage_launch_copies_configured_continuous_template(client, skill_c
     }
     assert execution_plan["node_plans"][first_node_key]["artifact_ids"] == {}
 
-    started = client.post(
-        f"/api/v1/cases/{case.json()['id']}/stages/{stage['id']}/execution/start",
-        json={"reason": "开始事项连续执行。"},
-    )
-    assert started.status_code == 201, started.text
-    assert started.json()["action"] == "START_STAGE_EXECUTION"
-    assert started.json()["state"] == "EXECUTED"
-    assert (
-        started.json()["result"]["flow_run"]["id"]
-        == launched_stage["current_execution_flow_run_id"]
-    )
-    assert started.json()["result"]["flow_run"]["state"] == "ACTIVE"
+    from flowweave.shared.schemas import CaseStageExecutionStartWrite
+
+    with tenant_user(owner), db_session_factory() as db:
+        started = case_service.start_case_stage_execution(
+            db, case_id, stage["id"], CaseStageExecutionStartWrite(reason="开始事项连续执行。")
+        )
+    assert started["action"] == "START_STAGE_EXECUTION"
+    assert started["state"] == "EXECUTED"
+    assert started["result"]["flow_run"]["id"] == launched_stage["current_execution_flow_run_id"]
+    assert started["result"]["flow_run"]["state"] == "ACTIVE"
     case_detail = client.get(f"/api/v1/cases/{case.json()['id']}")
     assert case_detail.status_code == 200, case_detail.text
     summary = case_detail.json()["stages"][0]["execution"]
     assert summary["flow_run_id"] == launched_stage["current_execution_flow_run_id"]
+    assert summary["parent_flow_run_id"] == template.json()["parent_flow_run_id"]
+    assert summary["run_mode"] == "AUTOMATIC"
     assert summary["state"] == "ACTIVE"
     assert summary["progress"]["accepted"] == 0
+    assert [node["node_key"] for node in summary["nodes"]] == [
+        node["instance_key"] for node in flow["nodes"]
+    ]
+    assert all(node["state"] == "PENDING" for node in summary["nodes"])
 
 
 def test_node_asset_can_be_saved_without_skill(client):
@@ -552,8 +567,9 @@ def test_case_control_plan_dispatches_copy_and_start_actions(client, skill_capab
     )
 
 
+@pytest.mark.parametrize("fail_first_native", [False, True])
 def test_control_binding_plan_is_limited_to_its_active_case_stage(
-    client, monkeypatch, settings, db_session_factory
+    client, monkeypatch, settings, db_session_factory, fail_first_native
 ):
     provider = client.post(
         "/api/v1/model-providers",
@@ -589,14 +605,84 @@ def test_control_binding_plan_is_limited_to_its_active_case_stage(
     assert first.status_code == 201 and second.status_code == 201
     first_stage = first.json()["stages"][0]
     second_stage = second.json()["stages"][0]
+    # The binding authorization assertions must run beyond current bootstrap
+    # readiness, using an actual reusable template and saved Agent configuration.
+    from flowweave.modules.cases.infrastructure.models import CaseStage
+    from flowweave.modules.users.application.security import tenant_user
+
+    owner = client.get("/api/v1/auth/me").json()["id"]
+    with tenant_user(owner), db_session_factory() as db:
+        definition = FlowDefinition(name="控制范围模板")
+        db.add(definition)
+        db.flush()
+        template = FlowRun(
+            flow_definition_id=definition.id,
+            run_no=1,
+            name="控制范围模板记录",
+            run_mode="AUTOMATIC",
+            state="DRAFT",
+            environment_version_id=client.environment_version_id,
+            automation_plan_json={"start_node_key": "first", "readiness": {"ready": True}},
+        )
+        db.add(template)
+        db.flush()
+        db.get(CaseStage, first_stage["id"]).flow_run_id = template.id
+        db.get(CaseStage, first_stage["id"]).execution_mode = "CONTINUOUS"
+        db.commit()
+    configured = client.put(
+        f"/api/v1/cases/{first.json()['id']}/session-config",
+        json={
+            "expected_row_version": first.json()["row_version"],
+            "model_provider_id": provider.json()["id"],
+            "model_name": "case-control",
+        },
+    )
+    assert configured.status_code == 200, configured.text
     from dataclasses import replace
 
+    from test_case_native_tools import publish_case_tools
+
+    from flowweave.modules.cases.application import native_tools
+    from flowweave.shared.artifact_store import artifact_store_context
+
+    with settings_context(settings), db_session_factory() as db:
+        publish_case_tools(db, settings, client.app.state.container.artifact_store, monkeypatch)
     working_directories = {}
+    native_calls = []
     create_runtime = MockRuntime.create_conversation
     reload_runtime = MockRuntime.reload_conversation
 
     def create_in_directory(runtime, request):
+        native_calls.append(request.conversation_id)
         working_directories[request.conversation_id] = request.workspace_ref
+        mcp = next(
+            server
+            for server in request.agent_spec.mcp_servers
+            if server.name == native_tools.SERVER_NAME
+        )
+        assert mcp.config["headers"] == {"Authorization": native_tools.AUTH_HEADER}
+        assert request.conversation_secrets[native_tools.SECRET_NAME].startswith("fwc1.")
+        assert "fwc1." not in request.agent_spec.agent_context.system_message_suffix
+        flows = next(
+            server
+            for server in request.agent_spec.mcp_servers
+            if server.name == native_tools.FLOWS.server_name
+        )
+        assert flows.config["headers"] == {"Authorization": native_tools.FLOWS.auth_header}
+        assert request.conversation_secrets[native_tools.FLOWS.secret_name].startswith("fwcf1.")
+        assert "fwcf1." not in request.agent_spec.agent_context.system_message_suffix
+        material = next(
+            server
+            for server in request.agent_spec.mcp_servers
+            if server.name == native_tools.MATERIALS.server_name
+        )
+        assert material.config["headers"] == {"Authorization": native_tools.MATERIALS.auth_header}
+        assert request.conversation_secrets[native_tools.MATERIALS.secret_name].startswith("fwcm1.")
+        assert "fwcm1." not in request.agent_spec.agent_context.system_message_suffix
+        if fail_first_native and len(native_calls) == 1:
+            from flowweave.shared.errors import DomainError
+
+            raise DomainError("CASE_NATIVE_TEST_FAILURE", "controlled creation failure", 503)
         return create_runtime(runtime, request)
 
     def reload_in_directory(runtime, handle, **kwargs):
@@ -613,6 +699,48 @@ def test_control_binding_plan_is_limited_to_its_active_case_stage(
         headers={"Idempotency-Key": "case-control-binding-one"},
     )
     assert conversation.status_code == 201, conversation.text
+    from flowweave.modules.cases.application.coordination import deliver_control_round
+    from flowweave.modules.users.application.security import tenant_user
+
+    owner_id = client.get("/api/v1/auth/me").json()["id"]
+    with (
+        settings_context(settings),
+        tenant_user(owner_id),
+        db_session_factory() as db,
+        runtime_context(MockRuntime()),
+        artifact_store_context(client.app.state.container.artifact_store),
+    ):
+        round_id = conversation.json()["current_control_round_id"]
+        deliver_control_round(db, round_id)
+        db.commit()
+        if fail_first_native:
+            from sqlalchemy import select
+
+            from flowweave.modules.agent_sessions.infrastructure.models import (
+                AgentConversationCapability,
+            )
+            from flowweave.modules.cases.application.coordination import retry_control_round
+            from flowweave.modules.cases.infrastructure.models import (
+                CaseControlRound,
+                CaseToolGrant,
+            )
+
+            entry = db.get(CaseControlRound, round_id)
+            assert entry.state == "FAILED"
+            assert db.scalar(select(CaseToolGrant.id)) is None
+            assert (
+                db.scalar(
+                    select(AgentConversationCapability.id).where(
+                        AgentConversationCapability.binding_id == entry.binding_id
+                    )
+                )
+                is None
+            )
+            retry_control_round(db, first.json()["id"], round_id)
+            deliver_control_round(db, round_id)
+            db.commit()
+    conversation = client.get(f"/api/v1/cases/{first.json()['id']}")
+    assert conversation.json()["control_rounds"][0]["state"] == "STARTED", conversation.text
     assert list(working_directories.values())[0].endswith(f"/.flowweave/cases/{first.json()['id']}")
     binding_id = conversation.json()["control_conversation_binding_id"]
 
@@ -2791,7 +2919,10 @@ def test_model_provider_preview_discovery_uses_unsaved_connection_without_persis
     )
 
     assert response.status_code == 200, response.text
-    assert response.json() == {"models": ["gpt-alpha", "gpt-beta"]}
+    assert response.json() == {
+        "models": ["gpt-alpha", "gpt-beta"],
+        "protocols": {"gpt-alpha": "CHAT_COMPLETIONS", "gpt-beta": "CHAT_COMPLETIONS"},
+    }
     snapshot = captured["snapshot"]
     assert snapshot.base_url == "https://preview.example.test/v1"
     assert snapshot.headers["Authorization"] == "Bearer preview-secret"
@@ -3879,3 +4010,164 @@ def test_manual_runtime_output_projection_failure_becomes_visible_block(
     assert attempt["runtime_phase"] == "FAILED"
     assert attempt["error_code"] == "RUNTIME_OUTPUT_PROJECTION_FAILED"
     assert attempt["error_detail"].startswith("ARTIFACT_FILE_TOO_LARGE:")
+
+
+def test_one_api_key_provider_serves_each_model_with_its_own_protocol(
+    client, db_session_factory, settings
+):
+    provider = client.post(
+        "/api/v1/model-providers",
+        json={
+            "name": "单配置多协议",
+            "base_url": "https://gateway.example.test",
+            "api_key": "shared-key",
+            "models": [
+                {"model_name": "claude-sonnet-5-5", "enabled": True, "is_default": True},
+                {"model_name": "gpt-5.5", "enabled": True, "is_default": False},
+                {"model_name": "deepseek-chat", "enabled": True, "is_default": False},
+                {
+                    "model_name": "gpt-5-mini",
+                    "enabled": True,
+                    "is_default": False,
+                    "protocol": "CHAT_COMPLETIONS",
+                },
+            ],
+        },
+    )
+    assert provider.status_code == 201, provider.text
+    body = provider.json()
+    effective = {item["model_name"]: item["effective_protocol"] for item in body["models"]}
+    assert effective == {
+        "claude-sonnet-5-5": "ANTHROPIC",
+        "gpt-5.5": "RESPONSES",
+        "deepseek-chat": "CHAT_COMPLETIONS",
+        "gpt-5-mini": "CHAT_COMPLETIONS",
+    }
+    assert body["protocols"] == ["ANTHROPIC", "CHAT_COMPLETIONS", "RESPONSES"]
+
+    from flowweave.modules.model_providers.application import service
+    from flowweave.runtime.request import runtime_provider
+    from flowweave.shared.settings import settings_context
+
+    node = {"asset": {"executor": {"model_provider_id": body["id"]}}}
+    with settings_context(settings), db_session_factory() as db:
+        service.mark_provider_connection_state(db, body["id"], "CONNECTED")
+        claude = runtime_provider(db, node, "claude-sonnet-5-5")
+        gpt = runtime_provider(db, node, "gpt-5.5")
+        chat = runtime_provider(db, node, "deepseek-chat")
+        with pytest.raises(ValueError, match="Anthropic"):
+            service.prompt_provider_snapshot(db, body["id"], "claude-sonnet-5-5")
+        with pytest.raises(ValueError, match="Anthropic"):
+            service.title_provider_snapshot(db, body["id"], "claude-sonnet-5-5")
+        gate = service.prompt_provider_snapshot(db, body["id"], "gpt-5.5")
+
+    assert (claude.api_protocol, claude.base_url) == ("ANTHROPIC", "https://gateway.example.test")
+    assert (gpt.api_protocol, gpt.base_url) == ("RESPONSES", "https://gateway.example.test/v1")
+    assert (chat.api_protocol, chat.base_url) == (
+        "CHAT_COMPLETIONS",
+        "https://gateway.example.test/v1",
+    )
+    assert gate.protocol == "RESPONSES"
+    assert gate.base_url == "https://gateway.example.test/v1"
+
+
+def test_legacy_anthropic_provider_payload_maps_to_per_model_protocol(client):
+    created = client.post(
+        "/api/v1/model-providers",
+        json={
+            "name": "旧版 Anthropic 载荷",
+            "auth_type": "ANTHROPIC_API_KEY",
+            "base_url": "https://models.example.test",
+            "api_key": "legacy-key",
+            "models": [{"model_name": "custom-model", "enabled": True, "is_default": True}],
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["auth_type"] == "API_KEY"
+    assert created.json()["models"][0]["effective_protocol"] == "ANTHROPIC"
+
+
+def test_primary_provider_is_exclusive_and_orders_first(client, db_session_factory):
+    from flowweave.modules.model_providers.application import service
+
+    ids = []
+    for name in ("乙供应商", "甲供应商"):
+        created = client.post(
+            "/api/v1/model-providers",
+            json={
+                "name": name,
+                "base_url": "https://gateway.example.test",
+                "api_key": "k",
+                "models": [{"model_name": "gpt-5.5", "enabled": True, "is_default": True}],
+            },
+        )
+        assert created.status_code == 201, created.text
+        ids.append(created.json()["id"])
+    first, second = ids
+    # An unconnected provider cannot become the default.
+    assert client.post(f"/api/v1/model-providers/{first}/primary").status_code == 409
+    with db_session_factory() as db:
+        for provider_id in ids:
+            service.mark_provider_connection_state(db, provider_id, "CONNECTED")
+
+    assert client.post(f"/api/v1/model-providers/{first}/primary").json()["is_primary"] is True
+    listing = client.get("/api/v1/model-providers").json()
+    assert [item["id"] for item in listing][0] == first
+    # Choosing another provider moves the mark instead of keeping two.
+    assert client.post(f"/api/v1/model-providers/{second}/primary").json()["is_primary"] is True
+    listing = client.get("/api/v1/model-providers").json()
+    assert {item["id"]: item["is_primary"] for item in listing} == {first: False, second: True}
+    assert client.delete(f"/api/v1/model-providers/{second}/primary").json()["is_primary"] is False
+    assert not any(item["is_primary"] for item in client.get("/api/v1/model-providers").json())
+
+
+def test_model_change_divider_is_recorded_only_when_the_sent_model_differs(db_session_factory):
+    from sqlalchemy import select
+
+    from flowweave.modules.agent_sessions.application import conversations
+    from flowweave.modules.agent_sessions.infrastructure.models import (
+        AgentConversationBinding,
+        AgentMessageModelChange,
+    )
+
+    with db_session_factory() as db:
+        binding = AgentConversationBinding(
+            workspace_id=None,
+            runtime_session_id="runtime-1",
+            host_id="host-1",
+            conversation_scope_id="scope-1",
+            openhands_conversation_id="22222222-2222-4222-8222-222222222222",
+            create_idempotency_key="model-change-divider",
+            lifecycle="ACTIVE",
+            model_provider_id="provider-a",
+            model_name="alpha-1",
+        )
+        db.add(binding)
+        db.flush()
+
+        # The first send only seeds the baseline.
+        conversations.record_model_change(db, binding, "event-1")
+        assert db.scalars(select(AgentMessageModelChange)).all() == []
+        assert binding.last_sent_model_name == "alpha-1"
+
+        # Same model: still no divider.
+        conversations.record_model_change(db, binding, "event-2")
+        assert db.scalars(select(AgentMessageModelChange)).all() == []
+
+        # A different model produces exactly one divider on that user event.
+        binding.model_provider_id, binding.model_name = "provider-b", "beta-1"
+        conversations.record_model_change(db, binding, "event-3")
+        conversations.record_model_change(db, binding, "event-4")
+        rows = db.scalars(select(AgentMessageModelChange)).all()
+        assert [(row.event_id, row.from_model_name, row.to_model_name) for row in rows] == [
+            ("event-3", "alpha-1", "beta-1")
+        ]
+        assert isinstance(rows[0].to_label, str) and "beta-1" in rows[0].to_label
+
+        # Switching only the model inside the same provider also produces a divider.
+        binding.model_name = "beta-2"
+        conversations.record_model_change(db, binding, "event-5")
+        rows = db.scalars(select(AgentMessageModelChange).order_by(AgentMessageModelChange.event_id)).all()
+        assert [(row.event_id, row.from_model_name, row.to_model_name) for row in rows][-1] == (
+            "event-5", "beta-1", "beta-2"
+        )

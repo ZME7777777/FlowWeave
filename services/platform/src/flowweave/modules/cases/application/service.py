@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
+from collections.abc import Sequence
 from pathlib import PurePosixPath
 from typing import Any
 from uuid import uuid4
@@ -18,6 +19,7 @@ from flowweave.modules.cases.infrastructure.models import (
     Case,
     CaseAgentTask,
     CaseControlPlan,
+    CaseControlRound,
     CaseDecisionProposal,
     CaseFlowRun,
     CaseStage,
@@ -30,14 +32,16 @@ from flowweave.modules.runs.infrastructure.models import (
     NodeAttempt,
     NodeRun,
 )
-from flowweave.modules.users.application.security import user_runtime_project_root
-from flowweave.shared.application.transactions import finish
+from flowweave.modules.users.application.security import tenant_user
+from flowweave.shared.application.transactions import finish, savepoint
 from flowweave.shared.database import now
 from flowweave.shared.errors import DomainError, conflict, illegal, not_found
 from flowweave.shared.schemas import (
     AttemptStartWrite,
+    AttemptVersionWrite,
     AutomaticRunCopyWrite,
     AutomaticRunStartWrite,
+    CaseBundleImportWrite,
     CaseControlConversationWrite,
     CaseControlPlanWrite,
     CaseControlSuggestionWrite,
@@ -50,18 +54,76 @@ from flowweave.shared.schemas import (
     CaseStageFlowRunWrite,
     CaseStageLaunchWrite,
     CaseStageStateWrite,
+    CaseStartWrite,
     CaseUpdateWrite,
     NodeRunCopyWrite,
+    RejectWrite,
     StepwiseNodeDraftStartWrite,
     StepwiseRunRecordCopyWrite,
 )
 
 
-def _case(db: Session, case_id: str) -> Case:
-    item = db.get(Case, case_id)
+class CaseActionFailure(DomainError):
+    """A dispatched action failed after its auditable result was recorded."""
+
+
+def _case(db: Session, case_id: str, *, lock: bool = False) -> Case:
+    item = (
+        db.scalar(
+            select(Case)
+            .where(Case.id == case_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if lock
+        else db.get(Case, case_id)
+    )
     if item is None:
         raise not_found("case", case_id)
     return item
+
+
+def require_case_action(item: Case, action: str) -> None:
+    """Keep every Case command on the same pause and terminal boundary."""
+
+    if item.state in {"COMPLETED", "ARCHIVED"}:
+        raise illegal("terminal Case cannot execute actions", state=item.state, action=action)
+    if item.state == "PAUSED" and action not in {"STOP_EXECUTION", "STOP_FLOW_RUN"}:
+        raise DomainError(
+            "CASE_PAUSED",
+            "场景已暂停，请恢复后再执行此动作",
+            409,
+            {"case_id": item.id, "action": action},
+        )
+
+
+def _pause_case(item: Case, reason: str, note: str | None = None) -> None:
+    """Single place that parks a Case, so the UI and coordinator never infer why."""
+
+    item.state = "PAUSED"
+    item.pause_reason = reason
+    item.pause_note = note
+    item.row_version += 1
+
+
+def _resume_case(item: Case, note: str | None) -> None:
+    item.state = "ACTIVE"
+    item.pause_reason = None
+    item.pause_note = None
+    item.resume_note = note
+    item.row_version += 1
+
+
+def _stage_start_result(proposal: CaseDecisionProposal) -> dict[str, Any]:
+    if proposal.state == "EXECUTED":
+        return _proposal_dict(proposal)
+    code = str(proposal.result_json.get("code") or "CASE_STAGE_START_NOT_EXECUTED")
+    raise DomainError(
+        code,
+        "阶段启动未成功，请检查执行记录后显式重试",
+        409,
+        {"decision_id": proposal.id, "state": proposal.state},
+    )
 
 
 def _stage(db: Session, item: Case, stage_id: str) -> CaseStage:
@@ -132,18 +194,52 @@ def _stage_execution_summary(db: Session, stage: CaseStage) -> dict[str, Any] | 
             }
             if predecessors.issubset(accepted_keys):
                 ready_node_keys.append(node_key)
+    node_statuses = []
+    node_runs_by_key: dict[str, dict[str, Any]] = {}
+    for node_run in node_runs:
+        key = str(node_run["flow_node_snapshot_key"])
+        node_runs_by_key[key] = node_run
+    for key, node in nodes.items():
+        node_run = node_runs_by_key.get(key)
+        latest_attempt = node_run["attempts"][-1] if node_run and node_run["attempts"] else None
+        node_statuses.append(
+            {
+                "node_key": key,
+                "node_name": str(node.get("alias") or node.get("instance_key") or key),
+                "state": (
+                    latest_attempt["state"]
+                    if latest_attempt is not None
+                    else node_run["state"]
+                    if node_run is not None
+                    else "PENDING"
+                ),
+                "active": bool(active and active["node_key"] == key),
+            }
+        )
+    edges = [
+        {
+            "source": str(edge.get("source_instance_key") or ""),
+            "target": str(edge.get("target_instance_key") or ""),
+        }
+        for edge in (active_snapshot or {}).get("definition", {}).get("edges", [])
+        if edge.get("source_instance_key") and edge.get("target_instance_key")
+    ]
     return {
         "flow_run_id": run.id,
+        "parent_flow_run_id": run.parent_flow_run_id,
+        "run_mode": run.run_mode,
         "state": detail["state"],
         "progress": detail["progress"],
         "active_node": active,
+        "nodes": node_statuses,
+        "edges": edges,
         "ready_node_keys": sorted(ready_node_keys),
         "automatic_block": detail["automatic_block"],
         "finished_at": detail.get("finished_at"),
     }
 
 
-def _stage_dict(db: Session, item: CaseStage) -> dict[str, Any]:
+def _stage_dict(db: Session, item: CaseStage, *, summary: bool = False) -> dict[str, Any]:
     return {
         "id": item.id,
         "case_id": item.case_id,
@@ -155,7 +251,7 @@ def _stage_dict(db: Session, item: CaseStage) -> dict[str, Any]:
         "current_execution_flow_run_id": item.current_execution_flow_run_id,
         "execution_mode": item.execution_mode,
         "state": item.state,
-        "execution": _stage_execution_summary(db, item),
+        "execution": None if summary else _stage_execution_summary(db, item),
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
     }
@@ -258,7 +354,7 @@ def resolve_case_control_binding_scope(
         raise conflict("Case control Binding is outside its Case work directory", case_id=item.id)
     stage = db.scalar(
         select(CaseStage)
-        .where(CaseStage.case_id == item.id, CaseStage.state == "ACTIVE")
+        .where(CaseStage.case_id == item.id, CaseStage.state.in_(("ACTIVE", "REVIEW_PENDING")))
         .order_by(CaseStage.position)
     )
     if require_active_stage and stage is None:
@@ -278,9 +374,9 @@ def _current_stage_execution(db: Session, item: Case, run: FlowRun) -> CaseStage
             CaseStage.current_execution_flow_run_id == run.id,
         )
     )
-    if stage is None or stage.state != "ACTIVE":
+    if stage is None or stage.state not in {"ACTIVE", "REVIEW_PENDING"}:
         raise conflict(
-            "Case remediation may target only its active stage execution copy",
+            "Case remediation may target only its current stage execution copy",
             flow_run_id=run.id,
         )
     return stage
@@ -303,9 +399,18 @@ def _case_flow_runs(db: Session, case_id: str) -> list[str]:
     )
 
 
-def _write_case_files(db: Session, item: Case) -> None:
+def write_case_files(db: Session, item: Case) -> None:
     if not item.control_work_directory_id:
         return
+    # Case facts can be projected from a Worker task that runs without a user
+    # (for example the gate task that completes the last node). The Case's own
+    # owner defines the workspace, so bind it explicitly instead of relying on
+    # the caller's ambient principal.
+    with tenant_user(item.owner_user_id):
+        _write_case_files(db, item)
+
+
+def _write_case_files(db: Session, item: Case) -> None:
     workspace = agent_workspaces.ensure_default_agent_workspace(db)
     stages = tuple(
         {
@@ -346,25 +451,53 @@ def _write_case_files(db: Session, item: Case) -> None:
     )
 
 
-def _case_dict(db: Session, item: Case) -> dict[str, Any]:
+def _case_dict(db: Session, item: Case, *, summary: bool = False) -> dict[str, Any]:
+    """Project a Case; ``summary`` omits the heavy per-case history for list views."""
+
+    from flowweave.modules.cases.application.feedback import delivery_status
+
+    current_round = (
+        db.get(CaseControlRound, item.current_control_round_id)
+        if item.current_control_round_id
+        else None
+    )
     stages = db.scalars(
         select(CaseStage).where(CaseStage.case_id == item.id).order_by(CaseStage.position)
     ).all()
-    tasks = db.scalars(
-        select(CaseAgentTask)
-        .where(CaseAgentTask.case_id == item.id)
-        .order_by(CaseAgentTask.created_at.desc())
+    tasks: Sequence[CaseAgentTask] = ()
+    proposals: Sequence[CaseDecisionProposal] = ()
+    control_plans: Sequence[CaseControlPlan] = ()
+    if not summary:
+        tasks = db.scalars(
+            select(CaseAgentTask)
+            .where(CaseAgentTask.case_id == item.id)
+            .order_by(CaseAgentTask.created_at.desc())
+        ).all()
+        proposals = db.scalars(
+            select(CaseDecisionProposal)
+            .where(CaseDecisionProposal.case_id == item.id)
+            .order_by(CaseDecisionProposal.created_at.desc())
+        ).all()
+        control_plans = db.scalars(
+            select(CaseControlPlan)
+            .where(CaseControlPlan.case_id == item.id)
+            .order_by(CaseControlPlan.created_at.desc())
+        ).all()
+    rounds = db.scalars(
+        select(CaseControlRound)
+        .where(CaseControlRound.case_id == item.id)
+        .order_by(CaseControlRound.created_at.desc(), CaseControlRound.id)
     ).all()
-    proposals = db.scalars(
-        select(CaseDecisionProposal)
-        .where(CaseDecisionProposal.case_id == item.id)
-        .order_by(CaseDecisionProposal.created_at.desc())
-    ).all()
-    control_plans = db.scalars(
-        select(CaseControlPlan)
-        .where(CaseControlPlan.case_id == item.id)
-        .order_by(CaseControlPlan.created_at.desc())
-    ).all()
+    # The Agent-generated title is the conversation's own projection; Case never
+    # invents or stores a second name for it.
+    titles = {
+        binding_id: title
+        for binding_id, title in db.execute(
+            select(AgentConversationBinding.id, AgentConversationBinding.display_title).where(
+                AgentConversationBinding.id.in_([x.binding_id for x in rounds if x.binding_id])
+            )
+        )
+    }
     return {
         "id": item.id,
         "name": item.name,
@@ -374,13 +507,34 @@ def _case_dict(db: Session, item: Case) -> dict[str, Any]:
         "work_directory_id": item.work_directory_id,
         "session_config": item.session_config_json or {},
         "state": item.state,
-        "control_conversation_binding_id": item.control_conversation_binding_id,
+        "pause_reason": (item.pause_reason or "MANUAL") if item.state == "PAUSED" else None,
+        "pause_note": item.pause_note if item.state == "PAUSED" else None,
+        "control_conversation_binding_id": (
+            item.control_conversation_binding_id
+            if current_round is None or current_round.state == "STARTED"
+            else None
+        ),
         "control_work_directory_id": item.control_work_directory_id,
+        "current_control_round_id": item.current_control_round_id,
+        "control_rounds": [
+            {
+                "id": entry.id,
+                "binding_id": entry.binding_id if entry.state == "STARTED" else None,
+                "display_title": titles.get(entry.binding_id or "") or None,
+                "state": entry.state,
+                "is_current": entry.id == item.current_control_round_id,
+                "error_code": entry.error_code,
+                "created_at": entry.created_at.isoformat(),
+                "started_at": entry.started_at.isoformat() if entry.started_at else None,
+            }
+            for entry in rounds
+        ],
         "row_version": item.row_version,
-        "stages": [_stage_dict(db, stage) for stage in stages],
+        "stages": [_stage_dict(db, stage, summary=summary) for stage in stages],
         "flow_run_ids": _case_flow_runs(db, item.id),
         "tasks": [_task_dict(task) for task in tasks],
         "decision_proposals": [_proposal_dict(proposal) for proposal in proposals],
+        "feedback_deliveries": [] if summary else delivery_status(db, item.id),
         "control_plans": [_control_plan_dict(plan) for plan in control_plans],
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
@@ -388,9 +542,8 @@ def _case_dict(db: Session, item: Case) -> dict[str, Any]:
 
 
 def list_cases(db: Session) -> list[dict[str, Any]]:
-    return [
-        _case_dict(db, item) for item in db.scalars(select(Case).order_by(Case.updated_at.desc()))
-    ]
+    cases = db.scalars(select(Case).order_by(Case.updated_at.desc()))
+    return [_case_dict(db, item, summary=True) for item in cases]
 
 
 def get_case(db: Session, case_id: str) -> dict[str, Any]:
@@ -428,9 +581,253 @@ def create_case(db: Session, payload: CaseCreateWrite) -> dict[str, Any]:
         db, workspace.id, item.id, f"Case · {item.name[:120]} · {item.id[:8]}"
     )
     item.control_work_directory_id = str(directory["id"])
-    _write_case_files(db, item)
+    write_case_files(db, item)
     finish(db)
     return _case_dict(db, item)
+
+
+_CASE_BUNDLE_FORMAT = "flowweave.case-bundle"
+
+
+def _stage_blueprint(stage: CaseStage) -> dict[str, Any]:
+    return {
+        "stage_key": stage.stage_key,
+        "name": stage.name,
+        "objective": stage.objective,
+        "execution_mode": stage.execution_mode,
+        "template_flow_run_id": stage.flow_run_id,
+    }
+
+
+def _build_case_from_blueprint(
+    db: Session,
+    *,
+    name: str,
+    description: str,
+    objective: str,
+    work_directory_id: str | None,
+    link_materials: list[dict[str, Any]],
+    file_materials: list[tuple[str, bytes | None]],
+    stages: list[dict[str, Any]],
+    session_config: dict[str, Any],
+) -> dict[str, Any]:
+    """One creation path for both *copy* and *import*, so they can never diverge.
+
+    A blueprint is configuration only. Each stage's reusable launch template is cloned into a
+    new, independent record (``case_stages.flow_run_id`` is unique, so two Cases can never share
+    one). Runtime state - coordinator conversations, execution copies, plans, proposals, pause
+    state - has no place in a blueprint and is therefore never inherited. Whatever cannot be
+    carried over is reported in ``copy_report`` instead of failing the whole operation or being
+    silently dropped.
+    """
+
+    workspace = agent_workspaces.ensure_default_agent_workspace(db)
+    report: dict[str, list[dict[str, str]]] = {"copied": [], "skipped": []}
+    if work_directory_id:
+        work_directories.get_work_directory(db, workspace.id, work_directory_id)
+
+    item = Case(
+        name=name[:220],
+        description=description,
+        objective=objective,
+        work_directory_id=work_directory_id,
+        materials_json=[],
+    )
+    db.add(item)
+    db.flush()
+    directory = agent_workspaces.create_case_work_directory(
+        db, workspace.id, item.id, f"Case · {item.name[:120]} · {item.id[:8]}"
+    )
+    item.control_work_directory_id = str(directory["id"])
+
+    materials: list[dict[str, Any]] = [dict(material) for material in link_materials]
+    for filename, content in file_materials:
+        if content is None:
+            report["skipped"].append({"item": f"资料 {filename}", "reason": "FILE_UNAVAILABLE"})
+            continue
+        stored = agent_workspaces.write_case_material_file(db, workspace.id, item.id, content)
+        materials.append({"kind": "FILE", "name": filename, "value": stored})
+    item.materials_json = materials
+
+    for position, blueprint in enumerate(stages):
+        label = f"「{blueprint['name']}」的流程模板"
+        copied_stage = CaseStage(
+            case_id=item.id,
+            stage_key=blueprint["stage_key"],
+            name=blueprint["name"],
+            objective=blueprint["objective"],
+            position=position,
+            state="ACTIVE" if position == 0 else "PENDING",
+            execution_mode=blueprint["execution_mode"],
+        )
+        db.add(copied_stage)
+        template_id = blueprint.get("template_flow_run_id")
+        if not template_id:
+            continue
+        template = db.get(FlowRun, template_id)
+        if template is None:
+            report["skipped"].append({"item": label, "reason": "TEMPLATE_UNAVAILABLE"})
+            continue
+        clone_name = f"{item.name} · {blueprint['name']} 模板"[:220]
+        try:
+            with savepoint(db):
+                if blueprint["execution_mode"] == "STEPWISE":
+                    if template.parent_flow_run_id is None:
+                        raise conflict("source stepwise template is not a record")
+                    clone = orchestration.copy_nested_stepwise_run_record(
+                        db,
+                        template.parent_flow_run_id,
+                        template.id,
+                        StepwiseRunRecordCopyWrite(name=clone_name),
+                        as_template=True,
+                    )
+                else:
+                    clone = orchestration.copy_automatic_run_draft(
+                        db, template.id, AutomaticRunCopyWrite(name=clone_name)
+                    )
+            copied_stage.flow_run_id = str(clone["id"])
+            report["copied"].append({"item": label, "reason": "COPIED"})
+        except DomainError as exc:
+            report["skipped"].append({"item": label, "reason": exc.code or "TEMPLATE_NOT_COPIED"})
+
+    if session_config:
+        try:
+            config = CaseControlConversationWrite.model_validate(session_config)
+            item.session_config_json = validate_case_session_config(db, config)
+            report["copied"].append({"item": "Case Agent 会话配置", "reason": "COPIED"})
+        except (DomainError, ValueError) as exc:
+            report["skipped"].append(
+                {
+                    "item": "Case Agent 会话配置",
+                    "reason": getattr(exc, "code", "SESSION_CONFIG_INVALID"),
+                }
+            )
+
+    item.state = "ACTIVE" if stages else "DRAFT"
+    write_case_files(db, item)
+    finish(db)
+    return {**_case_dict(db, item), "copy_report": report}
+
+
+def _read_source_files(db: Session, source: Case) -> list[tuple[str, bytes | None]]:
+    workspace = agent_workspaces.ensure_default_agent_workspace(db)
+    files: list[tuple[str, bytes | None]] = []
+    for material in source.materials_json or []:
+        if material["kind"] != "FILE":
+            continue
+        try:
+            content: bytes | None = agent_workspaces.read_case_material_file(
+                db, workspace.id, source.id, material["value"]
+            )
+        except DomainError:
+            content = None
+        files.append((material["name"], content))
+    return files
+
+
+def copy_case(db: Session, case_id: str) -> dict[str, Any]:
+    """Create a new Case from a source Case's configuration, never its runtime."""
+
+    source = _case(db, case_id)
+    stages = list(
+        db.scalars(
+            select(CaseStage).where(CaseStage.case_id == source.id).order_by(CaseStage.position)
+        )
+    )
+    return _build_case_from_blueprint(
+        db,
+        name=f"{source.name} 副本",
+        description=source.description,
+        objective=source.objective,
+        work_directory_id=source.work_directory_id,
+        link_materials=[m for m in source.materials_json or [] if m["kind"] == "LINK"],
+        file_materials=_read_source_files(db, source),
+        stages=[_stage_blueprint(stage) for stage in stages],
+        session_config=dict(source.session_config_json or {}),
+    )
+
+
+def export_cases(db: Session, case_ids: Sequence[str]) -> dict[str, Any]:
+    """Export Cases as a self-describing bundle (references + file contents, no runtime).
+
+    The bundle refers to each stage's template record by id, which is meaningful on the same
+    platform only; it is a backup/migration document, not a portable template definition.
+    Secrets never appear: the session configuration holds capability and credential *ids*.
+    """
+
+    import base64
+
+    entries: list[dict[str, Any]] = []
+    for case_id in case_ids:
+        source = _case(db, case_id)
+        stages = list(
+            db.scalars(
+                select(CaseStage).where(CaseStage.case_id == source.id).order_by(CaseStage.position)
+            )
+        )
+        entries.append(
+            {
+                "name": source.name,
+                "description": source.description,
+                "objective": source.objective,
+                "work_directory_id": source.work_directory_id,
+                "link_materials": [m for m in source.materials_json or [] if m["kind"] == "LINK"],
+                "file_materials": [
+                    {
+                        "name": name,
+                        "content_base64": None
+                        if content is None
+                        else base64.b64encode(content).decode("ascii"),
+                    }
+                    for name, content in _read_source_files(db, source)
+                ],
+                "stages": [_stage_blueprint(stage) for stage in stages],
+                "session_config": dict(source.session_config_json or {}),
+            }
+        )
+    return {
+        "format": _CASE_BUNDLE_FORMAT,
+        "version": 1,
+        "exported_at": now().isoformat(),
+        "cases": entries,
+    }
+
+
+def import_cases(db: Session, payload: CaseBundleImportWrite) -> list[dict[str, Any]]:
+    """Recreate Cases from an export bundle through the same path as *copy*."""
+
+    import base64
+    import binascii
+
+    created: list[dict[str, Any]] = []
+    for entry in payload.cases:
+        files: list[tuple[str, bytes | None]] = []
+        for material in entry.file_materials:
+            try:
+                content = (
+                    base64.b64decode(material.content_base64, validate=True)
+                    if material.content_base64 is not None
+                    else None
+                )
+            except (binascii.Error, ValueError):
+                content = None
+            if content is not None and len(content) > 64 * 1024 * 1024:
+                content = None
+            files.append((material.name, content))
+        created.append(
+            _build_case_from_blueprint(
+                db,
+                name=entry.name,
+                description=entry.description,
+                objective=entry.objective,
+                work_directory_id=entry.work_directory_id,
+                link_materials=[m.model_dump() for m in entry.link_materials],
+                file_materials=files,
+                stages=[stage.model_dump() for stage in entry.stages],
+                session_config=entry.session_config,
+            )
+        )
+    return created
 
 
 def _editable_case(db: Session, case_id: str, expected_row_version: int) -> Case:
@@ -444,11 +841,13 @@ def _editable_case(db: Session, case_id: str, expected_row_version: int) -> Case
 
 def update_case(db: Session, case_id: str, payload: CaseUpdateWrite) -> dict[str, Any]:
     item = _editable_case(db, case_id, payload.expected_row_version)
-    workspace = agent_workspaces.ensure_default_agent_workspace(db)
-    if payload.work_directory_id:
-        work_directories.get_work_directory(db, workspace.id, payload.work_directory_id)
-    if item.control_conversation_binding_id and payload.work_directory_id != item.work_directory_id:
-        raise DomainError("CASE_WORKSPACE_FROZEN", "已有会话的工作区不可变更", 409)
+    if payload.name.strip() != item.name or payload.work_directory_id != item.work_directory_id:
+        raise DomainError("CASE_IDENTITY_FROZEN", "名称和工作区创建后不可修改", 409)
+    if (
+        payload.description.strip() != item.description
+        or payload.objective.strip() != item.objective
+    ):
+        raise DomainError("CASE_IDENTITY_FROZEN", "说明和目标创建后不可修改", 409)
     known_files = {
         material["value"] for material in item.materials_json or [] if material["kind"] == "FILE"
     }
@@ -461,9 +860,14 @@ def update_case(db: Session, case_id: str, payload: CaseUpdateWrite) -> dict[str
     item.description = payload.description.strip()
     item.objective = payload.objective.strip()
     item.work_directory_id = payload.work_directory_id
+    changed = item.materials_json != [material.model_dump() for material in payload.materials]
     item.materials_json = [material.model_dump() for material in payload.materials]
     item.row_version += 1
-    _write_case_files(db, item)
+    if changed:
+        from flowweave.modules.cases.application.feedback import record_case_change
+
+        record_case_change(db, item, "MATERIALS_CHANGED")
+    write_case_files(db, item)
     finish(db)
     return _case_dict(db, item)
 
@@ -500,7 +904,10 @@ def upload_case_material(
         },
     ]
     item.row_version += 1
-    _write_case_files(db, item)
+    from flowweave.modules.cases.application.feedback import record_case_change
+
+    record_case_change(db, item, "MATERIALS_CHANGED")
+    write_case_files(db, item)
     finish(db)
     return _case_dict(db, item)
 
@@ -525,10 +932,9 @@ def read_case_material(db: Session, case_id: str, value: str) -> tuple[bytes, st
     return content, material["name"], mime
 
 
-def save_case_session_config(
-    db: Session, case_id: str, payload: CaseSessionConfigWrite
+def validate_case_session_config(
+    db: Session, payload: CaseControlConversationWrite
 ) -> dict[str, Any]:
-    item = _editable_case(db, case_id, payload.expected_row_version)
     provider = next((p for p in list_providers(db) if p["id"] == payload.model_provider_id), None)
     model = next(
         (
@@ -547,12 +953,188 @@ def save_case_session_config(
     capabilities, credentials = validate_template_configuration(
         db, tuple(payload.capability_version_ids), tuple(payload.credential_ids)
     )
-    item.session_config_json = {
-        **payload.model_dump(exclude={"expected_row_version"}),
+    return {
+        **payload.model_dump(),
         "capability_version_ids": list(capabilities),
         "credential_ids": list(credentials),
     }
+
+
+def save_case_session_config(
+    db: Session, case_id: str, payload: CaseSessionConfigWrite
+) -> dict[str, Any]:
+    item = _editable_case(db, case_id, payload.expected_row_version)
+    config = CaseControlConversationWrite.model_validate(
+        payload.model_dump(exclude={"expected_row_version"})
+    )
+    validated = validate_case_session_config(db, config)
+    changed = item.session_config_json != validated
+    item.session_config_json = validated
     item.row_version += 1
+    if changed:
+        from flowweave.modules.cases.application.feedback import record_case_change
+
+        record_case_change(db, item, "SESSION_CONFIG_CHANGED")
+    finish(db)
+    return _case_dict(db, item)
+
+
+def set_case_coordination_state(
+    db: Session, case_id: str, expected_row_version: int, state: str
+) -> dict[str, Any]:
+    item = _editable_case(db, case_id, expected_row_version)
+    if state not in {"ACTIVE", "PAUSED"} or item.state not in {"ACTIVE", "PAUSED"}:
+        raise DomainError("CASE_STATE_TRANSITION_INVALID", "当前场景不可暂停或恢复", 409)
+    if item.state != state:
+        if state == "PAUSED":
+            _pause_case(item, "MANUAL")
+        else:
+            if item.pause_reason == "CONCLUSION_PROPOSED":
+                raise DomainError(
+                    "CASE_CONCLUSION_DECISION_REQUIRED",
+                    "Agent 提议结束场景，请选择“确认结束”或“继续”",
+                    409,
+                )
+            # A plain resume of a question the human has not answered in the conversation is
+            # still allowed (the Agent re-reads state); the note tells it what happened.
+            note = (
+                "用户未在会话中回复你的提问，而是直接恢复了场景；不要假设已获得回答，"
+                "请重新读取最新状态，并在必要时用 ask_user 再次确认（不要重复相同问题）。"
+                if item.pause_reason == "WAITING_HUMAN"
+                else None
+            )
+            _resume_case(item, note)
+        from flowweave.modules.cases.application.feedback import record_case_change
+
+        if state == "ACTIVE":
+            record_case_change(db, item, "CASE_RESUMED")
+        write_case_files(db, item)
+    finish(db)
+    return _case_dict(db, item)
+
+
+def note_case_control_waiting(db: Session, binding_id: str) -> bool:
+    """Mirror an open ask_user question onto the Case: it waits for the human, not the Agent.
+
+    The fact is the latest formal ask_user event with no later user message; there is no
+    Case-level action the Agent must remember to call.
+    """
+
+    item = db.scalar(
+        select(Case).where(Case.control_conversation_binding_id == binding_id).with_for_update()
+    )
+    if item is None or item.state != "ACTIVE":
+        return False
+    _pause_case(item, "WAITING_HUMAN", "Agent 正在等待你在会话中的回复")
+    write_case_files(db, item)
+    return True
+
+
+def note_case_control_reply(db: Session, binding_id: str, reply_event_id: str | None) -> bool:
+    """Resume a Case waiting on an open ask_user question once the human replied in the control conversation.
+
+    The reply is the formal user MessageEvent that resumes the native ask_user wait; this only
+    mirrors that fact onto the Case. Returns True when a Case was resumed.
+    """
+
+    item = db.scalar(
+        select(Case).where(Case.control_conversation_binding_id == binding_id).with_for_update()
+    )
+    if item is None or item.state != "PAUSED" or item.pause_reason != "WAITING_HUMAN":
+        return False
+    reference = f"（回复事件 {reply_event_id}）" if reply_event_id else ""
+    _resume_case(
+        item,
+        f"用户已在会话中回复你的提问{reference}。请先阅读该回复；若回复是“跳过”，"
+        "则按你推荐的稳妥方案继续并说明假设；然后重新读取最新状态再行动。",
+    )
+    from flowweave.modules.cases.application.feedback import record_case_change
+
+    record_case_change(db, item, "CASE_RESUMED")
+    write_case_files(db, item)
+    return True
+
+
+def _finish_conclusion(db: Session, item: Case, plan: CaseControlPlan) -> dict[str, Any]:
+    """The irreversible tail of an early conclusion; only a human confirmation reaches it."""
+
+    stage = db.get(CaseStage, plan.stage_id)
+    if stage is None or stage.case_id != item.id:
+        raise conflict("Case stage is not part of this Case", stage_id=plan.stage_id)
+    running = stage.current_execution_flow_run_id
+    cancelled = False
+    run = db.get(FlowRun, running) if running else None
+    if run is not None and run.state not in {"COMPLETED", "FAILED", "CANCELLED"}:
+        orchestration.cancel_run(db, run.id, f"case-plan-conclude:{plan.id}")
+        cancelled = True
+    skipped: list[str] = []
+    for later in db.scalars(
+        select(CaseStage).where(CaseStage.case_id == item.id, CaseStage.position > stage.position)
+    ):
+        if later.state not in {"COMPLETED", "SKIPPED"}:
+            later.state = "SKIPPED"
+            skipped.append(later.stage_key)
+    stage.state = "COMPLETED"
+    item.state = "COMPLETED"
+    item.pause_reason = None
+    item.pause_note = None
+    item.row_version += 1
+    return {
+        "concluded_stage_key": stage.stage_key,
+        "skipped_stage_keys": skipped,
+        "execution_cancelled": cancelled,
+        "conclusion": plan.reason,
+    }
+
+
+def _pending_conclusion(db: Session, item: Case) -> CaseControlPlan:
+    if item.state != "PAUSED" or item.pause_reason != "CONCLUSION_PROPOSED":
+        raise DomainError("CASE_NO_CONCLUSION_PROPOSED", "当前没有待确认的结束提议", 409)
+    plan = db.scalar(
+        select(CaseControlPlan)
+        .where(
+            CaseControlPlan.case_id == item.id,
+            CaseControlPlan.action == "CONCLUDE_CASE",
+            CaseControlPlan.state == "SUCCEEDED",
+        )
+        .order_by(CaseControlPlan.created_at.desc())
+        .limit(1)
+    )
+    if plan is None or plan.result_json.get("resolution"):
+        raise DomainError("CASE_NO_CONCLUSION_PROPOSED", "当前没有待确认的结束提议", 409)
+    return plan
+
+
+def confirm_case_conclusion(db: Session, case_id: str, expected_row_version: int) -> dict[str, Any]:
+    """Human accepts the coordinator's proposal: the Case really ends."""
+
+    item = _editable_case(db, case_id, expected_row_version)
+    plan = _pending_conclusion(db, item)
+    outcome = _finish_conclusion(db, item, plan)
+    plan.result_json = {**plan.result_json, **outcome, "resolution": "CONFIRMED"}
+    write_case_files(db, item)
+    finish(db)
+    return _case_dict(db, item)
+
+
+def reject_case_conclusion(
+    db: Session, case_id: str, expected_row_version: int, note: str | None = None
+) -> dict[str, Any]:
+    """Human declines: the Case resumes untouched and the coordinator is told why."""
+
+    item = _editable_case(db, case_id, expected_row_version)
+    plan = _pending_conclusion(db, item)
+    plan.result_json = {**plan.result_json, "resolution": "REJECTED"}
+    detail = (note or "").strip()
+    _resume_case(
+        item,
+        "用户否决了你提出的提前结束，场景与执行保持原样，请继续推进。"
+        + (f"用户补充：{detail}" if detail else ""),
+    )
+    from flowweave.modules.cases.application.feedback import record_case_change
+
+    record_case_change(db, item, "CASE_RESUMED")
+    write_case_files(db, item)
     finish(db)
     return _case_dict(db, item)
 
@@ -618,12 +1200,12 @@ def save_case_path(db: Session, case_id: str, payload: CasePathWrite) -> dict[st
     for position, stage in enumerate(ordered):
         stage.position = position
         db.add(stage)
-    if ordered and not any(stage.state == "ACTIVE" for stage in ordered):
+    if ordered and not any(stage.state in {"ACTIVE", "REVIEW_PENDING"} for stage in ordered):
         next((stage for stage in ordered if stage.state == "PENDING"), ordered[0]).state = "ACTIVE"
     item.state = "ACTIVE" if ordered else "DRAFT"
     item.row_version += 1
     db.flush()
-    _write_case_files(db, item)
+    write_case_files(db, item)
     finish(db)
     return _case_dict(db, item)
 
@@ -659,8 +1241,19 @@ def _case_has_unresolved_control_plan(db: Session, case_id: str) -> bool:
     )
 
 
-def delete_case_control_conversation(db: Session, case_id: str) -> None:
-    item = _case(db, case_id)
+def delete_case_control_conversation(
+    db: Session, case_id: str, expected_binding_id: str | None = None
+) -> None:
+    item = _case(db, case_id, lock=True)
+    if expected_binding_id and expected_binding_id != item.control_conversation_binding_id:
+        raise conflict("Case coordinator has changed; refresh before deleting")
+    current_round = (
+        db.get(CaseControlRound, item.current_control_round_id)
+        if item.current_control_round_id
+        else None
+    )
+    if current_round and current_round.state == "PENDING":
+        raise DomainError("CASE_AGENT_START_PENDING", "协调会话仍在创建，请稍后重试", 409)
     binding_id = item.control_conversation_binding_id
     if not binding_id:
         return
@@ -674,12 +1267,15 @@ def delete_case_control_conversation(db: Session, case_id: str) -> None:
             f"delete-case-control-conversation:{case_id}:{binding.id}",
         )
     item.control_conversation_binding_id = None
+    if current_round:
+        current_round.state = "DELETED"
+    item.current_control_round_id = None
     item.row_version += 1
     finish(db)
 
 
 def delete_case(db: Session, case_id: str) -> None:
-    item = _case(db, case_id)
+    item = _case(db, case_id, lock=True)
     if _case_has_active_execution(db, item.id):
         raise DomainError("CASE_EXECUTION_RUNNING", "事项仍有进行中的执行，停止后才能删除", 409)
     if _case_has_unresolved_control_plan(db, item.id):
@@ -687,9 +1283,18 @@ def delete_case(db: Session, case_id: str) -> None:
             "CASE_CONTROL_PLAN_PENDING", "事项仍有未完成的受控计划，完成或取消后才能删除", 409
         )
     workspace = agent_workspaces.ensure_default_agent_workspace(db)
-    binding_id = item.control_conversation_binding_id
+    rounds = list(db.scalars(select(CaseControlRound).where(CaseControlRound.case_id == item.id)))
+    if any(entry.state == "PENDING" for entry in rounds):
+        raise DomainError("CASE_AGENT_START_PENDING", "协调会话仍在创建，请稍后重试", 409)
+    binding_ids = {entry.binding_id for entry in rounds if entry.state != "DELETED"}
+    if item.control_conversation_binding_id:
+        binding_ids.add(item.control_conversation_binding_id)
     work_directory_id = item.control_work_directory_id
-    if binding_id:
+    for binding_id in binding_ids:
+        binding = db.get(AgentConversationBinding, binding_id)
+        if binding is not None:
+            conversations.assert_conversation_stopped(db, workspace.id, binding.id)
+    for binding_id in binding_ids:
         binding = db.get(AgentConversationBinding, binding_id)
         if binding is not None:
             conversations.delete_conversation(
@@ -700,9 +1305,13 @@ def delete_case(db: Session, case_id: str) -> None:
             )
     if work_directory_id:
         agent_workspaces.delete_case_work_directory(db, workspace.id, item.id, work_directory_id)
+    db.execute(delete(CaseControlRound).where(CaseControlRound.case_id == item.id))
     db.execute(delete(CaseControlPlan).where(CaseControlPlan.case_id == item.id))
     db.execute(delete(CaseDecisionProposal).where(CaseDecisionProposal.case_id == item.id))
     db.execute(delete(CaseAgentTask).where(CaseAgentTask.case_id == item.id))
+    from flowweave.modules.cases.application.materials import delete_case_artifact_references
+
+    delete_case_artifact_references(db, item.id)
     db.execute(delete(CaseFlowRun).where(CaseFlowRun.case_id == item.id))
     db.execute(delete(CaseStage).where(CaseStage.case_id == item.id))
     db.delete(item)
@@ -722,17 +1331,21 @@ def set_case_stage_state(
     if item.state in {"COMPLETED", "ARCHIVED"}:
         raise illegal("terminal case cannot change stages", state=item.state)
     stage = _stage(db, item, stage_id)
+    if stage.state == "REVIEW_PENDING":
+        raise conflict("review-pending stage must be resolved by a governed Case action")
     if payload.state == "ACTIVE":
         db.execute(
             CaseStage.__table__.update()
             .where(
-                CaseStage.case_id == item.id, CaseStage.id != stage.id, CaseStage.state == "ACTIVE"
+                CaseStage.case_id == item.id,
+                CaseStage.id != stage.id,
+                CaseStage.state.in_(("ACTIVE", "REVIEW_PENDING")),
             )
             .values(state="PENDING")
         )
     stage.state = payload.state
     item.row_version += 1
-    _write_case_files(db, item)
+    write_case_files(db, item)
     finish(db)
     return _case_dict(db, item)
 
@@ -754,7 +1367,7 @@ def list_case_stage_templates(db: Session, case_id: str) -> list[dict[str, Any]]
             if run.parent_flow_run_id is None:
                 continue
             try:
-                readiness = orchestration.validate_stepwise_record_template(db, run.id)
+                readiness = _validate_stepwise_template_structure(db, run.id)
             except DomainError:
                 continue
             templates.append(
@@ -805,13 +1418,13 @@ def bind_case_stage_flow_run(
     if payload.execution_mode == "STEPWISE":
         if run.parent_flow_run_id is None:
             raise conflict("Case stepwise templates must be existing stepwise run records")
-        orchestration.validate_stepwise_record_template(db, run.id)
+        _validate_stepwise_template_structure(db, run.id)
     if stage.flow_run_id and stage.flow_run_id != run.id:
         raise conflict("Case stage is already bound to a FlowRun", flow_run_id=stage.flow_run_id)
     stage.flow_run_id = run.id
     stage.execution_mode = payload.execution_mode
     item.row_version += 1
-    _write_case_files(db, item)
+    write_case_files(db, item)
     finish(db)
     return _case_dict(db, item)
 
@@ -822,8 +1435,7 @@ def launch_case_stage(
     """Clone a configured stage template into this Case's next execution record."""
 
     item = _case(db, case_id)
-    if item.state in {"COMPLETED", "ARCHIVED"}:
-        raise illegal("terminal case cannot launch stages", state=item.state)
+    require_case_action(item, "CREATE_EXECUTION_COPY")
     stage = _stage(db, item, stage_id)
     if stage.state != "ACTIVE":
         raise conflict("only the active Case stage can launch", state=stage.state)
@@ -842,7 +1454,7 @@ def launch_case_stage(
             raise conflict(
                 "Case stepwise template is not a stepwise record", flow_run_id=template.id
             )
-        orchestration.validate_stepwise_record_template(db, template.id)
+        _validate_stepwise_template_structure(db, template.id)
         execution = orchestration.copy_nested_stepwise_run_record(
             db,
             template.parent_flow_run_id,
@@ -870,7 +1482,7 @@ def launch_case_stage(
     ):
         db.add(CaseFlowRun(case_id=item.id, flow_run_id=execution_id))
     item.row_version += 1
-    _write_case_files(db, item)
+    write_case_files(db, item)
     finish(db)
     return _case_dict(db, item)
 
@@ -954,6 +1566,7 @@ def project_flow_run_event(
     node_run_id: str | None = None,
     node_attempt_id: str | None = None,
     payload: dict[str, Any] | None = None,
+    run_event_cursor: int | None = None,
 ) -> None:
     """Expose terminal runtime facts to Case coordination without executing decisions."""
 
@@ -968,7 +1581,11 @@ def project_flow_run_event(
         select(CaseFlowRun.case_id).where(CaseFlowRun.flow_run_id == flow_run_id)
     ).all()
     for case_id in case_ids:
-        task_key = f"event:{event_type}:{node_attempt_id or flow_run_id}"
+        task_key = (
+            f"event:{run_event_cursor}"
+            if run_event_cursor is not None
+            else f"event:{event_type}:{node_attempt_id or flow_run_id}"
+        )
         if (
             db.scalar(
                 select(CaseAgentTask.id).where(
@@ -988,6 +1605,7 @@ def project_flow_run_event(
                 node_attempt_id=node_attempt_id,
                 input_context_json={
                     "event_type": event_type,
+                    "run_event_cursor": run_event_cursor,
                     "node_run_id": node_run_id,
                     "node_attempt_id": node_attempt_id,
                     "event": payload or {},
@@ -1011,23 +1629,16 @@ def reconcile_case_execution_state(db: Session, flow_run_id: str) -> None:
             continue
         changed = False
         if run.state == "COMPLETED" and stage.state == "ACTIVE":
-            stage.state = "COMPLETED"
+            stage.state = "REVIEW_PENDING"
             changed = True
-            next_stage = db.scalar(
-                select(CaseStage)
-                .where(CaseStage.case_id == item.id, CaseStage.position > stage.position)
-                .order_by(CaseStage.position)
-            )
-            if next_stage is None:
-                item.state = "COMPLETED"
-            elif next_stage.state == "PENDING":
-                next_stage.state = "ACTIVE"
         elif run.state == "CANCELLED" and stage.state == "ACTIVE":
-            item.state = "PAUSED"
+            if item.state != "PAUSED":
+                _pause_case(item, "EXECUTION_CANCELLED", "当前执行已被取消")
             changed = True
         if changed:
-            item.row_version += 1
-            _write_case_files(db, item)
+            if item.state != "PAUSED" or item.pause_reason != "EXECUTION_CANCELLED":
+                item.row_version += 1
+            write_case_files(db, item)
     db.flush()
 
 
@@ -1095,7 +1706,11 @@ def ingest_case_control_suggestion(
 
 
 def create_case_control_plan_for_binding(
-    db: Session, binding_id: str, payload: CaseControlPlanWrite
+    db: Session,
+    binding_id: str,
+    payload: CaseControlPlanWrite,
+    *,
+    retry_of_plan_id: str | None = None,
 ) -> dict[str, Any]:
     """Create a plan only inside the Case scope proven by its control Binding."""
 
@@ -1110,7 +1725,9 @@ def create_case_control_plan_for_binding(
             expected_stage_id=stage.id,
             actual_stage_id=payload.stage_id,
         )
-    return _create_case_control_plan(db, item, stage, payload, source_binding_id=binding_id)
+    return _create_case_control_plan(
+        db, item, stage, payload, source_binding_id=binding_id, retry_of_plan_id=retry_of_plan_id
+    )
 
 
 def _create_case_control_plan(
@@ -1122,6 +1739,7 @@ def _create_case_control_plan(
     source_binding_id: str | None,
     retry_of_plan_id: str | None = None,
 ) -> dict[str, Any]:
+    require_case_action(item, payload.action)
     existing = db.scalar(
         select(CaseControlPlan).where(
             CaseControlPlan.case_id == item.id,
@@ -1156,9 +1774,36 @@ def _create_case_control_plan(
         },
     )
     db.add(plan)
-    _write_case_files(db, item)
+    write_case_files(db, item)
     finish(db)
     return _control_plan_dict(plan)
+
+
+def _plan_snapshot(plan: CaseControlPlan) -> dict[str, Any]:
+    """Plain copy of a plan row, usable after a rollback expires or removes the ORM object."""
+
+    columns = CaseControlPlan.__table__.columns.keys()
+    return {name: getattr(plan, name) for name in columns}
+
+
+def _restore_plan_after_rollback(
+    db: Session, plan: CaseControlPlan, snapshot: dict[str, Any]
+) -> CaseControlPlan:
+    """Return a live plan row, re-inserting it when the session rollback removed it."""
+
+    try:
+        db.refresh(plan)
+        return plan
+    except Exception:
+        # ObjectDeletedError / InvalidRequestError: the row did not survive the rollback.
+        try:
+            db.expunge(plan)
+        except Exception:  # noqa: BLE001 - already detached
+            pass
+        restored = CaseControlPlan(**snapshot)
+        db.add(restored)
+        db.flush()
+        return restored
 
 
 def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[str, Any]:
@@ -1170,13 +1815,50 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
         raise not_found("case_control_plan", plan_id)
     if plan.state in {"SUCCEEDED", "CANCELLED"}:
         return _control_plan_dict(plan)
+    if plan.state == "FAILED":
+        raise DomainError(
+            plan.error_code or "CASE_CONTROL_PLAN_FAILED",
+            "此控制动作已失败，请创建关联重试，不会重复执行原计划",
+            409,
+            {"plan_id": plan.id, "state": plan.state},
+        )
     if plan.state == "EXECUTING":
         raise conflict("Case control plan is already executing", plan_id=plan.id)
-    if item.state in {"COMPLETED", "ARCHIVED"}:
-        raise illegal("terminal case cannot execute control plans", state=item.state)
+    require_case_action(item, plan.action)
+    plan_snapshot = _plan_snapshot(plan)
     stage = _stage(db, item, plan.stage_id)
-    if stage.state != "ACTIVE":
-        raise conflict("only the active Case stage can execute plans", state=stage.state)
+    allowed_stage_state = (
+        "REVIEW_PENDING"
+        if plan.action
+        in {
+            "COPY_CONTINUOUS_EXECUTION",
+            "COPY_STEPWISE_EXECUTION",
+            "ADVANCE_CASE_STAGE",
+            "COMPLETE_CASE",
+        }
+        else "ACTIVE"
+    )
+    if plan.action == "CONCLUDE_CASE" and stage.state in {
+        "ACTIVE",
+        "REVIEW_PENDING",
+    }:
+        allowed_stage_state = stage.state
+    if stage.state != allowed_stage_state:
+        # Versions can match here, so this is a precondition failure, not a concurrent edit.
+        # Report it as such, otherwise the coordinator keeps re-reading and waiting for a version
+        # change that can never make the stage ready.
+        raise DomainError(
+            "CASE_STAGE_STATE_NOT_READY",
+            f"{plan.action} 需要阶段处于 {allowed_stage_state}，当前为 {stage.state}；"
+            "这不是并发冲突，重新读取不会改变结果。请先让流程跑到可评审状态。",
+            409,
+            {"required_stage_state": allowed_stage_state, "stage_state": stage.state},
+        )
+    db.refresh(item, with_for_update=True)
+    db.refresh(stage)
+    require_case_action(item, plan.action)
+    if stage.state != allowed_stage_state:
+        raise conflict("Case stage changed while waiting to execute", state=stage.state)
     if plan.execution_flow_run_id != stage.current_execution_flow_run_id:
         raise conflict("plan no longer targets the current Case execution copy", plan_id=plan.id)
     plan.state = "VALIDATED"
@@ -1184,14 +1866,36 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
     finish(db)
     try:
         plan.state = "EXECUTING"
-        if plan.action == "CREATE_EXECUTION_COPY":
-            result = {"case": launch_case_stage(db, item.id, stage.id, CaseStageLaunchWrite())}
+        from flowweave.modules.cases.application.flow_tools import (
+            configure_execution,
+            validate_action_preconditions,
+        )
+
+        validate_action_preconditions(db, item, stage, plan)
+        if plan.action == "CONFIGURE_EXECUTION":
+            with savepoint(db):
+                result = configure_execution(db, stage, plan)
+        elif plan.action == "CREATE_EXECUTION_COPY":
+            with savepoint(db):
+                result = {"case": launch_case_stage(db, item.id, stage.id, CaseStageLaunchWrite())}
         elif plan.action == "START_EXECUTION":
             result = {
                 "decision": start_case_stage_execution(
-                    db, item.id, stage.id, CaseStageExecutionStartWrite(reason=plan.reason)
+                    db,
+                    item.id,
+                    stage.id,
+                    CaseStageExecutionStartWrite(reason=plan.reason),
+                    retry_plan_id=plan.id if plan.retry_of_plan_id else None,
                 )
             }
+            decision = result["decision"]
+            if decision.get("state") != "EXECUTED":
+                raise DomainError(
+                    "CASE_STAGE_START_NOT_EXECUTED",
+                    "阶段启动动作未执行成功",
+                    409,
+                    {"decision_id": decision.get("id"), "state": decision.get("state")},
+                )
         elif plan.action == "START_STEPWISE_NODE":
             if not stage.current_execution_flow_run_id:
                 raise conflict("Case stage has no execution copy", stage_id=stage.id)
@@ -1210,6 +1914,157 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
                     f"case-plan-stepwise-start:{plan.id}",
                 )
             }
+        elif plan.action in {"ACCEPT_STEPWISE_ATTEMPT", "REJECT_STEPWISE_ATTEMPT"}:
+            requested = plan.input_snapshot_json.get("requested", {})
+            attempt_id = str(requested.get("node_attempt_id") or "")
+            expected_version = requested.get("expected_attempt_state_version")
+            if (
+                not attempt_id
+                or not isinstance(expected_version, int)
+                or plan.node_attempt_id != attempt_id
+            ):
+                raise conflict("stepwise review lacks a frozen Attempt reference", plan_id=plan.id)
+            if plan.action == "ACCEPT_STEPWISE_ATTEMPT":
+                result = {
+                    "flow_run": orchestration.accept_attempt(
+                        db,
+                        attempt_id,
+                        AttemptVersionWrite(expected_state_version=expected_version),
+                        f"case-plan-accept:{plan.id}",
+                    )
+                }
+            else:
+                result = {
+                    "attempt": orchestration.reject_attempt(
+                        db,
+                        attempt_id,
+                        RejectWrite(
+                            expected_state_version=expected_version,
+                            reason=plan.reason,
+                            copy_input_bindings=bool(requested.get("copy_input_bindings", True)),
+                        ),
+                        f"case-plan-reject:{plan.id}",
+                    )
+                }
+        elif plan.action == "CANCEL_STEPWISE_ATTEMPT":
+            requested = plan.input_snapshot_json.get("requested", {})
+            attempt_id = str(requested.get("node_attempt_id") or "")
+            expected_version = requested.get("expected_attempt_state_version")
+            if (
+                not attempt_id
+                or not isinstance(expected_version, int)
+                or plan.node_attempt_id != attempt_id
+            ):
+                raise conflict("stepwise cancel lacks a frozen Attempt reference", plan_id=plan.id)
+            result = {
+                "attempt": orchestration.cancel_attempt(
+                    db,
+                    attempt_id,
+                    AttemptVersionWrite(expected_state_version=expected_version),
+                    f"case-plan-cancel:{plan.id}",
+                )
+            }
+        elif plan.action == "RERUN_STEPWISE_NODE":
+            if not stage.current_execution_flow_run_id or not plan.node_run_id:
+                raise conflict("Case rerun lacks an execution or node reference", plan_id=plan.id)
+            requested = plan.input_snapshot_json.get("requested", {})
+            node_key = str(requested.get("flow_node_key") or "")
+            if not node_key or requested.get("node_run_id") != plan.node_run_id:
+                raise conflict("stepwise rerun lacks a frozen node reference", plan_id=plan.id)
+            result = {
+                "draft": orchestration.reactivate_stepwise_node_for_rerun(
+                    db,
+                    stage.current_execution_flow_run_id,
+                    node_key,
+                    plan.node_run_id,
+                )
+            }
+        elif plan.action == "COPY_CONTINUOUS_EXECUTION":
+            source_run_id = stage.current_execution_flow_run_id
+            if not source_run_id:
+                raise conflict("Case stage has no execution copy", stage_id=stage.id)
+            requested = plan.input_snapshot_json.get("requested", {})
+            with savepoint(db):
+                copied = orchestration.copy_automatic_run_draft(
+                    db,
+                    source_run_id,
+                    AutomaticRunCopyWrite(name=requested.get("copy_name")),
+                )
+                copied_id = str(copied["id"])
+                stage.current_execution_flow_run_id = copied_id
+                stage.state = "ACTIVE"
+                db.add(CaseFlowRun(case_id=item.id, flow_run_id=copied_id))
+                item.row_version += 1
+                db.flush()
+                result = {
+                    "source_execution_flow_run_id": source_run_id,
+                    "execution_flow_run_id": copied_id,
+                }
+        elif plan.action == "COPY_STEPWISE_EXECUTION":
+            source_run_id = stage.current_execution_flow_run_id
+            source_run = db.get(FlowRun, source_run_id) if source_run_id else None
+            if source_run is None or source_run.parent_flow_run_id is None:
+                raise conflict("Case stage has no stepwise execution record", stage_id=stage.id)
+            requested = plan.input_snapshot_json.get("requested", {})
+            with savepoint(db):
+                copied = orchestration.copy_nested_stepwise_run_record(
+                    db,
+                    source_run.parent_flow_run_id,
+                    source_run.id,
+                    StepwiseRunRecordCopyWrite(name=requested.get("copy_name")),
+                )
+                copied_id = str(copied["id"])
+                stage.current_execution_flow_run_id = copied_id
+                stage.state = "ACTIVE"
+                db.add(CaseFlowRun(case_id=item.id, flow_run_id=copied_id))
+                item.row_version += 1
+                db.flush()
+                result = {
+                    "source_execution_flow_run_id": source_run.id,
+                    "execution_flow_run_id": copied_id,
+                }
+        elif plan.action == "ADVANCE_CASE_STAGE":
+            next_stage = db.scalar(
+                select(CaseStage)
+                .where(CaseStage.case_id == item.id, CaseStage.position > stage.position)
+                .order_by(CaseStage.position)
+                .limit(1)
+            )
+            if next_stage is None:
+                raise DomainError(
+                    "CASE_FINAL_STAGE_REQUIRES_COMPLETION",
+                    "这是最后一个阶段，不能推进；请改用 COMPLETE_CASE 并提供正式产物证据",
+                    409,
+                    {"required_action": "COMPLETE_CASE"},
+                )
+            stage.state = "COMPLETED"
+            next_stage.state = "ACTIVE"
+            item.row_version += 1
+            result = {
+                "completed_stage_key": stage.stage_key,
+                "active_stage_key": next_stage.stage_key,
+            }
+        elif plan.action == "COMPLETE_CASE":
+            requested = plan.input_snapshot_json.get("requested", {})
+            stage.state = "COMPLETED"
+            item.state = "COMPLETED"
+            item.row_version += 1
+            result = {
+                "completed_stage_key": stage.stage_key,
+                "evidence_artifact_version_ids": list(
+                    requested.get("evidence_artifact_version_ids") or []
+                ),
+            }
+        elif plan.action == "CONCLUDE_CASE":
+            # The coordinator may only PROPOSE. Nothing is cancelled or skipped until a human
+            # confirms; a rejection resumes the Case exactly as it was.
+            _pause_case(item, "CONCLUSION_PROPOSED", plan.reason)
+            result = {
+                "proposal": plan.reason,
+                "case_state": "PAUSED",
+                "next": "已提交结束提议并暂停场景，执行与阶段保持不变；由用户决定“确认结束”或"
+                "“继续”。被否决时你会收到通知，需重新读取最新状态后继续推进。",
+            }
         elif plan.action == "STOP_EXECUTION":
             if not stage.current_execution_flow_run_id:
                 raise conflict("Case stage has no execution copy", stage_id=stage.id)
@@ -1221,18 +2076,41 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
         else:
             raise illegal("Case control plan action is not yet dispatchable", action=plan.action)
     except Exception as exc:
+        # An orchestration command may roll the session back to report a stale version. That also
+        # discards a plan row created in the same transaction, so restore it before recording the
+        # failure; otherwise the handler itself crashes (ObjectDeletedError) and hides the cause.
+        plan = _restore_plan_after_rollback(db, plan, plan_snapshot)
         plan.state = "FAILED"
         plan.error_code = str(getattr(exc, "code", "CASE_CONTROL_PLAN_FAILED"))
         plan.result_json = {"code": plan.error_code}
+        if (
+            isinstance(exc, DomainError)
+            and plan.input_snapshot_json.get("requested", {}).get("expected_case_row_version")
+            is not None
+        ):
+            plan.result_json["validation"] = {
+                key: exc.details[key]
+                for key in ("field", "fields", "field_key", "field_keys", "node_key", "node_keys")
+                if key in exc.details
+            }
+        if isinstance(exc, DomainError) and exc.details.get("decision_id"):
+            plan.result_json = {**plan.result_json, "decision_id": exc.details["decision_id"]}
         plan.executed_at = now()
-        _write_case_files(db, item)
+        write_case_files(db, item)
         finish(db)
-        raise
+        if isinstance(exc, DomainError):
+            raise CaseActionFailure(exc.code, exc.message, exc.status, exc.details) from exc
+        raise CaseActionFailure(
+            plan.error_code or "CASE_CONTROL_PLAN_FAILED",
+            "场景控制动作执行失败",
+            500,
+            {"plan_id": plan.id},
+        ) from exc
     plan.state = "SUCCEEDED"
     plan.result_json = result
     plan.error_code = None
     plan.executed_at = now()
-    _write_case_files(db, item)
+    write_case_files(db, item)
     finish(db)
     return _control_plan_dict(plan)
 
@@ -1241,9 +2119,18 @@ def retry_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[str
     """Create a new auditable attempt for one failed, still-authorized plan."""
 
     item = _case(db, case_id)
-    failed = db.get(CaseControlPlan, plan_id)
+    failed = db.scalar(
+        select(CaseControlPlan)
+        .where(
+            CaseControlPlan.id == plan_id,
+            CaseControlPlan.case_id == item.id,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if failed is None or failed.case_id != item.id:
         raise not_found("case_control_plan", plan_id)
+    require_case_action(item, failed.action)
     if failed.state != "FAILED":
         raise conflict("only failed Case control plans can be retried", state=failed.state)
     if failed.action not in {
@@ -1251,6 +2138,10 @@ def retry_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[str
         "START_EXECUTION",
         "START_STEPWISE_NODE",
         "STOP_EXECUTION",
+        "COPY_CONTINUOUS_EXECUTION",
+        "COPY_STEPWISE_EXECUTION",
+        "ADVANCE_CASE_STAGE",
+        "COMPLETE_CASE",
     }:
         raise illegal("failed plan action is not eligible for human retry", action=failed.action)
     if failed.action == "CREATE_EXECUTION_COPY":
@@ -1261,6 +2152,18 @@ def retry_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[str
         stage = _current_stage_execution(
             db, item, _case_linked_run(db, item.id, str(failed.execution_flow_run_id or ""))
         )
+    existing_retry = db.scalar(
+        select(CaseControlPlan)
+        .where(
+            CaseControlPlan.case_id == item.id,
+            CaseControlPlan.retry_of_plan_id == failed.id,
+            CaseControlPlan.state.in_(("PENDING", "VALIDATED", "EXECUTING", "SUCCEEDED")),
+        )
+        .order_by(CaseControlPlan.created_at.desc(), CaseControlPlan.id.desc())
+        .limit(1)
+    )
+    if existing_retry is not None:
+        return _control_plan_dict(existing_retry)
     retry_number = (
         len(
             list(
@@ -1291,71 +2194,66 @@ def retry_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[str
 
 
 def advance_case_stepwise_execution(db: Session, flow_run_id: str) -> None:
-    """Plan and dispatch every newly-ready node of active Case stepwise copies."""
+    """Keep accepted Case outputs editable; the coordinator starts successors explicitly."""
 
-    stages = list(
-        db.scalars(
-            select(CaseStage).where(
-                CaseStage.current_execution_flow_run_id == flow_run_id,
-                CaseStage.execution_mode == "STEPWISE",
-                CaseStage.state == "ACTIVE",
-            )
+    # Formal acceptance already creates and port-binds downstream drafts. Starting
+    # them here would consume the coordinator's review/revision window and turn a
+    # durable execution fact into a business decision. CASE coordinators must read
+    # the fresh draft and submit START_STEPWISE_NODE themselves.
+    return None
+
+
+def rerun_case_stage(db: Session, case_id: str, stage_id: str) -> dict[str, Any]:
+    """Detach a finished execution so the stage can launch a fresh copy of its template.
+
+    The previous FlowRun, its CaseFlowRun link, sessions and Artifacts stay untouched; only the
+    stage pointer moves. A completed Case or a still-running execution cannot be rerun.
+    """
+
+    item = _case(db, case_id, lock=True)
+    if item.state == "ARCHIVED":
+        raise illegal("archived Case cannot rerun a stage", state=item.state)
+    if item.state == "PAUSED":
+        require_case_action(item, "CREATE_EXECUTION_COPY")
+    stage = _stage(db, item, stage_id)
+    if not stage.current_execution_flow_run_id:
+        raise conflict("Case stage has no execution to rerun", stage_id=stage.id)
+    if not stage.flow_run_id:
+        raise conflict("Case stage has no configured FlowRun template", stage_id=stage.id)
+    run = db.get(FlowRun, stage.current_execution_flow_run_id)
+    if run is not None and run.state not in {"COMPLETED", "FAILED", "CANCELLED"}:
+        raise DomainError(
+            "CASE_STAGE_EXECUTION_RUNNING",
+            "当前执行仍未结束，请先停止后再重新运行",
+            409,
+            {"stage_id": stage.id, "flow_run_id": run.id, "state": run.state},
         )
+    if _case_has_unresolved_control_plan(db, item.id):
+        raise DomainError("CASE_CONTROL_PLAN_UNRESOLVED", "仍有未完成的受控动作，请稍后再试", 409)
+    later = [
+        other
+        for other in db.scalars(select(CaseStage).where(CaseStage.case_id == item.id))
+        if other.position > stage.position and other.current_execution_flow_run_id
+    ]
+    if later:
+        raise conflict("后续阶段已经开始执行，不能重新运行前面的阶段", stage_id=stage.id)
+    db.execute(
+        CaseStage.__table__.update()
+        .where(
+            CaseStage.case_id == item.id,
+            CaseStage.id != stage.id,
+            CaseStage.state.in_(("ACTIVE", "REVIEW_PENDING")),
+        )
+        .values(state="PENDING")
     )
-    for stage in stages:
-        item = _case(db, stage.case_id)
-        if item.state in {"COMPLETED", "ARCHIVED"}:
-            continue
-        run = _case_linked_run(db, item.id, flow_run_id)
-        detail = orchestration.run_detail(db, run.id, include_artifacts=False)
-        snapshot = next(
-            (
-                candidate
-                for candidate in detail["snapshots"]
-                if candidate["id"] == detail["active_snapshot_id"]
-            ),
-            detail["snapshots"][-1] if detail["snapshots"] else None,
-        )
-        if snapshot is None:
-            continue
-        started_keys = {str(node_run["flow_node_snapshot_key"]) for node_run in detail["node_runs"]}
-        accepted_keys = {
-            str(node_run["flow_node_snapshot_key"])
-            for node_run in detail["node_runs"]
-            if node_run["state"] == "ACCEPTED"
-        }
-        for node_key, draft in (detail.get("stepwise_node_drafts") or {}).items():
-            if node_key in started_keys:
-                continue
-            predecessors = {
-                str(edge.get("source_instance_key") or "")
-                for edge in snapshot["definition"].get("edges", [])
-                if str(edge.get("target_instance_key") or "") == node_key
-            }
-            if not predecessors.issubset(accepted_keys):
-                continue
-            plan = _create_case_control_plan(
-                db,
-                item,
-                stage,
-                CaseControlPlanWrite(
-                    stage_id=stage.id,
-                    action="START_STEPWISE_NODE",
-                    idempotency_key=f"stepwise-next:{run.id}:{node_key}",
-                    reason=f"直接前驱已接受，启动已预配置节点 {node_key}。",
-                    input_snapshot={
-                        "flow_node_key": node_key,
-                        "draft_row_version": int(draft.get("row_version") or 1),
-                    },
-                ),
-                source_binding_id=None,
-            )
-            try:
-                execute_case_control_plan(db, item.id, str(plan["id"]))
-            except Exception:
-                # The plan records its dispatch failure; accepting a predecessor
-                # must not be rolled back by an autonomous successor failure.
-                continue
+    stage.state = "ACTIVE"
+    stage.current_execution_flow_run_id = None
+    if item.state == "COMPLETED":
+        item.state = "ACTIVE"
+    item.row_version += 1
+    write_case_files(db, item)
+    finish(db)
+    return _case_dict(db, item)
 
 
 def start_case_stage_execution(
@@ -1363,34 +2261,97 @@ def start_case_stage_execution(
     case_id: str,
     stage_id: str,
     payload: CaseStageExecutionStartWrite,
+    *,
+    retry_plan_id: str | None = None,
 ) -> dict[str, Any]:
-    """Start only the current Case-owned execution copy through audited services."""
+    """Start once; retries preserve failed decisions and cannot duplicate partial starts."""
 
     item = _case(db, case_id)
-    if item.state in {"COMPLETED", "ARCHIVED"}:
-        raise illegal("terminal case cannot start stages", state=item.state)
+    require_case_action(item, "START_EXECUTION")
     stage = _stage(db, item, stage_id)
     if stage.state != "ACTIVE":
         raise conflict("only the active Case stage can start", state=stage.state)
     if not stage.current_execution_flow_run_id:
         raise conflict("Case stage has no execution copy", stage_id=stage.id)
     run = _case_linked_run(db, item.id, stage.current_execution_flow_run_id)
+    # Match the orchestration lock so different retry requests cannot launch the
+    # same stage concurrently with different command identities.
+    db.refresh(run, with_for_update=True)
+    db.refresh(item)
+    db.refresh(stage)
+    require_case_action(item, "START_EXECUTION")
+    if stage.state != "ACTIVE" or stage.current_execution_flow_run_id != run.id:
+        raise conflict("Case stage changed while waiting to start")
     proposal_key = f"stage-start:{stage.id}:{run.id}"
-    existing = db.scalar(
-        select(CaseDecisionProposal).where(
+    previous = db.scalar(
+        select(CaseDecisionProposal)
+        .where(
             CaseDecisionProposal.case_id == item.id,
-            CaseDecisionProposal.proposal_key == proposal_key,
+            CaseDecisionProposal.flow_run_id == run.id,
+            CaseDecisionProposal.action == "START_STAGE_EXECUTION",
         )
+        .order_by(CaseDecisionProposal.created_at.desc(), CaseDecisionProposal.id.desc())
+        .limit(1)
     )
-    if existing is not None:
-        return _proposal_dict(existing)
+    retry_of_proposal_id: str | None = None
+    if retry_plan_id:
+        retry = db.get(CaseControlPlan, retry_plan_id)
+        if retry is None or retry.case_id != item.id:
+            raise not_found("case_control_plan", retry_plan_id)
+        failed = db.get(CaseControlPlan, retry.retry_of_plan_id) if retry.retry_of_plan_id else None
+        if (
+            failed is None
+            or any(
+                plan.case_id != item.id
+                or plan.stage_id != stage.id
+                or plan.execution_flow_run_id != run.id
+                or plan.action != "START_EXECUTION"
+                for plan in (retry, failed)
+            )
+            or failed.state != "FAILED"
+        ):
+            raise conflict("stage start retry no longer matches its failed plan")
+        proposal_key = f"stage-start:retry:{retry.id}"
+        repeated = db.scalar(
+            select(CaseDecisionProposal).where(
+                CaseDecisionProposal.case_id == item.id,
+                CaseDecisionProposal.proposal_key == proposal_key,
+            )
+        )
+        if repeated is not None:
+            return _stage_start_result(repeated)
+        previous_id = failed.result_json.get("decision_id")
+        if isinstance(previous_id, str):
+            previous = _proposal(db, item.id, previous_id)
+            if previous.flow_run_id != run.id or previous.action != "START_STAGE_EXECUTION":
+                raise conflict("failed plan references another stage start")
+        if previous is not None:
+            if previous.state != "FAILED":
+                return _stage_start_result(previous)
+            retry_of_proposal_id = previous.id
+        # An earlier request may have committed before its response failed. Do not
+        # use a fresh start key against an existing attempt/frozen automatic plan.
+        started = db.scalar(select(NodeRun.id).where(NodeRun.flow_run_id == run.id).limit(1))
+        if started or (stage.execution_mode == "CONTINUOUS" and run.state != "DRAFT"):
+            raise DomainError(
+                "CASE_START_RECONCILIATION_REQUIRED",
+                "当前执行已有启动事实，请先核对原执行，不能重复启动",
+                409,
+                {"flow_run_id": run.id, "decision_id": retry_of_proposal_id},
+            )
+    elif previous is not None:
+        return _stage_start_result(previous)
     proposal = CaseDecisionProposal(
         case_id=item.id,
         flow_run_id=run.id,
         proposal_key=proposal_key,
         action="START_STAGE_EXECUTION",
         reason=payload.reason.strip(),
-        payload_json={"stage_id": stage.id, "execution_mode": stage.execution_mode},
+        payload_json={
+            "stage_id": stage.id,
+            "execution_mode": stage.execution_mode,
+            **({"retry_of_proposal_id": retry_of_proposal_id} if retry_of_proposal_id else {}),
+        },
     )
     db.add(proposal)
     db.flush()
@@ -1436,12 +2397,21 @@ def _execute_case_stage_start(
         proposal.result_json = {"code": getattr(exc, "code", "CASE_STAGE_START_FAILED")}
         proposal.executed_at = now()
         finish(db)
-        raise
+        if isinstance(exc, DomainError):
+            raise CaseActionFailure(
+                exc.code,
+                exc.message,
+                exc.status,
+                {**exc.details, "decision_id": proposal.id},
+            ) from exc
+        raise CaseActionFailure(
+            "CASE_STAGE_START_FAILED", "阶段启动失败", 500, {"decision_id": proposal.id}
+        ) from exc
     proposal.state = "EXECUTED"
     proposal.result_json = result
     proposal.executed_at = now()
     item.row_version += 1
-    _write_case_files(db, item)
+    write_case_files(db, item)
     finish(db)
     return _proposal_dict(proposal)
 
@@ -1450,8 +2420,7 @@ def create_case_decision_proposal(
     db: Session, case_id: str, payload: CaseDecisionProposalWrite
 ) -> dict[str, Any]:
     item = _case(db, case_id)
-    if item.state in {"COMPLETED", "ARCHIVED"}:
-        raise illegal("terminal case cannot create decisions", state=item.state)
+    require_case_action(item, payload.action)
     existing = db.scalar(
         select(CaseDecisionProposal).where(
             CaseDecisionProposal.case_id == item.id,
@@ -1497,6 +2466,7 @@ def create_case_decision_proposal(
 def execute_case_decision_proposal(db: Session, case_id: str, proposal_id: str) -> dict[str, Any]:
     item = _case(db, case_id)
     proposal = _proposal(db, item.id, proposal_id)
+    require_case_action(item, proposal.action)
     if proposal.state != "PROPOSED":
         raise illegal("Case decision has already executed", state=proposal.state)
     run = _case_linked_run(db, proposal.case_id, proposal.flow_run_id)
@@ -1544,17 +2514,108 @@ def execute_case_decision_proposal(db: Session, case_id: str, proposal_id: str) 
             ):
                 db.add(CaseFlowRun(case_id=proposal.case_id, flow_run_id=copied["id"]))
             result = {"flow_run": copied}
+        else:
+            raise illegal("Case decision action is not dispatchable", action=proposal.action)
     except Exception as exc:
         proposal.state = "FAILED"
         proposal.result_json = {"code": getattr(exc, "code", "CASE_DECISION_EXECUTION_FAILED")}
         proposal.executed_at = now()
         finish(db)
-        raise
+        if isinstance(exc, DomainError):
+            raise CaseActionFailure(exc.code, exc.message, exc.status, exc.details) from exc
+        raise CaseActionFailure(
+            "CASE_DECISION_EXECUTION_FAILED",
+            "场景决策执行失败",
+            500,
+            {"decision_id": proposal.id},
+        ) from exc
     proposal.state = "EXECUTED"
     proposal.result_json = result
     proposal.executed_at = now()
     finish(db)
     return _proposal_dict(proposal)
+
+
+def request_case_start(
+    db: Session, case_id: str, payload: CaseStartWrite, idempotency_key: str
+) -> dict[str, Any]:
+    """Raise the one start event for a Case; the coordinator Agent decides everything else.
+
+    The platform neither copies nor launches a stage. A replayed key returns the same Case.
+    """
+
+    from flowweave.modules.cases.application.coordination import reserve_control_round
+    from flowweave.modules.cases.application.feedback import record_case_change
+
+    if not idempotency_key.strip() or len(idempotency_key) > 120:
+        raise DomainError("CASE_START_KEY_INVALID", "启动请求标识长度应为 1–120", 422)
+    item = _case(db, case_id, lock=True)
+    if item.row_version != payload.expected_row_version:
+        raise conflict(
+            "case was modified", expected=payload.expected_row_version, actual=item.row_version
+        )
+    require_case_action(item, "START_AGENT")
+    saved = item.session_config_json or {}
+    if not saved.get("model_provider_id") or not saved.get("model_name"):
+        raise DomainError("CASE_AGENT_CONFIG_REQUIRED", "请先保存 Agent 配置", 409)
+    stages = list(
+        db.scalars(
+            select(CaseStage)
+            .where(CaseStage.case_id == item.id)
+            .order_by(CaseStage.position, CaseStage.id)
+        )
+    )
+    validate_case_start_path(db, stages)
+    has_session = bool(item.control_conversation_binding_id)
+    if payload.session == "NEW" or not has_session:
+        # A fresh round freezes the current Case snapshot, including this start request, in its
+        # first message, so it is itself the start event.
+        return reserve_control_round(
+            db, case_id, CaseControlConversationWrite.model_validate(saved), idempotency_key
+        )
+    recorded = record_case_change(
+        db, item, "CASE_START_REQUESTED", request_key=f"{idempotency_key}:{payload.note[:40]}"
+    )
+    if not recorded:
+        raise DomainError("CASE_AGENT_NOT_READY", "协调会话尚未就绪，请稍后再试", 409)
+    item.row_version += 1
+    finish(db)
+    return _case_dict(db, item)
+
+
+def _validate_stepwise_template_structure(db: Session, run_id: str) -> dict[str, Any]:
+    """A stage template only has to be a valid stepwise record with a resolvable start node.
+
+    Node drafts are intentionally not required: the coordinator Agent configures them on the
+    execution copy from the Case materials before it starts anything.
+    """
+
+    readiness = orchestration.stepwise_record_template_readiness(db, run_id)
+    return {
+        "start_node_key": readiness["start_node_key"],
+        "reachable_node_keys": readiness["reachable_node_keys"],
+    }
+
+
+def validate_case_start_path(db: Session, stages: list[CaseStage]) -> None:
+    if not stages or any(not stage.flow_run_id for stage in stages):
+        raise DomainError("CASE_PATH_INCOMPLETE", "请先配置完整的 Case 路径", 409)
+    for stage in stages:
+        template = db.get(FlowRun, stage.flow_run_id)
+        if template is None:
+            raise DomainError("CASE_TEMPLATE_UNAVAILABLE", "流程模板已不可用，请重新配置路径", 409)
+        if stage.execution_mode == "STEPWISE":
+            if template.run_mode != "MANUAL" or not template.parent_flow_run_id:
+                raise DomainError("CASE_TEMPLATE_UNAVAILABLE", "逐步流程模板不可用", 409)
+            _validate_stepwise_template_structure(db, template.id)
+        else:
+            plan = template.automation_plan_json or {}
+            if (
+                template.run_mode != "AUTOMATIC"
+                or not plan.get("start_node_key")
+                or not plan.get("readiness", {}).get("ready")
+            ):
+                raise DomainError("CASE_TEMPLATE_UNAVAILABLE", "连续流程模板配置不完整", 409)
 
 
 def create_case_control_conversation(
@@ -1563,41 +2624,6 @@ def create_case_control_conversation(
     payload: CaseControlConversationWrite,
     idempotency_key: str,
 ) -> dict[str, Any]:
-    item = _case(db, case_id)
-    if item.control_conversation_binding_id:
-        return _case_dict(db, item)
-    workspace = agent_workspaces.ensure_default_agent_workspace(db)
-    if item.control_work_directory_id is None:
-        directory = agent_workspaces.create_case_work_directory(
-            db, workspace.id, item.id, f"事项 · {item.name}"
-        )
-        item.control_work_directory_id = str(directory["id"])
-    _write_case_files(db, item)
-    created = conversations.bootstrap_conversation(
-        db,
-        workspace.id,
-        work_directory_id=item.work_directory_id or item.control_work_directory_id,
-        model_provider_id=payload.model_provider_id,
-        model_name=payload.model_name,
-        reasoning_effort=payload.reasoning_effort,
-        capability_version_ids=tuple(payload.capability_version_ids),
-        credential_ids=tuple(payload.credential_ids),
-        content=(
-            f"你是事项“{item.name}”的协调 Agent。\n\n"
-            f"先读取 {user_runtime_project_root(workspace.id)}"
-            f"/.flowweave/cases/{item.id}/case.toml "
-            "和同目录中的 memory.md；"
-            "case.toml 是平台投影的当前事项、阶段和 FlowRun 摘要，"
-            "memory.md 用于沉淀可复用工作记忆。\n\n"
-            f"事项说明：{item.description}\n\n"
-            f"事项目标：{item.objective or '尚未填写'}\n\n"
-            "仅在当前事项工作目录中工作。基于可审计事实协助梳理阶段、风险和后续建议；"
-            "不得直接修改流程模板或已启动的流程节点。"
-        ),
-        idempotency_key=idempotency_key,
-    )
-    item = _case(db, case_id)
-    item.control_conversation_binding_id = str(created["conversation"]["id"])
-    item.row_version += 1
-    finish(db)
-    return _case_dict(db, item)
+    from flowweave.modules.cases.application.coordination import reserve_control_round
+
+    return reserve_control_round(db, case_id, payload, idempotency_key)

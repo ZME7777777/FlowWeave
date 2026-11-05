@@ -8,6 +8,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    ForeignKey,
     Integer,
     LargeBinary,
     String,
@@ -549,3 +550,45 @@ __all__ = (
     "CapabilityCollection",
     "CapabilityCollectionItem",
 )
+
+
+class MCPAuthenticationBinding(Base):
+    """User-owned authentication default; shared capability contents stay immutable."""
+
+    __tablename__ = "mcp_authentication_bindings"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_user_id", "capability_version_id", name="uq_mcp_authentication_owner_version"
+        ),
+        CheckConstraint("strategy IN ('none', 'bearer')", name="ck_mcp_authentication_strategy"),
+        CheckConstraint("row_version > 0", name="ck_mcp_authentication_version"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    capability_version_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("capability_versions.id", ondelete="CASCADE"), index=True
+    )
+    strategy: Mapped[str] = mapped_column(String(20), default="none")
+    credential_id: Mapped[str | None] = mapped_column(String(36))
+    row_version: Mapped[int] = mapped_column(Integer, default=1)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class MCPAuthenticationUse(Base):
+    """Non-secret audit of the credential reference selected at native creation."""
+
+    __tablename__ = "mcp_authentication_uses"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_user_id",
+            "consumer_id",
+            "capability_version_id",
+            name="uq_mcp_authentication_use",
+        ),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    consumer_id: Mapped[str] = mapped_column(String(100), index=True)
+    capability_version_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("capability_versions.id", ondelete="CASCADE"), index=True
+    )
+    reference_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

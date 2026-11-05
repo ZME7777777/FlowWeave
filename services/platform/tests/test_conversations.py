@@ -531,6 +531,42 @@ def test_attachment_aliases_are_hidden_from_message_body() -> None:
     assert annotations == ()
 
 
+def test_workspace_reference_aliases_are_distinct_from_attachment_aliases() -> None:
+    attachment_path = (
+        "/runtime/workspace/project/uploads/"
+        "00000000-0000-0000-0000-000000000001-0123456789abcdef0123456789abcdef--notes.txt"
+    )
+    workspace_reference = {
+        "path": "/runtime/workspace/project/src/main.ts",
+        "kind": "file",
+        "display_name": "main.ts",
+    }
+
+    prompt, _image_urls = session_conversations.message_payload(
+        "请比较 @附件1 与 @本地文件1",
+        ({"path": attachment_path, "filename": "notes.txt"},),
+        (),
+        (workspace_reference,),
+    )
+
+    payload = json.loads(prompt.rpartition(session_conversations._MESSAGE_CONTEXT_V5_MARKER)[2])
+    assert payload["attachment_aliases"] == [
+        {"alias": "@附件1", "filename": "notes.txt", "path": attachment_path}
+    ]
+    assert payload["workspace_reference_aliases"] == [
+        {
+            "alias": "@本地文件1",
+            "filename": "main.ts",
+            "path": "/runtime/workspace/project/src/main.ts",
+        }
+    ]
+    display_content, _references, workspace_references, _annotations = (
+        session_conversations.project_conversation_references(prompt)
+    )
+    assert display_content == "请比较 @附件1 与 @本地文件1"
+    assert workspace_references == (workspace_reference,)
+
+
 def test_conversation_references_are_resolved_by_formal_native_event_id() -> None:
     class Runtime:
         def read_event(self, _handle: object, event_id: str) -> RuntimeEvent | None:
@@ -797,6 +833,84 @@ def test_terminal_assistant_message_ids_keeps_current_final_and_excludes_progres
     )
 
     assert terminal_assistant_message_ids(batch) == frozenset({"final"})
+
+
+def _goal_batch(*, active: bool, status: str) -> RuntimeEventBatch:
+    return RuntimeEventBatch(
+        events=(
+            RuntimeEvent("goal-user", "MESSAGE", {"parent_id": "__root__", "source": "user"}),
+            RuntimeEvent("round-1", "MESSAGE", {"parent_id": "goal-user", "source": "agent"}),
+            RuntimeEvent(
+                "judge-followup",
+                "MESSAGE",
+                {
+                    "parent_id": "round-1",
+                    "source": "user",
+                    "goal_followup": {"iteration": 1, "missing": "x"},
+                },
+            ),
+            RuntimeEvent("round-2", "MESSAGE", {"parent_id": "judge-followup", "source": "agent"}),
+            RuntimeEvent(
+                "goal-state",
+                "STATE",
+                {
+                    "parent_id": "round-2",
+                    "goal_status": {"active": active, "status": status, "iteration": 2},
+                },
+            ),
+        ),
+        cursor="round-2",
+        result=RuntimeResult(
+            status="COMPLETED",
+            completion_event_id="round-2",
+            completion_event_kind="ASSISTANT_MESSAGE",
+        ),
+    )
+
+
+def test_terminal_assistant_message_ids_treats_goal_rounds_as_progress_until_the_goal_ends() -> None:
+    # The Judge follow-up is a loop control input, not a new user turn, so the
+    # round it answers is never a final reply.
+    running = terminal_assistant_message_ids(_goal_batch(active=True, status="running"))
+    assert "round-1" not in running
+    # While the loop is still active even the latest finished run is only a round.
+    assert running == frozenset()
+
+
+def test_terminal_assistant_message_ids_keeps_only_the_last_goal_round_as_final() -> None:
+    done = terminal_assistant_message_ids(_goal_batch(active=False, status="complete"))
+    assert done == frozenset({"round-2"})
+
+
+def test_terminal_assistant_message_ids_marks_idle_branch_leaf_reply_after_fork() -> None:
+    """A fork stops on the copied reply: it is the leaf of a finished turn with no result."""
+
+    batch = RuntimeEventBatch(
+        events=(
+            RuntimeEvent("user", "MESSAGE", {"parent_id": "__root__", "source": "user"}),
+            RuntimeEvent("progress", "MESSAGE", {"parent_id": "user", "source": "agent"}),
+            RuntimeEvent("reply", "MESSAGE", {"parent_id": "progress", "source": "agent"}),
+        ),
+        cursor="reply",
+        result=None,
+        readiness=RuntimeInputReadiness(ready=True, execution_status="idle"),
+    )
+
+    assert terminal_assistant_message_ids(batch) == frozenset({"reply"})
+
+
+def test_terminal_assistant_message_ids_leaf_reply_not_final_while_running() -> None:
+    batch = RuntimeEventBatch(
+        events=(
+            RuntimeEvent("user", "MESSAGE", {"parent_id": "__root__", "source": "user"}),
+            RuntimeEvent("progress", "MESSAGE", {"parent_id": "user", "source": "agent"}),
+        ),
+        cursor="progress",
+        result=RuntimeResult(status="RUNNING"),
+        readiness=RuntimeInputReadiness(ready=False, execution_status="running"),
+    )
+
+    assert terminal_assistant_message_ids(batch) == frozenset()
 
 
 def test_hydration_defers_formal_current_view_metrics_until_context_refresh(

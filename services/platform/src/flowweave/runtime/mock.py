@@ -24,6 +24,7 @@ from flowweave.runtime.base import (
     RuntimeMCPProbeResult,
     RuntimeMessageSearchResult,
     RuntimePendingConfirmation,
+    RuntimePendingQuestion,
     RuntimePluginValidationRequest,
     RuntimePluginValidationResult,
     RuntimeProvider,
@@ -144,6 +145,18 @@ class MockRuntime:
         self._git_identities: dict[str, tuple[str, str]] = {}
         self._profile_git_roots: set[str] = set()
         self._loaded_plugins: dict[str, set[str]] = {}
+
+    def workspace_git_operation(
+        self,
+        handle: RuntimeHandle,
+        repository_path: str,
+        action: str,
+        *,
+        ref: str = "",
+        expected_head: str = "",
+        expected_ref: str = "",
+    ) -> None:
+        raise DomainError("AGENT_WORKSPACE_GIT_UNAVAILABLE", "模拟环境未连接 Git 远端", 503)
 
     def workspace_git_identity(
         self,
@@ -375,6 +388,11 @@ class MockRuntime:
     def switch_model(self, handle: RuntimeHandle, provider: RuntimeProvider) -> None:
         del handle, provider
 
+    def restore_condenser_credentials(
+        self, handle: RuntimeHandle, provider: RuntimeProvider
+    ) -> None:
+        del handle, provider
+
     def load_plugin(self, handle: RuntimeHandle, plugin_ref: str) -> None:
         self._loaded_plugins.setdefault(handle.conversation_id or "", set()).add(plugin_ref)
 
@@ -407,7 +425,8 @@ class MockRuntime:
             ).strip("._-")[:181]
             or "attachment"
         )
-        return f"{handle.workspace_root}/uploads/{owner}-{uuid4().hex}--{safe_name}"
+        working_directory = handle.working_directory or handle.workspace_root
+        return f"{working_directory}/.uploads/{owner}-{uuid4().hex}--{safe_name}"
 
     def workspace_snapshot(self, handle: RuntimeHandle, path: str) -> RuntimeWorkspaceSnapshot:
         del handle
@@ -491,6 +510,10 @@ class MockRuntime:
         return result
 
     def get_pending_confirmation(self, handle: RuntimeHandle) -> RuntimePendingConfirmation | None:
+        del handle
+        return None
+
+    def get_pending_question(self, handle: RuntimeHandle) -> RuntimePendingQuestion | None:
         del handle
         return None
 
@@ -592,6 +615,17 @@ class MockRuntime:
             leaf_event_id=fork_handle.cursor,
             reset_metrics=reset_metrics,
         )
+
+    def append_message(self, handle: RuntimeHandle, content: str) -> RuntimeResult:
+        events = self._events.setdefault(handle.job_id, [])
+        cursor = str(len(events) + 2)
+        events.append(RuntimeEvent(cursor, "MESSAGE", {"source": "user", "content": content}))
+        return RuntimeResult(status="IDLE", cursor=cursor)
+
+    def run_pending_message(self, handle: RuntimeHandle, event_id: str) -> RuntimeResult:
+        if not any(event.cursor == event_id for event in self._events.get(handle.job_id, [])):
+            raise DomainError("RUNTIME_MESSAGE_IDENTITY_UNAVAILABLE", "Message not found", 409)
+        return self.run(handle)
 
     def send_message(
         self, handle: RuntimeHandle, content: str, image_urls: tuple[str, ...] = ()

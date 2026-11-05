@@ -1,5 +1,6 @@
-import { BookOpen, Check, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, PanelTop, Pencil, PlugZap, Quote, Search, ShieldCheck, Sparkles, SquareTerminal, Workflow, Wrench } from 'lucide-react';
-import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
+import { ViewportPopover } from './ViewportPopover';
+import { BookOpen, Box, Check, CircleCheck, Circle, MessageCircleQuestion, ChevronDown, ChevronRight, CircleAlert, ClipboardList, Copy, ExternalLink, Eye, FileCode2, FileCog, FileJson, FilePenLine, FilePlus2, FileText, FileType2, GitFork, Link, LoaderCircle, PanelRightOpen, PanelTop, Pencil, PlugZap, Quote, Search, ShieldCheck, Sparkles, SquareTerminal, Target, Workflow, Wrench } from 'lucide-react';
+import { createContext, Fragment, lazy, useContext, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { AgentActivitySummary, AgentAttachment, AgentConversationAnnotation, AgentConversationReference, AgentWorkspaceReference, OpenHandsConversationEvent, RuntimeTaskControlSnapshot } from '../types';
 import { SubagentAvatar } from './SubagentAvatar';
 import { FileTypeIcon } from './FileTypeIcon';
@@ -8,9 +9,12 @@ import { useEscapeClose } from './useEscapeClose';
 import { subagentAvatarSlotForEvent, subagentAvatarSlots, type SubagentAvatarSlot } from '../utils/subagentAvatar';
 import { workspaceFileChanges, workspaceRelativePath, type WorkspaceFileChange } from './agent-session/fileChanges';
 import { isFlowWeaveInternalProtocolMessage, isFlowWeaveMessageContext, isOpenHandsAgentReply, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, parseOpenHandsEventTime, projectFlowWeaveMessageContext } from './conversationEvents';
+import { conversationSearchPattern } from './conversationSearch';
+import { ConversationTurnWindow } from './ConversationTurnWindow';
+import { useConversationTurnWindow, type ConversationTurnLayouts } from './useConversationTurnWindow';
 import './conversation-surface.css';
 
-type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation' | 'security';
+type ItemKind = 'user' | 'assistant' | 'thought' | 'tool' | 'error' | 'condensation' | 'goal' | 'security';
 
 interface Item {
   event: OpenHandsConversationEvent;
@@ -33,6 +37,8 @@ interface Turn {
   /** Wall-clock periods split only after a formal interruption. */
   processSegments: ProcessSegment[];
   assistant?: Item;
+  /** Every assistant reply of the turn in order; a Goal loop answers once per round. */
+  replies?: Item[];
   activity: Item[];
 }
 
@@ -81,6 +87,15 @@ interface ConversationTextHighlight {
   eventId: string;
   quote: string;
   compactStart?: number;
+}
+
+export interface ConversationSearchLocation {
+  bindingId: string;
+  eventId: string;
+  query: string;
+  matchIndex: number;
+  eventIds: string[];
+  navigationId: number;
 }
 
 interface ConversationHighlightRect {
@@ -364,8 +379,8 @@ export function ConversationReferencePreview({ reference, title, onClose, onLoca
 
 const ConversationMarkdown = lazy(() => import('./ConversationMarkdown').then(module => ({ default: module.ConversationMarkdown })));
 
-function MessageMarkdown({ children, reveal = false, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl }: { children: string; reveal?: boolean; onOpenWorkspaceFile?: (href: string) => boolean; onOpenBrowser?: (href: string) => boolean; onOpenImage?: (src: string, alt?: string) => void; workspaceImageUrl?: (href: string) => string | undefined }) {
-  return <Suspense fallback={<div className="conversation-markdown-loading">正在渲染消息…</div>}><ConversationMarkdown reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl}>{children}</ConversationMarkdown></Suspense>;
+function MessageMarkdown({ children, reveal = false, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl, preserveLiteralTrailingBackslashContinuations = false }: { children: string; reveal?: boolean; onOpenWorkspaceFile?: (href: string) => boolean; onOpenBrowser?: (href: string) => boolean; onOpenImage?: (src: string, alt?: string) => void; workspaceImageUrl?: (href: string) => string | undefined; preserveLiteralTrailingBackslashContinuations?: boolean }) {
+  return <Suspense fallback={<div className="conversation-markdown-loading">正在渲染消息…</div>}><ConversationMarkdown reveal={reveal} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl} preserveLiteralTrailingBackslashContinuations={preserveLiteralTrailingBackslashContinuations}>{children}</ConversationMarkdown></Suspense>;
 }
 
 interface CandidateOutput { fieldKey: string; artifactType: 'URL' | 'FILE'; value: string }
@@ -469,6 +484,10 @@ function itemsFor(event: OpenHandsConversationEvent, taskRetryError = false): It
       ? event.payload.display_content
       : isFlowWeaveMessageContext(content) ? '' : content;
     if (isUser && isFlowWeaveInternalProtocolMessage(content)) return [];
+    // The Goal loop's own follow-up after a failed audit is loop control input,
+    // not something the person typed: keep it inside the running turn.
+    const goalFollowup = event.payload.goal_followup;
+    if (isUser && goalFollowup) return [{ event, kind: 'goal', title: `目标未达成 · 第 ${goalFollowup.iteration} 轮追问`, content: goalFollowup.missing }];
     if (isUser) return [{ event, kind: 'user', title: '', content: displayContent }];
     if (isOpenHandsAgentReply(event)) return [{ event, kind: 'assistant', title: '', content }];
     if (isOpenHandsEmptyResponseRecovery(event)) return [];
@@ -483,6 +502,7 @@ function itemsFor(event: OpenHandsConversationEvent, taskRetryError = false): It
   }
   if (event.event_type === 'CONDENSATION_REQUESTED') return [{ event, kind: 'condensation', title: '开始压缩上下文', content: '' }];
   if (event.event_type === 'CONDENSATION_COMPLETED') return [{ event, kind: 'condensation', title: '压缩完成', content: '' }];
+  if (event.payload.goal_status) return [];
   if (event.event_type === 'SECURITY_ANALYSIS') return [{ event, kind: 'security', title: '安全分析', content: '' }];
   if (event.event_type === 'TOOL_CALL') return [{ event, kind: 'tool', title: eventName, content: thought || content }];
   // Its native observation only confirms that text was logged, so rendering it
@@ -511,13 +531,23 @@ function itemsFor(event: OpenHandsConversationEvent, taskRetryError = false): It
   return content ? [{ event, kind: 'thought', title: eventName, content }] : [];
 }
 
+const userAncestorCache = new WeakMap<Map<string, OpenHandsConversationEvent>, Map<string, string | undefined>>();
+
 function userAncestorId(
   event: OpenHandsConversationEvent,
   byId: Map<string, OpenHandsConversationEvent>,
 ): string | undefined {
+  const cached = userAncestorCache.get(byId) ?? new Map<string, string | undefined>();
+  userAncestorCache.set(byId, cached);
+  if (cached.has(event.id)) return cached.get(event.id);
   const visited = new Set<string>();
+  let owner: string | undefined;
   let current: OpenHandsConversationEvent | undefined = event;
   while (current && !visited.has(current.id)) {
+    if (cached.has(current.id)) {
+      owner = cached.get(current.id);
+      break;
+    }
     visited.add(current.id);
     const source = String(current.payload.source ?? '').toLowerCase();
     const content = typeof current.payload.content === 'string' ? current.payload.content : '';
@@ -525,11 +555,17 @@ function userAncestorId(
       current.event_type === 'MESSAGE'
       && (source === 'user' || source === 'human')
       && !isFlowWeaveInternalProtocolMessage(content)
-    ) return current.id;
+      // A Goal-loop follow-up is control input inside the running turn, not a boundary.
+      && !current.payload.goal_followup
+    ) {
+      owner = current.id;
+      break;
+    }
     const parentId: string | null | undefined = current.payload.parent_id;
     current = parentId ? byId.get(parentId) : undefined;
   }
-  return undefined;
+  for (const id of visited) cached.set(id, owner);
+  return owner;
 }
 
 function itemUserAncestorId(
@@ -545,6 +581,39 @@ function itemUserAncestorId(
   const action = (typeof actionId === 'string' ? actionsById.get(actionId) : undefined)
     ?? (typeof toolCallId === 'string' ? actionsByToolCallId.get(toolCallId) : undefined);
   return action ? userAncestorId(action, byId) : undefined;
+}
+
+function unresolvedParentId(
+  event: OpenHandsConversationEvent,
+  byId: Map<string, OpenHandsConversationEvent>,
+): string | undefined {
+  const visited = new Set<string>();
+  let current: OpenHandsConversationEvent | undefined = event;
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    const parentId = current.payload.parent_id;
+    if (!parentId || parentId === '__root__') return undefined;
+    const parent = byId.get(parentId);
+    if (!parent) return parentId;
+    current = parent;
+  }
+  return undefined;
+}
+
+function orphanTurnKey(
+  event: OpenHandsConversationEvent,
+  byId: Map<string, OpenHandsConversationEvent>,
+  actionsById: Map<string, OpenHandsConversationEvent>,
+  actionsByToolCallId: Map<string, OpenHandsConversationEvent>,
+): string {
+  const directParent = unresolvedParentId(event, byId);
+  if (directParent) return `missing-parent:${directParent}`;
+  const actionId = event.payload.action_id;
+  const toolCallId = event.payload.tool_call_id;
+  const action = (typeof actionId === 'string' ? actionsById.get(actionId) : undefined)
+    ?? (typeof toolCallId === 'string' ? actionsByToolCallId.get(toolCallId) : undefined);
+  const actionParent = action ? unresolvedParentId(action, byId) : undefined;
+  return actionParent ? `missing-parent:${actionParent}` : `orphan:${event.id}`;
 }
 
 function isHistoricalAutoTitleError(
@@ -579,7 +648,7 @@ function isHistoricalAutoTitleError(
 function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
   const turns: Turn[] = [];
   const turnsByUserId = new Map<string, { turn: Turn; messageIndex: number }>();
-  const orphanTurnsByEventId = new Map<string, Turn>();
+  const orphanTurnsByKey = new Map<string, Turn>();
   const ordered = orderOpenHandsConversationEvents(events);
   const byId = new Map(ordered.map(event => [event.id, event]));
   const actionEvents = ordered.filter(event => event.event_type === 'TOOL_CALL');
@@ -629,19 +698,26 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
       // event rendered, so a late process event cannot move under an older turn.
       const ownerUserId = itemUserAncestorId(item.event, byId, actionsById, actionsByToolCallId);
       const owner = ownerUserId ? turnsByUserId.get(ownerUserId) : undefined;
-      const turn = owner?.turn ?? orphanTurnsByEventId.get(item.event.id) ?? (() => {
+      const unresolvedKey = owner ? owner.turn.renderKey : orphanTurnKey(item.event, byId, actionsById, actionsByToolCallId);
+      const turn = owner?.turn ?? orphanTurnsByKey.get(unresolvedKey) ?? (() => {
         const orphan: Turn = {
           id: item.event.id,
-          renderKey: item.event.id,
+          renderKey: unresolvedKey,
           processSegments: [{ items: [], messageIndex: 0, startedBy: item }],
           activity: [],
         };
         turns.push(orphan);
-        orphanTurnsByEventId.set(item.event.id, orphan);
+        orphanTurnsByKey.set(unresolvedKey, orphan);
         return orphan;
       })();
-      if (item.kind === 'assistant') turn.assistant = item;
-      else {
+      const currentSegment = turn.processSegments.at(-1);
+      if (currentSegment?.interruptedBy && item.kind !== 'assistant' && item.kind !== 'error') {
+        turn.processSegments.push({ items: [], messageIndex: owner?.messageIndex ?? 0, startedBy: item });
+      }
+      if (item.kind === 'assistant') {
+        (turn.replies ??= []).push(item);
+        turn.assistant = item;
+      } else {
         turn.activity.push(item);
         turn.processSegments.at(-1)?.items.push(item);
       }
@@ -662,14 +738,99 @@ function turnsFor(events: OpenHandsConversationEvent[]): Turn[] {
     .map(({ turn }) => turn);
 }
 
-function fileChangesForTurn(
-  events: OpenHandsConversationEvent[],
-  turn: Turn,
-): WorkspaceFileChange[] {
-  if (!turn.user) return workspaceFileChanges(turn.activity.map(item => item.event));
+/**
+ * A Goal turn is one process. Its rounds are not separate blocks: every earlier
+ * round's reply and each Judge follow-up are events inside that process, in the
+ * order they happened, and only the last reply stays outside as the turn's reply.
+ * `rounds` lists where each round starts, for navigation.
+ */
+interface GoalTurn {
+  /** Process items with earlier replies and follow-ups folded in, in order. */
+  process: Item[];
+  /** The reply shown outside the process, once the loop has really ended. */
+  finalReply?: Item;
+  /** Start of each round: the first one is the typed goal, then each follow-up. */
+  roundStarts: Array<{ eventId: string; label: string }>;
+  /** Seconds each round took, keyed by the event that opened it (goal message or follow-up). */
+  roundSeconds: Map<string, number>;
+}
+
+/**
+ * How long each round of a Goal took, keyed by the event that opens it (the typed goal,
+ * then each Judge follow-up). A round ends at the reply that closes it, or where the
+ * next round opens when it was cut short; the last one ends at `lastEnd`.
+ */
+export function goalRoundDurations(
+  opens: Array<{ id: string; at: number | undefined }>,
+  closes: number[],
+  lastEnd?: number,
+): Map<string, number> {
+  const seconds = new Map<string, number>();
+  opens.forEach((open, index) => {
+    if (open.at === undefined) return;
+    const next = opens[index + 1]?.at;
+    const closing = closes.filter(time => time >= open.at! && (next === undefined || time <= next)).at(-1);
+    const end = closing ?? next ?? lastEnd;
+    if (end !== undefined && end >= open.at) seconds.set(open.id, (end - open.at) / 1000);
+  });
+  return seconds;
+}
+
+function goalTurn(turn: Turn, hasAudit: boolean, goalActive: boolean): GoalTurn | undefined {
+  const followups = turn.activity.filter(item => item.event.payload.goal_followup);
+  if (!followups.length && !hasAudit) return undefined;
+  const replies = turn.replies ?? [];
+  // While the loop goes on no reply is final, including the latest one.
+  const finalReply = goalActive ? undefined : replies.at(-1);
+
+  // A round runs from the event that opens it (the typed goal, then each follow-up)
+  // to the reply that closes it, or to the next opening when it was cut short.
+  const opens = [
+    ...(turn.user ? [{ id: turn.user.event.id, label: '第 1 轮', at: eventTime(turn.user) }] : []),
+    ...followups.map((item, index) => ({ id: item.event.id, label: `第 ${index + 2} 轮`, at: eventTime(item) })),
+  ];
+  const closes = replies.map(reply => eventTime(reply)).filter((time): time is number => time !== undefined);
+  const roundSeconds = goalRoundDurations(opens, closes, finalReply ? eventTime(finalReply) : undefined);
+
+  // Each divider reports how long the round it opens took, so per-round time survives
+  // although the goal is shown as one process with a single total.
+  const stamped = (item: Item): Item => {
+    // A divider opens round N+1, so it reports the round that just ended: the one opened before it.
+    const position = opens.findIndex(open => open.id === item.event.id);
+    const seconds = position > 0 ? roundSeconds.get(opens[position - 1].id) : undefined;
+    return seconds === undefined ? item : { ...item, event: { ...item.event, payload: { ...item.event.payload, _flowweave_round_seconds: seconds } } };
+  };
+  const folded = new Set<Item>([...followups, ...replies.filter(reply => reply !== finalReply)]);
+  const process = [
+    ...turn.activity.filter(item => item.kind !== 'error' && !folded.has(item)),
+    ...folded,
+  ]
+    .map((item, index) => ({ item, index, time: eventTime(item) }))
+    .sort((left, right) => (left.time === undefined || right.time === undefined || left.time === right.time) ? left.index - right.index : left.time - right.time)
+    .map(({ item }) => item.event.payload.goal_followup
+      ? stamped(item)
+      : item.event.event_type === 'MESSAGE' ? { ...item, kind: 'thought' as const } : item);
+  return { process, finalReply, roundStarts: opens.map(({ id, label }) => ({ eventId: id, label })), roundSeconds };
+}
+
+function turnEventIndex(events: OpenHandsConversationEvent[]) {
   const byId = new Map(events.map(event => [event.id, event]));
-  const ownedEvents = events.filter(event => userAncestorId(event, byId) === turn.user!.event.id);
-  return workspaceFileChanges(ownedEvents.length ? ownedEvents : turn.activity.map(item => item.event));
+  const eventsByUser = new Map<string, OpenHandsConversationEvent[]>();
+  const goalAuditUsers = new Set<string>();
+  for (const event of events) {
+    const owner = userAncestorId(event, byId);
+    if (!owner) continue;
+    const owned = eventsByUser.get(owner);
+    if (owned) owned.push(event);
+    else eventsByUser.set(owner, [event]);
+    if (event.payload.goal_status?.verdict) goalAuditUsers.add(owner);
+  }
+  return { eventsByUser, goalAuditUsers };
+}
+
+function fileChangesForTurn(index: ReturnType<typeof turnEventIndex>, turn: Turn): WorkspaceFileChange[] {
+  const ownedEvents = turn.user && index.eventsByUser.get(turn.user.event.id);
+  return workspaceFileChanges(ownedEvents || turn.activity.map(item => item.event));
 }
 
 function detailText(value: unknown): string {
@@ -918,6 +1079,17 @@ function fileToolIcon(presentation: ActivityPresentation) {
   return FileText;
 }
 
+// OpenHands exposes MCP tools as "<server>_<tool>" (for example
+// "localCode_get_outline"); "mcp_", "server.tool", "server__tool" and
+// "server:tool" are accepted too. A server name that itself contains "_" is
+// shortened to its first segment because the event carries no separate field.
+function mcpServerLabel(toolName?: string): string | undefined {
+  const raw = toolName?.trim().replace(/^mcp[_:]+/i, '');
+  if (!raw) return undefined;
+  const server = /^([^._:]+?)(?:__|[._:]|_)(?=.)/.exec(raw)?.[1];
+  return server || undefined;
+}
+
 function toolVisualPresentation(eventName: string, toolName?: string): ToolVisualKind {
   const normalizedEventName = eventName.toLowerCase();
   const normalizedToolName = toolName?.toLowerCase() ?? '';
@@ -1159,6 +1331,77 @@ function SkillLoadRow({ entry, reveal = false, running }: { entry: ActivityEntry
   </article>;
 }
 
+/** Pair "1. question" / "1. answer" numbered lines (or a single question/answer) so the bubble can show each answer under its question. */
+function pairAnsweredQuestions(asked: string, reply: string): Array<{ question: string; answer: string }> | undefined {
+  const lines = (text: string) => text.split('\n').map(line => line.trim()).filter(Boolean);
+  const numbered = (text: string) => lines(text).map(line => /^\d+\.\s+/.test(line) ? line.replace(/^\d+\.\s+/, '') : undefined);
+  const questions = numbered(asked);
+  if (questions.length > 1 && questions.every(Boolean)) {
+    const answers = numbered(reply);
+    if (answers.length !== questions.length || !answers.every(Boolean)) return undefined;
+    return questions.map((question, index) => ({ question: question!, answer: answers[index]! }));
+  }
+  if (!reply.trim()) return undefined;
+  return [{ question: asked.replace(/\s*\n\s*/g, ' '), answer: reply.trim() }];
+}
+
+/** Lets an ask_user row reopen the answer card when this action is the conversation's open question. */
+export const OpenQuestionContext = createContext<{ actionId?: string; reopen?: (actionId: string) => void }>({});
+
+/** Questions the user already answered, keyed by the ask_user action id (derived from later user messages that carry answered_question). */
+const AnsweredQuestionsContext = createContext<ReadonlyMap<string, ReadonlySet<string>>>(new Map());
+
+function answeredQuestionsByAction(events: Array<{ event_type?: string; id: string; payload: Record<string, unknown> }>): Map<string, Set<string>> {
+  const result = new Map<string, Set<string>>();
+  let lastAsk: string | undefined;
+  for (const event of events) {
+    if (event.event_type === 'TOOL_CALL' && event.payload.tool_name === 'ask_user') { lastAsk = event.id; continue; }
+    const asked = event.event_type === 'MESSAGE' && event.payload.source === 'user' && typeof event.payload.answered_question === 'string' ? event.payload.answered_question : '';
+    if (!asked.trim() || !lastAsk) continue;
+    const set = result.get(lastAsk) ?? new Set<string>();
+    const lines = asked.split('\n').map(line => line.trim()).filter(Boolean);
+    const numbered = lines.length > 1 && lines.every(line => /^\d+\.\s+/.test(line));
+    if (numbered) lines.forEach(line => set.add(line.replace(/^\d+\.\s+/, ''))); else set.add(lines.join(' '));
+    result.set(lastAsk, set);
+  }
+  return result;
+}
+
+/** The agent's ask_user call: a normal-sized tool row; every question shows whether it has been answered. */
+function AskUserRow({ entry, reveal = false }: { entry: ActivityEntry; reveal?: boolean }) {
+  const action = entry.action ?? entry.item;
+  const details = action.event.payload.details as { question?: unknown; questions?: unknown } | undefined;
+  const asked = [
+    details?.question,
+    ...(Array.isArray(details?.questions) ? details.questions.map(item => (item as { question?: unknown } | null)?.question) : []),
+  ].filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+  const refused = entry.results.some(result => result.event.payload.details?.asked === false);
+  const first = refused ? '提问未送达' : asked[0] ?? '向你提问';
+  const openQuestion = useContext(OpenQuestionContext);
+  const answeredSet = useContext(AnsweredQuestionsContext).get(action.event.id);
+  const isAnswered = (text: string) => Boolean(answeredSet?.has(text.replace(/\s*\n\s*/g, ' ').trim()));
+  const answeredCount = asked.filter(isAnswered).length;
+  const allAnswered = asked.length > 0 && answeredCount === asked.length;
+  const answerable = !refused && openQuestion.actionId === action.event.id && Boolean(openQuestion.reopen);
+  const answerButton = answerable
+    ? <button type="button" className="ask-user-answer" onClick={event => { event.preventDefault(); event.stopPropagation(); openQuestion.reopen!(action.event.id); }}>回答问题</button>
+    : null;
+  const className = `conversation-activity-row tool ask-user${refused ? ' error' : ''}${allAnswered ? ' answered' : ''}${reveal ? ' conversation-text-reveal-block' : ''}`;
+  const leading = allAnswered ? <CircleCheck size={14}/> : <MessageCircleQuestion size={14}/>;
+  if (refused || asked.length < 2) return <article className={className} aria-label="Agent 提问" data-ask-user-event-id={action.event.id}>
+    {leading}<div><b title={first}>{first}</b></div>{allAnswered && <small className="ask-user-more">已回答</small>}{answerButton}
+  </article>;
+  return <details className={`${className} conversation-tool-detail`} aria-label="Agent 提问" data-ask-user-event-id={action.event.id} open={answeredCount > 0 && !allAnswered ? true : undefined}>
+    <summary>{leading}<div><b title={first}>{first}</b></div><small className="ask-user-more" data-testid="ask-user-progress">{`已回答 ${answeredCount}/${asked.length}`}</small>{answerButton}<ChevronRight className="conversation-expand-arrow" size={12}/></summary>
+    <ol className="ask-user-list">{asked.map((text, index) => {
+      const done = isAnswered(text);
+      return <li key={index} className={done ? 'answered' : 'pending'} data-answered={done}>
+        {done ? <CircleCheck size={13} aria-label="已回答"/> : <Circle size={13} aria-label="待回答"/>}<span>{text}</span>
+      </li>;
+    })}</ol>
+  </details>;
+}
+
 function eventTime(item?: Item): number | undefined {
   return parsedEventTime(item?.event.payload.timestamp);
 }
@@ -1177,16 +1420,33 @@ function turnProcessBlocks(
   return [{ kind: 'activity', id: 'activity-0', items, startedAt, finishedAt, active }];
 }
 
-function processBlocksForSegment(segment: ProcessSegment, active: boolean, completedAt?: number): TurnProcessBlock[] {
+function processBlocksForTurn(segments: ProcessSegment[], active: boolean, completedAt?: number): TurnProcessBlock[] {
+  const firstSegment = segments[0];
+  const lastSegment = segments.at(-1);
+  if (!firstSegment || !lastSegment) return [];
+  const interruptedAt = parsedEventTime(lastSegment.interruptedBy?.payload.timestamp);
   return turnProcessBlocks(
-    segment.items.filter(item => item.kind !== 'error'),
-    eventTime(segment.startedBy),
-    parsedEventTime(segment.interruptedBy?.payload.timestamp) ?? completedAt,
-    active,
+    segments.flatMap(segment => segment.items).filter(item => item.kind !== 'error' && !item.event.payload.goal_followup),
+    eventTime(firstSegment.startedBy),
+    interruptedAt ?? completedAt,
+    active && interruptedAt === undefined,
   );
 }
 
 /** Format the wall-clock time attached to an actual OpenHands message event. */
+function ModelChangeDivider({ change, timestamp }: { change: { from: string; to: string }; timestamp: unknown }) {
+  const time = formatMessageTime(timestamp);
+  const parsed = parseOpenHandsEventTime(timestamp);
+  const sameDay = parsed !== undefined && new Date(parsed).toDateString() === new Date().toDateString();
+  return <div className="conversation-model-change" role="note">
+    {time && <time className="conversation-model-change-time">{sameDay ? `今天 ${time}` : time}</time>}
+    <div className="conversation-model-change-line">
+      <Box size={13} aria-hidden="true"/>
+      <span>模型已从 <b>{change.from}</b> 更改为 <b>{change.to}</b>。</span>
+    </div>
+  </div>;
+}
+
 function formatMessageTime(raw: unknown): string | undefined {
   const value = parseOpenHandsEventTime(raw);
   if (value === undefined) return undefined;
@@ -1376,10 +1636,11 @@ function RetryStatus({ status, errorDetail }: { status: ModelRetryStatus; errorD
   </details>;
 }
 
-function CurrentTurnStatus({ items, requestSubmitting, statusOverride, modelRetryStatus, monitoring, connectionState = 'connected' }: {
+function CurrentTurnStatus({ items, requestSubmitting, statusOverride, reconnecting = false, modelRetryStatus, monitoring, connectionState = 'connected' }: {
   items: Item[];
   requestSubmitting: boolean;
   statusOverride?: string;
+  reconnecting?: boolean;
   modelRetryStatus?: ModelRetryStatus;
   monitoring?: AgentActivitySummary;
   connectionState?: ConversationConnectionState;
@@ -1390,10 +1651,13 @@ function CurrentTurnStatus({ items, requestSubmitting, statusOverride, modelRetr
   const label = statusOverride ?? (requestSubmitting
     ? activityLabel
     : staleActivityLabel(activityLabel, monitoring, connectionState));
-  const stalled = !statusOverride && !requestSubmitting && monitoring?.possibly_stuck
-    && connectionState === 'connected';
+  const stalled = reconnecting || (!statusOverride && !requestSubmitting && monitoring?.possibly_stuck
+    && connectionState === 'connected');
+  const alertLabel = reconnecting
+    ? '会话正在尝试重连'
+    : '会话正在运行但后台长时间未产生可确认进展';
   return <div className={`conversation-turn-status${stalled ? ' stalled' : ''}`} role="status" aria-label={label}>
-    {stalled && <CircleAlert className="conversation-turn-status-alert" role="img" aria-label="会话正在运行但后台长时间未产生可确认进展" size={14}/>}
+    {stalled && <CircleAlert className="conversation-turn-status-alert" role="img" aria-label={alertLabel} size={14}/>}
     <span>{label}</span>
     {!stalled && <span className="conversation-turn-status-dots" aria-hidden="true"><i/><i/><i/></span>}
   </div>;
@@ -1450,6 +1714,7 @@ function ActivityEntryRow({ entry, active, reveal = false, paused = false, paren
   const eventName = String(item.event.payload.event_name ?? '');
   const toolName = detailText(item.event.payload.tool_name);
   const toolVisual = toolVisualPresentation(eventName, toolName);
+  const mcpServer = toolVisual === 'mcp' ? mcpServerLabel(toolName) : undefined;
   const avatarSlot = eventName === 'TaskAction' || eventName === 'TaskObservation'
     ? subagentAvatarSlotForEvent(item.event, avatarSlots)
     : undefined;
@@ -1470,6 +1735,20 @@ function ActivityEntryRow({ entry, active, reveal = false, paused = false, paren
   if (item.kind === 'condensation') return <article className={`conversation-activity-row tool condensation${condensationRunning ? ' running' : ''}`} role="status" aria-label={presentation.title}>
     <Sparkles size={13}/><div><b>{presentation.title}</b></div>
   </article>;
+  if (item.kind === 'goal' && item.event.payload.goal_followup) {
+    // A round boundary, drawn like a task-list entry: no card, no explanation.
+    return <details className="conversation-goal-round" data-goal-followup-event-id={item.event.id} data-conversation-event-id={item.event.id}>
+      <summary aria-label={item.title}><span className="conversation-task-status-icon in_progress" aria-hidden="true"><i/></span><b>{item.title}</b>{typeof item.event.payload._flowweave_round_seconds === 'number' && <small>{`上一轮 ${formatDuration(item.event.payload._flowweave_round_seconds)}`}</small>}{item.content && <ChevronRight className="conversation-expand-arrow" size={12}/>}</summary>
+      {item.content && <p>{item.content}</p>}
+    </details>;
+  }
+  if (item.kind === 'goal') {
+    const goal = item.event.payload.goal_status!;
+    const detail = item.content || (goal.status === 'complete' ? 'Judge 已确认当前目标的完成证据。' : goal.status === 'interrupted' ? '可在会话目标卡中恢复原目标。' : undefined);
+    return <article className={`conversation-activity-row goal ${goal.status}`} role="status" aria-label={item.title}>
+      <Target size={13}/><div><b>{item.title}</b><small>{`第 ${goal.iteration} / ${goal.max_iterations} 轮 · ${goal.objective}`}</small>{detail && <span>{detail}</span>}</div>
+    </article>;
+  }
   if (item.kind === 'security') {
     const security = securityAnalysisPresentation(item.event);
     return <article className="conversation-activity-row security-analysis" role="status" aria-label={security.title} data-security-analysis-event-id={item.event.id} data-security-action-ids={security.actionIds}>
@@ -1480,16 +1759,20 @@ function ActivityEntryRow({ entry, active, reveal = false, paused = false, paren
     {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown reveal={reveal}>{presentation.thought}</MessageMarkdown></article>}
     <TaskTrackerCard entry={entry} presentation={presentation} reveal={reveal} running={toolRunning}/>
   </div>;
+  if (eventName === 'AskUserAction' || eventName === 'AskUserObservation') {
+    if (eventName === 'AskUserObservation' && !entry.action) return null;
+    return <AskUserRow entry={entry} reveal={reveal}/>;
+  }
   if (eventName === 'InvokeSkillAction' || eventName === 'InvokeSkillObservation') return <div className={`conversation-tool-entry semantic tool-${toolVisual}`}>
     {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}><MessageMarkdown reveal={reveal}>{presentation.thought}</MessageMarkdown></article>}
     <SkillLoadRow entry={entry} reveal={reveal} running={toolRunning}/>
   </div>;
-  if (item.kind === 'tool' && toolDetail) return <div className={`conversation-tool-entry tool-${toolVisual}`}>
+  if (item.kind === 'tool' && toolDetail) return <div className={`conversation-tool-entry tool-${toolVisual}`} data-tool-call-id={typeof item.event.payload.tool_call_id === 'string' ? item.event.payload.tool_call_id : undefined}>
     {!hideThought && presentation.thought && <article {...thoughtAttributes} className={`conversation-activity-row thought tool-thought tool-${toolVisual}`}>
       <MessageMarkdown reveal={reveal}>{presentation.thought}</MessageMarkdown>
     </article>}
     <details className={`conversation-activity-row tool conversation-tool-detail tool-${toolVisual}${toolRunning ? ' running' : ''}`} data-tool-kind={toolVisual} data-file-operation={toolVisual === 'file' ? presentation.fileOperation : undefined} data-file-kind={toolVisual === 'file' ? presentation.fileKind : undefined}>
-      <summary aria-label={`查看执行详情：${presentation.title}`}>{taskAvatar ?? <ToolIcon size={13}/>}<div><b title={presentation.title}>{presentation.title}</b></div><ChevronRight className="conversation-expand-arrow" size={12}/></summary>
+      <summary aria-label={`查看执行详情：${presentation.title}`}>{mcpServer ? <span className="conversation-mcp-badge" title={`MCP：${mcpServer}`}>{taskAvatar ?? <ToolIcon size={13}/>}<span>{mcpServer}</span></span> : taskAvatar ?? <ToolIcon size={13}/>}<div><b title={presentation.title}>{presentation.title}</b></div><ChevronRight className="conversation-expand-arrow" size={12}/></summary>
       {toolDetail}
     </details>
   </div>;
@@ -1570,19 +1853,17 @@ const ActivityGroup = memo(function ActivityGroup({ items, active, revealEventId
     const item = entry.action ?? entry.item;
     return String(item.event.payload.event_name ?? '') === 'TaskAction' && entry.results.length === 0;
   });
-  // A delayed readiness response can briefly make an active turn appear idle.
-  // Preserve the visible details through that recovery; only a formal
-  // reply/error together with a native terminal state may auto-collapse.
-  const [uncontrolledOpen, setUncontrolledOpen] = useState(active);
-  const hasBeenActive = useRef(active);
+  // A turn can contain several segments after a formal interruption. Keep
+  // every segment visible until its formal terminal reply closes the turn.
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(active || !completionConfirmed);
   useLayoutEffect(() => {
-    if (active) {
-      hasBeenActive.current = true;
-      return;
-    }
-    if (hasBeenActive.current && completionConfirmed) setUncontrolledOpen(false);
-  }, [active, completionConfirmed]);
+    if (completionConfirmed) setUncontrolledOpen(false);
+  }, [completionConfirmed]);
   const open = controlledOpen ?? uncontrolledOpen;
+  const [detailsMounted, setDetailsMounted] = useState(open);
+  useEffect(() => {
+    if (open) setDetailsMounted(true);
+  }, [open]);
   const setOpen = useCallback((next: boolean) => {
     if (controlledOpen === undefined) setUncontrolledOpen(next);
     onOpenChange?.(next);
@@ -1594,11 +1875,11 @@ const ActivityGroup = memo(function ActivityGroup({ items, active, revealEventId
   const summary = <><ChevronRight size={14}/><span className="conversation-activity-meta"><span className="conversation-activity-status"><span>{active && startedAt !== undefined ? <LiveElapsed startedAt={startedAt}/> : active ? '处理中' : label}</span><span className={`conversation-activity-spinner-slot${active ? ' active' : ''}`} aria-hidden="true"><LoaderCircle className="conversation-activity-spin" size={13}/></span></span>{itemCount > 0 && <small>{itemCount} 项</small>}</span></>;
   const hasDetails = itemCount > 0;
   if (!hasDetails) return <div className={`conversation-activity-group summary-only${display === 'summary' ? ' conversation-process-summary' : ''}`}><div className="conversation-activity-summary">{summary}</div></div>;
-  const activityList = <div className="conversation-activity-list">
+  const activityList = open || detailsMounted ? <div className="conversation-activity-list">
     {rows.map(row => row.kind === 'progress-group'
       ? <ProgressActivity key={row.group.id} group={row.group} active={active} revealEventIds={revealEventIds} paused={paused} parentFailed={parentFailed} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot} onOpenSourceLocation={onOpenSourceLocation}/>
       : <ActivityEntryRow key={row.entry.id} entry={row.entry} active={active} reveal={entryHasRevealedText(row.entry, revealEventIds)} paused={paused} parentFailed={parentFailed} hideThought={row.entry.hideThought} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot} onOpenSourceLocation={onOpenSourceLocation}/>) }
-  </div>;
+  </div> : null;
   const completed = display === 'summary';
   return <details className={`${completed ? 'conversation-process-summary' : 'conversation-activity-group'}${active && !completed ? ' active' : ''}`} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary aria-label={completed ? `${open ? '收起' : '展开'}工作过程` : undefined}>{summary}</summary>
@@ -1766,6 +2047,41 @@ function conversationHighlightRects(range: Range, root: HTMLElement): Conversati
   }, []);
 }
 
+function conversationSearchRanges(root: HTMLElement, query: string): Range[] {
+  if (!query) return [];
+  const nodes: Array<{ node: Text; start: number; end: number }> = [];
+  let text = '';
+  let previousBlock: Element | null | undefined;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (!(node instanceof Text)) {
+      if (node instanceof HTMLBRElement) text += '\n';
+      continue;
+    }
+    // Message controls and file summaries are outside the searchable message body.
+    if (node.parentElement?.closest('button, footer, .conversation-file-changes, .conversation-message-attachments, .katex, .conversation-mermaid')) continue;
+    const block = node.parentElement?.closest('p, pre, td, th, li, h1, h2, h3, h4, h5, h6');
+    if (text && block !== previousBlock) text += '\n';
+    previousBlock = block;
+    const start = text.length;
+    text += node.data;
+    nodes.push({ node, start, end: text.length });
+  }
+  // Resolve literal matches in rendered text, including Markdown/syntax spans,
+  // without inserting markup into React-owned message nodes.
+  const pattern = conversationSearchPattern(query);
+  return Array.from(text.matchAll(pattern)).flatMap(match => {
+    const start = nodes.find(entry => entry.end > match.index);
+    const endOffset = match.index + match[0].length;
+    const end = nodes.find(entry => entry.start < endOffset && entry.end >= endOffset);
+    if (!start || !end) return [];
+    const range = document.createRange();
+    range.setStart(start.node, match.index - start.start);
+    range.setEnd(end.node, endOffset - end.start);
+    return [range];
+  });
+}
+
 function conversationQuoteRange(root: HTMLElement, quote: string, compactStart?: number): Range | undefined {
   const compactQuote = quote.replace(/\s+/g, '');
   if (!compactQuote) return undefined;
@@ -1895,9 +2211,11 @@ export interface ConversationScrollSnapshot {
   bottomOffset: number;
   followLatest: boolean;
   savedAt: number;
+  turnLayouts?: ConversationTurnLayouts;
+  expandedProcesses?: ReadonlySet<string>;
 }
 
-export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, isFailed = false, pausing = false, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEvents = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, referenceLocation, initialScrollSnapshot, onScrollSnapshotChange, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onQuoteReply, onOpenAttachment, attachmentImageUrl, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenSourceLocation, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
+export const ConversationSurface = memo(function ConversationSurface({ events, isGenerating, isPaused = false, isFailed = false, pausing = false, reconnectingAttempt, reconnectingMaxAttempts = 3, emptyResponseRecoveryActive = false, modelRetryStatus, historyPending = false, cachedHistoryMarkerCount = 0, cachedHistoryUserEvents = [], hasCachedOlderHistory = false, onRequestOlderHistory, onRevealHistoryThrough, conversationScope, referenceLocation, searchLocation, initialScrollSnapshot, onScrollSnapshotChange, historyPrepend, onHistoryAnchorCaptured, onHistoryAnchorRestored, requestStartedAt, requestSubmitting = false, rewritePending = false, condensationPending = false, condensationStartedAt, onRewrite, onFork, onQuoteReply, onOpenAttachment, attachmentImageUrl, onOpenWorkspaceReference, onPreviewCandidateFile, onReviewChanges, onOpenSourceLocation, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl, workspaceRoot, onCreateAnnotation, onSidebarQuestion, goalLocateEventId, onLocateAnnotation, conversationName, onOpenConversationReference, taskControl = [], monitoring, connectionState }: {
   events: OpenHandsConversationEvent[];
   isGenerating: boolean;
   /** Formal native conversation pause state, used only to label unfinished Task actions. */
@@ -1906,6 +2224,9 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   isFailed?: boolean;
   /** A pause request is pending confirmation from the native Runtime. */
   pausing?: boolean;
+  /** FlowWeave is continuing the same native Conversation after a transient gateway error. */
+  reconnectingAttempt?: number;
+  reconnectingMaxAttempts?: number;
   /** Transient UI only; the persisted corrective event never enters history. */
   emptyResponseRecoveryActive?: boolean;
   /** Actual non-persistent transport retry progress for this binding only. */
@@ -1924,6 +2245,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   conversationScope?: string;
   /** Explicit user navigation, scoped to the referenced binding and formal event. */
   referenceLocation?: AgentConversationReference;
+  searchLocation?: ConversationSearchLocation;
   /** In-memory reading position captured before this scoped viewport unmounted. */
   initialScrollSnapshot?: ConversationScrollSnapshot;
   onScrollSnapshotChange?: (scope: string, snapshot: ConversationScrollSnapshot) => void;
@@ -1954,6 +2276,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   workspaceRoot?: string | null;
   onCreateAnnotation?: (anchor: { event_id: string; quote: string; compact_start: number }) => void;
   onSidebarQuestion?: (reference: ConversationReference) => void;
+  /** Event the person asked to jump to; a folded Goal process opens when it holds that event. */
+  goalLocateEventId?: string;
   onLocateAnnotation?: (annotation: AgentConversationAnnotation) => void;
   conversationName?: (bindingId: string | undefined) => string | undefined;
   onOpenConversationReference?: (reference: AgentConversationReference) => void;
@@ -1962,6 +2286,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   connectionState?: ConversationConnectionState;
 }) {
   const surface = useRef<HTMLElement>(null);
+  const turnWindow = useConversationTurnWindow(surface, initialScrollSnapshot?.turnLayouts);
   const content = useRef<HTMLDivElement>(null);
   const shell = useRef<HTMLDivElement>(null);
   const initialPositioned = useRef(false);
@@ -1969,6 +2294,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const userScrolledAway = useRef(false);
   const scrollInteractionStartY = useRef<number | null>(null);
   const scrollSnapshotFrame = useRef<number | undefined>(undefined);
+  const lastVisibleScrollTop = useRef(initialScrollSnapshot?.scrollTop ?? 0);
   const scrollInteractionTowardLatest = useRef(false);
   const scrollbarVisibilityTimer = useRef<number | undefined>(undefined);
   const automaticScrollFrame = useRef<number | undefined>(undefined);
@@ -2000,23 +2326,42 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const copyResetTimer = useRef<number | undefined>(undefined);
   const referenceHighlightTimer = useRef<number | undefined>(undefined);
   const referenceLocationPending = useRef(false);
+  const searchLocationPending = useRef(false);
+  const previousSearchTarget = useRef<string | undefined>(undefined);
   const rewriteEditor = useRef<HTMLTextAreaElement>(null);
   const [isAtLatest, setIsAtLatest] = useState(true);
   const [editingEventId, setEditingEventId] = useState<string>();
   const [editingContent, setEditingContent] = useState('');
   const [copiedEventId, setCopiedEventId] = useState<string>();
+  const [userNavigationTarget, setUserNavigationTarget] = useState<{ eventId: string; behavior: ScrollBehavior; located?: boolean }>();
   const [condensationElapsed, setCondensationElapsed] = useState(0);
-  const [expandedCompletedProcesses, setExpandedCompletedProcesses] = useState<ReadonlySet<string>>(() => new Set());
+  const [expandedCompletedProcesses, setExpandedCompletedProcesses] = useState<ReadonlySet<string>>(() => initialScrollSnapshot?.expandedProcesses ?? new Set());
   const [messagePreview, setMessagePreview] = useState<{ id: string; content: string; index: number; top: number }>();
-  const [selectedReference, setSelectedReference] = useState<{ reference: ConversationAnnotationReference; left: number; top: number }>();
+  const [selectedReference, setSelectedReference] = useState<{ reference: ConversationAnnotationReference; range: Range }>();
   const [viewingReference, setViewingReference] = useState<AgentConversationReference>();
   const [highlightedReference, setHighlightedReference] = useState<ConversationTextHighlight>();
   const [referenceHighlightRects, setReferenceHighlightRects] = useState<ConversationHighlightRect[]>([]);
+  const [searchHighlightRects, setSearchHighlightRects] = useState<Array<ConversationHighlightRect & { active: boolean; eventId: string; matchIndex: number }>>([]);
+  const keepRewriteEditorVisible = useCallback(() => {
+    const editor = rewriteEditor.current;
+    const viewport = surface.current;
+    if (!editor || !viewport) return;
+    const form = editor.closest<HTMLElement>('.conversation-message-edit');
+    if (!form) return;
+    const viewportBounds = viewport.getBoundingClientRect();
+    const formBounds = form.getBoundingClientRect();
+    const bottomOverflow = formBounds.bottom - (viewportBounds.bottom - 8);
+    const topOverflow = viewportBounds.top + 8 - formBounds.top;
+    if (bottomOverflow > 0) viewport.scrollTop += bottomOverflow;
+    else if (topOverflow > 0) viewport.scrollTop -= topOverflow;
+  }, []);
   useLayoutEffect(() => {
     if (!editingEventId) return;
     const editor = rewriteEditor.current;
     if (!editor) return;
-    editor.focus();
+    followLatest.current = false;
+    userScrolledAway.current = true;
+    editor.focus({ preventScroll: true });
     editor.setSelectionRange(editor.value.length, editor.value.length);
   }, [editingEventId]);
   useLayoutEffect(() => {
@@ -2025,7 +2370,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     if (!editor) return;
     editor.style.height = 'auto';
     editor.style.height = `${Math.min(editor.scrollHeight, 160)}px`;
-  }, [editingContent, editingEventId]);
+    keepRewriteEditorVisible();
+  }, [editingContent, editingEventId, keepRewriteEditorVisible]);
 
   // Pausing a tool makes OpenHands emit one synthetic AgentErrorEvent. Keep
   // it as a formal process boundary, but itemsFor() suppresses its redundant
@@ -2035,7 +2381,35 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     [events],
   );
   const turns = useMemo(() => turnsFor(visibleEvents), [visibleEvents]);
+  const lastUserEventId = [...turns].reverse().find(turn => turn.user)?.user?.event.id;
+  const answeredQuestions = useMemo(() => answeredQuestionsByAction(visibleEvents as never), [visibleEvents]);
+  const eventIndex = useMemo(() => turnEventIndex(events), [events]);
+  const lastReplyTurnIndex = useMemo(() => turns.reduce((last, turn, index) => turn.assistant ? index : last, -1), [turns]);
+  const pinnedEventIds = new Set([
+    editingEventId, goalLocateEventId, highlightedReference?.eventId, userNavigationTarget?.eventId,
+    referenceLocation && referenceLocation.source_binding_id === conversationScope ? referenceLocation.event_id : undefined,
+    searchLocation && searchLocation.bindingId === conversationScope ? searchLocation.eventId : undefined,
+  ].filter((id): id is string => Boolean(id)));
+  const pinnedTurnIds = new Set(turns.filter(turn => pinnedEventIds.has(turn.id)
+    || turn.activity.some(item => pinnedEventIds.has(item.event.id))
+    || turn.replies?.some(item => pinnedEventIds.has(item.event.id))).map(turn => turn.id));
+  const latestGoalStatus = useMemo(() => [...visibleEvents].reverse().find(event => event.payload.goal_status)?.payload.goal_status, [visibleEvents]);
   const revealEventIds = EMPTY_EVENT_IDS;
+  // Locating an event that sits inside a folded Goal process opens that process and keeps it
+  // open (the locate target itself is cleared as soon as the jump lands).
+  useEffect(() => {
+    const locateEventId = goalLocateEventId ?? highlightedReference?.eventId;
+    if (!locateEventId) return;
+    // A jump is the reader leaving the bottom on purpose: stop following the latest content,
+    // otherwise the alignment that runs when the process unfolds drags the page back down.
+    followLatest.current = false;
+    userScrolledAway.current = true;
+    setIsAtLatest(false);
+    const owner = turns.find(turn => turn.activity.some(item => item.event.id === locateEventId));
+    if (!owner) return;
+    const key = `${conversationScope ?? 'conversation'}:${owner.renderKey}`;
+    setExpandedCompletedProcesses(current => current.has(key) ? current : new Set(current).add(key));
+  }, [conversationScope, goalLocateEventId, highlightedReference?.eventId, turns]);
   const contentGrowthSignal = useMemo(
     () => visibleEvents.map(event => [event.id, eventContentSignature(event)] as const),
     [visibleEvents],
@@ -2082,7 +2456,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   }, []);
   const alignWithLatest = useCallback(() => {
     const element = surface.current;
-    if (!element) return;
+    if (!element?.clientHeight) return;
     const target = Math.max(0, element.scrollHeight - element.clientHeight);
     if (Math.abs(element.scrollTop - target) <= 1) return;
     // Direct assignment is immediate and does not inherit page-level smooth
@@ -2113,13 +2487,24 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     const element = surface.current;
     const target = element?.querySelectorAll<HTMLElement>('[data-user-event-id]');
     const message = Array.from(target ?? []).find(item => item.dataset.userEventId === eventId);
-    if (!element || !message) return false;
+    if (!element) return false;
+    if (!message) {
+      if (!turns.some(turn => turn.user?.event.id === eventId)) return false;
+      setUserNavigationTarget(current => current?.eventId === eventId ? current : { eventId, behavior });
+      return true;
+    }
     const top = message.getBoundingClientRect().top - element.getBoundingClientRect().top + element.scrollTop - 18;
     userScrolledAway.current = true;
     followLatest.current = false;
     element.scrollTo({ top: Math.max(0, top), behavior });
     return true;
-  }, []);
+  }, [turns]);
+  useLayoutEffect(() => {
+    if (!userNavigationTarget || userNavigationTarget.located) return;
+    if (locateUserMessage(userNavigationTarget.eventId, userNavigationTarget.behavior)) {
+      setUserNavigationTarget(current => current ? { ...current, located: true } : current);
+    }
+  }, [locateUserMessage, userNavigationTarget]);
   const requestOlderHistory = useCallback((eventId?: string) => {
     if (eventId) queuedHistoryTargetEventId.current = eventId;
     if (historyRequestPending.current) return;
@@ -2145,7 +2530,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   }, [hasCachedOlderHistory, locateUserMessage, onRequestOlderHistory, onRevealHistoryThrough]);
   const updateScrollPosition = useCallback(() => {
     const element = surface.current;
-    if (!element) return;
+    if (!element?.clientHeight) return;
     const revealWindow = Math.max(HISTORY_REVEAL_WINDOW_MIN_PX, element.clientHeight * HISTORY_REVEAL_WINDOW_VIEWPORT_RATIO);
     if (element.scrollTop <= revealWindow) requestOlderHistory();
     const atLatest = element.scrollHeight - element.scrollTop - element.clientHeight <= 16;
@@ -2237,14 +2622,56 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     }
     return true;
   }, [highlightedReference]);
+  // Search has its own persistent overlay. Quote/annotation navigation may still
+  // use the existing transient selection without clearing the other matches.
+  useLayoutEffect(() => {
+    const target = searchLocation && searchLocation.bindingId === conversationScope
+      ? JSON.stringify([conversationScope, searchLocation.query, searchLocation.eventId, searchLocation.matchIndex, searchLocation.navigationId])
+      : undefined;
+    if (target !== previousSearchTarget.current) {
+      previousSearchTarget.current = target;
+      searchLocationPending.current = Boolean(target);
+      if (target) stopFollowingLatest();
+    }
+  }, [conversationScope, searchLocation, stopFollowingLatest]);
+  const updateSearchHighlights = useCallback(() => {
+    const element = surface.current;
+    const highlightRoot = content.current;
+    if (!searchLocation || searchLocation.bindingId !== conversationScope || !element || !highlightRoot) {
+      setSearchHighlightRects(current => current.length ? [] : current);
+      return;
+    }
+    const eventIds = new Set(searchLocation.eventIds);
+    const rects: Array<ConversationHighlightRect & { active: boolean; eventId: string; matchIndex: number }> = [];
+    let activeRange: Range | undefined;
+    for (const target of element.querySelectorAll<HTMLElement>('[data-conversation-event-id]')) {
+      const eventId = target.dataset.conversationEventId!;
+      if (!eventIds.has(eventId)) continue;
+      if (eventId === searchLocation.eventId && searchLocationPending.current) {
+        for (let parent = target.parentElement?.closest('details'); parent; parent = parent.parentElement?.closest('details')) parent.open = true;
+      }
+      conversationSearchRanges(target, searchLocation.query).forEach((range, matchIndex) => {
+        const active = eventId === searchLocation.eventId && matchIndex === searchLocation.matchIndex;
+        if (active) activeRange = range;
+        rects.push(...conversationHighlightRects(range, highlightRoot).map(rect => ({ ...rect, active, eventId, matchIndex })));
+      });
+    }
+    setSearchHighlightRects(rects);
+    if (activeRange && searchLocationPending.current && activeRange.getClientRects().length) {
+      const top = activeRange.getBoundingClientRect().top - element.getBoundingClientRect().top + element.scrollTop - 28;
+      element.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
+      searchLocationPending.current = false;
+    }
+  }, [conversationScope, searchLocation]);
   useEffect(() => () => {
     if (referenceHighlightTimer.current) window.clearTimeout(referenceHighlightTimer.current);
   }, []);
   useLayoutEffect(() => {
     updateReferenceHighlight();
-  }, [events, updateReferenceHighlight]);
+    updateSearchHighlights();
+  }, [events, updateReferenceHighlight, updateSearchHighlights]);
   useEffect(() => {
-    if (!highlightedReference || !content.current) return;
+    if ((!highlightedReference && !searchLocation) || !content.current) return;
     const highlightRoot = content.current;
     let updateFrame: number | undefined;
     const scheduleUpdate = () => {
@@ -2252,6 +2679,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       updateFrame = window.requestAnimationFrame(() => {
         updateFrame = undefined;
         updateReferenceHighlight();
+        updateSearchHighlights();
       });
     };
     const mutationObserver = new MutationObserver(mutations => {
@@ -2261,13 +2689,15 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     const resizeObserver = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(scheduleUpdate);
     resizeObserver?.observe(highlightRoot);
     window.addEventListener('resize', scheduleUpdate);
+    highlightRoot.addEventListener('scroll', scheduleUpdate, true);
     return () => {
       mutationObserver.disconnect();
       resizeObserver?.disconnect();
       window.removeEventListener('resize', scheduleUpdate);
+      highlightRoot.removeEventListener('scroll', scheduleUpdate, true);
       if (updateFrame !== undefined) window.cancelAnimationFrame(updateFrame);
     };
-  }, [highlightedReference, updateReferenceHighlight]);
+  }, [highlightedReference, searchLocation, updateReferenceHighlight, updateSearchHighlights]);
   const locateTextAnnotation = useCallback((annotation: AgentConversationAnnotation) => {
     // Text anchors belong to this transcript. Resolving them here avoids the
     // FlowNode route's outer grid from becoming an accidental scroll target.
@@ -2466,14 +2896,17 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   }, []);
   const captureScrollSnapshot = useCallback(() => {
     const element = surface.current;
-    if (!conversationScope || !element) return;
+    if (!conversationScope || !element?.clientHeight) return;
+    lastVisibleScrollTop.current = element.scrollTop;
     onScrollSnapshotChange?.(conversationScope, {
       scrollTop: element.scrollTop,
       bottomOffset: element.scrollHeight - element.scrollTop,
       followLatest: followLatest.current && !userScrolledAway.current,
       savedAt: Date.now(),
+      turnLayouts: turnWindow.layouts,
+      expandedProcesses: expandedCompletedProcesses,
     });
-  }, [conversationScope, onScrollSnapshotChange]);
+  }, [conversationScope, expandedCompletedProcesses, onScrollSnapshotChange, turnWindow.layouts]);
   const scheduleScrollSnapshot = useCallback(() => {
     if (!conversationScope || !onScrollSnapshotChange || scrollSnapshotFrame.current !== undefined) return;
     scrollSnapshotFrame.current = window.requestAnimationFrame(() => {
@@ -2486,6 +2919,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     captureScrollSnapshot();
   }, [captureScrollSnapshot]);
   const handleScroll = useCallback(() => {
+    if (!surface.current?.clientHeight) return;
+    lastVisibleScrollTop.current = surface.current.scrollTop;
     updateScrollPosition();
     scrollInteractionTowardLatest.current = false;
     scheduleScrollSnapshot();
@@ -2585,6 +3020,45 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     }
   }, [alignWithLatest, contentGrowthSignal, isGenerating, turns.length]);
 
+  const hasTranscript = Boolean(turns.length || isGenerating);
+  useLayoutEffect(() => {
+    const element = surface.current;
+    if (!element || !hasTranscript) return;
+    let previousWidth = element.clientWidth;
+    let previousHeight = element.clientHeight;
+    let wasHidden = !element.clientHeight;
+    // Observe only viewport visibility/width. Tool tabs hide this retained DOM,
+    // and returning to a wider transcript reflows Markdown without new events.
+    // Content height, elapsed labels and process animations cannot trigger this.
+    const observer = new ResizeObserver(() => {
+      if (!element.clientHeight) {
+        wasHidden = true;
+        return;
+      }
+      // The surface itself shrinks when a dock card (ask_user, confirmation) appears below it. A reader
+      // following the latest content must be pushed up with it instead of being covered by the card.
+      const heightChanged = element.clientHeight !== previousHeight;
+      if (!wasHidden && heightChanged && element.clientWidth === previousWidth && followLatest.current && !userScrolledAway.current) {
+        alignWithLatest();
+        setIsAtLatest(true);
+      }
+      if (wasHidden || element.clientWidth !== previousWidth) {
+        if (followLatest.current && !userScrolledAway.current) {
+          alignWithLatest();
+        } else if (wasHidden && element.scrollTop !== lastVisibleScrollTop.current) {
+          element.scrollTop = lastVisibleScrollTop.current;
+        }
+        setIsAtLatest(element.scrollHeight - element.scrollTop - element.clientHeight <= 16);
+      }
+      wasHidden = false;
+      previousWidth = element.clientWidth;
+      previousHeight = element.clientHeight;
+      lastVisibleScrollTop.current = element.scrollTop;
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [alignWithLatest, conversationScope, hasTranscript]);
+
 
   useEffect(() => () => {
     if (copyResetTimer.current) window.clearTimeout(copyResetTimer.current);
@@ -2661,8 +3135,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       }
       setSelectedReference({
         reference,
-        left: Math.min(Math.max(12, bounds.left), Math.max(12, window.innerWidth - 172)),
-        top: Math.min(bounds.bottom + 8, Math.max(12, window.innerHeight - 44)),
+        range: currentSelection.getRangeAt(0).cloneRange(),
       });
     });
   }, [conversationScope, onCreateAnnotation]);
@@ -2672,10 +3145,9 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     setViewingReference(undefined);
     highlightReferenceText({ eventId: viewingReference.event_id, quote: viewingReference.content });
   }, [highlightReferenceText, stopFollowingLatest, viewingReference]);
-  const lastUserEventId = useMemo(() => [...turns].reverse().find(turn => turn.user)?.user?.event.id, [turns]);
   if (!turns.length && !isGenerating) return <div className="conversation-surface-empty"><b>会话已就绪</b><span>发送第一条消息，开始与 Agent 协作。</span></div>;
   const showJumpToLatest = !isAtLatest && Boolean(turns.length || isGenerating);
-  return <div ref={shell} className="conversation-surface-shell">
+  return <AnsweredQuestionsContext.Provider value={answeredQuestions}><div ref={shell} className="conversation-surface-shell">
     {userMessageNavigation.length > 0 && <nav ref={messageNavigation} className="conversation-message-index" aria-label="用户消息导航" onScroll={handleMessageNavigationScroll} onPointerDown={handleMessageNavigationPointerDown} onPointerMove={handleMessageNavigationPointerMove} onPointerUp={finishMessageNavigationDrag} onPointerCancel={event => finishMessageNavigationDrag(event, true)} onPointerLeave={handleMessageNavigationPointerLeave}>
       <div className="conversation-message-index-list">
         {userMessageNavigation.map((message, index) => <button
@@ -2727,8 +3199,11 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     }}>
       <div ref={content} className="conversation-surface-content">
       {referenceHighlightRects.length > 0 && <div className="conversation-reference-highlights" aria-hidden="true">{referenceHighlightRects.map((rect, index) => <i key={`${rect.left}:${rect.top}:${index}`} style={rect}/>)}</div>}
+      {searchHighlightRects.length > 0 && <div className="conversation-reference-highlights conversation-search-highlights" aria-hidden="true">{searchHighlightRects.map(({ active, eventId, matchIndex, ...rect }, index) => <i key={`${eventId}:${matchIndex}:${index}`} data-search-event-id={eventId} data-search-match-index={matchIndex} className={active ? 'is-active' : undefined} style={rect}/>)}</div>}
       {historyPending && <div className="conversation-history-loading" role="status"><LoaderCircle size={14}/>正在载入更早的会话记录…</div>}
-      {turns.map((turn, index) => {
+      {turns.map((turn, index) => <ConversationTurnWindow key={turn.renderKey} turnId={turn.id} layoutKey={turn.renderKey}
+        layouts={turnWindow.layouts} observe={turnWindow.observe} viewport={surface}
+        pinned={index === turns.length - 1 || pinnedTurnIds.has(turn.id)}>{() => {
         const isLatest = index === turns.length - 1;
         const isCurrent = isLatest && isGenerating;
         const isCurrentPaused = isLatest && isPaused;
@@ -2739,15 +3214,22 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
         const supersededAt = index < turns.length - 1 ? eventTime(turns[index + 1]?.user) : undefined;
         const finishedAt = eventTime(turn.assistant ?? failures.at(-1)) ?? supersededAt;
         const processSegments = turn.processSegments;
-        const processBlocks = processSegments.flatMap((segment, segmentIndex) => processBlocksForSegment(
-          segment,
-          isCurrent && segmentIndex === processSegments.length - 1 && !turn.assistant && !failures.length,
+        const processBlocks = processBlocksForTurn(
+          processSegments,
+          isCurrent && !turn.assistant && !failures.length,
           finishedAt,
-        ).map(block => ({ ...block, id: `activity-${segmentIndex}` })));
-        // A formal reply, terminal error, or later user message closes this
-        // process even if Runtime readiness is still reconciling globally.
-        const completionConfirmed = Boolean(turn.assistant || parentFailed || supersededAt !== undefined);
-        const fileChanges = fileChangesForTurn(events, turn);
+        );
+        // A continuation can add another user event before the Runtime emits
+        // the one formal reply for the whole conversation. Do not fold an
+        // earlier process merely because it was superseded; close every
+        // pending process together when that later formal reply arrives.
+        const laterTurnHasFormalReply = index < lastReplyTurnIndex;
+        const completionConfirmed = Boolean(turn.assistant || parentFailed || laterTurnHasFormalReply);
+        const fileChanges = fileChangesForTurn(eventIndex, turn);
+        const goalActive = latestGoalStatus?.active === true && isLatest;
+        const goal = goalTurn(turn, eventIndex.goalAuditUsers.has(turn.id), goalActive);
+        // A Goal turn keeps only its real final reply outside the process.
+        const reply = goal ? goal.finalReply : turn.assistant;
         const userMessages = turn.user ? [turn.user] : [];
         const completedProcessKey = `${conversationScope ?? 'conversation'}:${turn.renderKey}`;
         const completedProcessExpanded = expandedCompletedProcesses.has(completedProcessKey);
@@ -2757,7 +3239,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
           else next.delete(completedProcessKey);
           return next;
         });
-        return <section className="conversation-turn" key={turn.renderKey} data-conversation-turn={turn.id}>
+        return <>
           {userMessages.map((message, messageIndex) => {
             const isContinuation = messageIndex > 0;
             const messageTimestamp = formatMessageTime(message.event.payload.timestamp);
@@ -2769,15 +3251,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
                 : typeof message.event.payload._flowweave_delivery_status === 'string'
                   ? message.event.payload._flowweave_delivery_status
                   : undefined;
-            const segmentBlocks = processSegments
-              .filter(segment => segment.messageIndex === messageIndex)
-              .flatMap(segment => processBlocksForSegment(
-                segment,
-                isCurrent && messageIndex === userMessages.length - 1 && !turn.assistant && !failures.length,
-                finishedAt,
-              ));
             return <Fragment key={turn.renderKey}>
-              <div className={`conversation-user-message${isContinuation ? ' continuation' : ''}`}>{editingEventId === message.event.id
+              <div className={`conversation-user-message${isContinuation ? ' continuation' : ''}`}>{message.event.payload.model_change && <ModelChangeDivider change={message.event.payload.model_change} timestamp={message.event.payload.timestamp}/>}{editingEventId === message.event.id
                 ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(message.event.id, editingContent.trim()); }}><textarea ref={rewriteEditor} aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)} onKeyDown={event => {
                   if (event.nativeEvent.isComposing || event.keyCode === 229) return;
                   if (event.key === 'Escape') {
@@ -2790,28 +3265,62 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
                   event.preventDefault();
                   event.currentTarget.form?.requestSubmit();
                 }}/><footer><button type="button" onClick={() => setEditingEventId(undefined)}>取消</button><button type="submit" disabled={!editingContent.trim() || rewritePending}>重新思考</button></footer></form>
-                : <article data-user-event-id={message.event.id} data-conversation-event-id={message.event.id} className="conversation-message user">{Boolean(message.event.payload.parent_instruction) && <small className="conversation-parent-instruction">来自父会话的指令</small>}<MessageAttachments attachments={eventAttachments(message.event)} references={message.event.payload.conversation_references} workspaceReferences={message.event.payload.workspace_references} annotations={eventAnnotations(message.event)} onOpen={onOpenAttachment} onOpenReference={reference => { if (onOpenConversationReference) onOpenConversationReference(reference); else setViewingReference(reference); }} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={locateAnnotation} conversationName={conversationName} imageUrl={attachmentImageUrl}/>{message.content && <div className="conversation-message-content"><MessageMarkdown>{message.content}</MessageMarkdown></div>}<footer className="conversation-message-meta user">{messageDeliveryStatus && <small className="conversation-message-delivery-status" role="status">{messageDeliveryStatus}</small>}{messageTimestamp && <time dateTime={typeof message.event.payload.timestamp === 'string' ? message.event.payload.timestamp : undefined}>{messageTimestamp}</time>}<div className={`conversation-message-actions${onRewrite && lastUserEventId === message.event.id ? ' can-rewrite' : ''}`}><button type="button" className="conversation-message-copy" aria-label={copiedEventId === message.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === message.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(message.event.id, message.content)}>{copiedEventId === message.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{onRewrite && lastUserEventId === message.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(message.event.id); setEditingContent(message.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>
-              {!completionConfirmed && segmentBlocks.map(block => <ActivityGroup
-                key={`${message.event.id}:${block.id}`}
-                items={block.items}
-                active={block.active}
-                revealEventIds={revealEventIds}
-                completionConfirmed={completionConfirmed}
-                paused={isCurrentPaused && !block.active}
-                parentFailed={parentFailed && !block.active}
-                startedAt={block.startedAt}
-                finishedAt={block.finishedAt}
-                avatarSlots={avatarSlots}
-                workspaceRoot={workspaceRoot}
-                onOpenSourceLocation={onOpenSourceLocation}
-              />)}
+                : <article data-user-event-id={message.event.id} data-conversation-event-id={message.event.id} className="conversation-message user">{Boolean(message.event.payload.parent_instruction) && <small className="conversation-parent-instruction">来自父会话的指令</small>}<MessageAttachments attachments={eventAttachments(message.event)} references={message.event.payload.conversation_references} workspaceReferences={message.event.payload.workspace_references} annotations={eventAnnotations(message.event)} onOpen={onOpenAttachment} onOpenReference={reference => { if (onOpenConversationReference) onOpenConversationReference(reference); else setViewingReference(reference); }} onOpenWorkspaceReference={onOpenWorkspaceReference} onOpenAnnotation={locateAnnotation} conversationName={conversationName} imageUrl={attachmentImageUrl}/>{(() => {
+                  const asked = typeof message.event.payload.answered_question === 'string' ? message.event.payload.answered_question.trim() : '';
+                  if (!asked) return message.content && <div className="conversation-message-content"><MessageMarkdown preserveLiteralTrailingBackslashContinuations>{message.content}</MessageMarkdown></div>;
+                  const pairs = pairAnsweredQuestions(asked, message.content);
+                  if (!pairs) return <>
+                    <p className="conversation-answered-question" title={asked}>{asked.replace(/\s*\n\s*/g, ' ')}</p>
+                    {message.content && <div className="conversation-message-content"><MessageMarkdown preserveLiteralTrailingBackslashContinuations>{message.content}</MessageMarkdown></div>}
+                  </>;
+                  return <dl className="conversation-answered-list">{pairs.map((pair, pairIndex) => <div key={pairIndex}><dt title={pair.question}>{pair.question}</dt><dd>{pair.answer}</dd></div>)}</dl>;
+                })()}<footer className="conversation-message-meta user">{messageDeliveryStatus && <small className="conversation-message-delivery-status" role="status">{messageDeliveryStatus}</small>}{messageTimestamp && <time dateTime={typeof message.event.payload.timestamp === 'string' ? message.event.payload.timestamp : undefined}>{messageTimestamp}</time>}<div className={`conversation-message-actions${onRewrite && lastUserEventId === message.event.id ? ' can-rewrite' : ''}`}><button type="button" className="conversation-message-copy" aria-label={copiedEventId === message.event.id ? '消息已复制' : '复制消息'} title={copiedEventId === message.event.id ? '已复制' : '复制消息'} onClick={() => copyUserMessage(message.event.id, message.content)}>{copiedEventId === message.event.id ? <Check size={13}/> : <Copy size={13}/>}</button>{onRewrite && lastUserEventId === message.event.id && <button type="button" className="conversation-message-rewrite" aria-label="编辑并重新思考" title="编辑并重新思考" onClick={() => { setEditingEventId(message.event.id); setEditingContent(message.content); }}><Pencil size={13}/></button>}</div></footer></article>}</div>
             </Fragment>;
           })}
+          {goal && goal.process.length > 0 && (() => {
+            // The goal's total time starts when the person sent it, not at its first tool call.
+            const times = [turn.user, ...goal.process].map(item => eventTime(item)).filter((time): time is number => time !== undefined);
+            const goalRunning = isCurrent && !failures.length && (goalActive || !goal.finalReply);
+            const goalFinished = Boolean(goal.finalReply) && !goalActive;
+            return <ActivityGroup
+              items={goal.process}
+              active={goalRunning}
+              revealEventIds={revealEventIds}
+              completionConfirmed={goalFinished}
+              paused={isCurrentPaused && goalRunning}
+              parentFailed={parentFailed}
+              startedAt={times.length ? Math.min(...times) : undefined}
+              finishedAt={goal.finalReply ? eventTime(goal.finalReply) : undefined}
+              avatarSlots={avatarSlots}
+              workspaceRoot={workspaceRoot}
+              onOpenSourceLocation={onOpenSourceLocation}
+              display={goalFinished ? 'summary' : 'full'}
+              open={goalFinished ? completedProcessExpanded : undefined}
+              onOpenChange={goalFinished ? setCompletedProcessExpanded : undefined}
+            />;
+          })()}
+          {!goal && !completionConfirmed && processBlocks.map(block => <ActivityGroup
+            key={block.id}
+            items={block.items}
+            active={block.active}
+            revealEventIds={revealEventIds}
+            completionConfirmed={completionConfirmed}
+            paused={isCurrentPaused && !block.active}
+            parentFailed={parentFailed && !block.active}
+            startedAt={block.startedAt}
+            finishedAt={block.finishedAt}
+            avatarSlots={avatarSlots}
+            workspaceRoot={workspaceRoot}
+            onOpenSourceLocation={onOpenSourceLocation}
+          />)}
+          {goal && isCurrent && !failures.length && goalActive && latestGoalStatus && (
+            <CurrentTurnStatus items={[]} requestSubmitting={false} statusOverride={`目标进行中 · 第 ${Math.min(latestGoalStatus.iteration + 1, latestGoalStatus.max_iterations)} / ${latestGoalStatus.max_iterations} 轮，正在核对`}/>
+          )}
           {isCurrent && !turn.assistant && !failures.length && (
-            <CurrentTurnStatus items={turn.activity} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : rewritePending ? '正在重新思考' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/>
+            <CurrentTurnStatus items={turn.activity} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : reconnectingAttempt ? `正在尝试重连（${reconnectingAttempt}/${reconnectingMaxAttempts}）` : rewritePending ? '正在重新思考' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} reconnecting={Boolean(reconnectingAttempt)} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/>
           )}
           {processBlocks.length > 0 && turn.assistant && <div className="conversation-process-divider" role="separator" aria-label="工作过程结束"/>}
-          {completionConfirmed && processBlocks.map(block => <ActivityGroup
+          {!goal && completionConfirmed && processBlocks.map(block => <ActivityGroup
             key={`${block.id}:summary`}
             items={block.items}
             active={false}
@@ -2828,11 +3337,11 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             open={completedProcessExpanded}
             onOpenChange={setCompletedProcessExpanded}
           />)}
-          {turn.assistant && <AgentReply event={turn.assistant.event} content={turn.assistant.content} reveal={revealEventIds.has(turn.assistant.event.id)} changes={fileChanges} onFork={!isGenerating && onFork ? () => onFork(turn.assistant!.event.id) : undefined} onQuoteReply={onQuoteReply ? () => onQuoteReply(turn.assistant!.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl} workspaceRoot={workspaceRoot} annotations={turn.assistant.event.payload.collaboration_annotation_ids !== undefined ? eventAnnotations(turn.assistant.event) : turn.user ? eventAnnotations(turn.user.event) : []} onLocateAnnotation={locateAnnotation}/>}
+          {reply && <AgentReply event={reply.event} content={reply.content} reveal={revealEventIds.has(reply.event.id)} changes={fileChanges} onFork={!isGenerating && onFork ? () => onFork?.(reply.event.id) : undefined} onQuoteReply={onQuoteReply ? () => onQuoteReply(reply.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl} workspaceRoot={workspaceRoot} annotations={reply.event.payload.collaboration_annotation_ids !== undefined ? eventAnnotations(reply.event) : turn.user ? eventAnnotations(turn.user.event) : []} onLocateAnnotation={locateAnnotation}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl} retryStatus={isLatest ? modelRetryStatus : undefined}/>)}
-        </section>;
-      })}
-      {turns.length === 0 && isGenerating && !condensationPending && <><ActivityGroup items={[]} active revealEventIds={revealEventIds} startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot} onOpenSourceLocation={onOpenSourceLocation}/><CurrentTurnStatus items={[]} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : rewritePending ? '正在重新思考' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/></>}
+        </>;
+      }}</ConversationTurnWindow>)}
+      {turns.length === 0 && isGenerating && !condensationPending && <><ActivityGroup items={[]} active revealEventIds={revealEventIds} startedAt={requestStartedAt} avatarSlots={avatarSlots} workspaceRoot={workspaceRoot} onOpenSourceLocation={onOpenSourceLocation}/><CurrentTurnStatus items={[]} requestSubmitting={requestSubmitting} statusOverride={pausing ? '正在暂停 Agent' : reconnectingAttempt ? `正在尝试重连（${reconnectingAttempt}/${reconnectingMaxAttempts}）` : rewritePending ? '正在重新思考' : emptyResponseRecoveryActive ? '模型返回空响应，OpenHands 正在自动重试' : undefined} reconnecting={Boolean(reconnectingAttempt)} modelRetryStatus={modelRetryStatus} monitoring={monitoring} connectionState={connectionState}/></>}
 
       {condensationPending && <article className="conversation-condensation-progress" role="status" aria-label="正在压缩上下文">
         <LoaderCircle className="conversation-activity-spin" size={16}/>
@@ -2841,10 +3350,10 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       </div>
     </section>
     {viewingReference && <ConversationReferencePreview reference={viewingReference} onClose={() => setViewingReference(undefined)} onLocate={locateReferenceSource}/>}
-    {selectedReference && <span className="conversation-add-reference" style={{ left: selectedReference.left, top: selectedReference.top }}>
+    {selectedReference && <ViewportPopover className="conversation-add-reference" anchor={() => selectedReference.range.getBoundingClientRect()} gap={8}>
       <button type="button" onPointerDown={event => event.preventDefault()} onClick={() => { onCreateAnnotation?.({ event_id: selectedReference.reference.eventId, quote: selectedReference.reference.content, compact_start: selectedReference.reference.compactStart }); window.getSelection()?.removeAllRanges(); setSelectedReference(undefined); }}><Quote size={14}/>添加到会话</button>
       {onSidebarQuestion && <button type="button" onPointerDown={event => event.preventDefault()} onClick={() => { onSidebarQuestion(selectedReference.reference); window.getSelection()?.removeAllRanges(); setSelectedReference(undefined); }}><PanelRightOpen size={14}/>在侧边聊天提问</button>}
-    </span>}
+    </ViewportPopover>}
     {showJumpToLatest && <button
       type="button"
       className={`conversation-jump-latest${isGenerating ? ' generating' : ''}`}
@@ -2858,5 +3367,5 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
         <ChevronDown size={19}/>
       )}
     </button>}
-  </div>;
+  </div></AnsweredQuestionsContext.Provider>;
 });

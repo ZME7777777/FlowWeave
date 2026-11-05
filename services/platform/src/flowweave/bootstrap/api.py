@@ -36,7 +36,15 @@ from flowweave.modules.agent_sessions.presentation.history_mcp import (
 )
 from flowweave.modules.agent_sessions.presentation.router import router as agent_sessions_router
 from flowweave.modules.agent_workspaces.presentation.router import router as agent_workspaces_router
+from flowweave.modules.cases.application import native_tools
+from flowweave.modules.cases.application.materials import is_native_artifact_request
+from flowweave.modules.cases.application.native_tools import FLOWS as CASE_FLOW_TOOL_CONTRACT
+from flowweave.modules.cases.application.native_tools import (
+    MATERIALS as CASE_MATERIAL_TOOL_CONTRACT,
+)
 from flowweave.modules.cases.presentation.router import router as cases_router
+from flowweave.modules.cases.presentation.tools_mcp import MCP_PATH as CASE_MCP_PATH
+from flowweave.modules.cases.presentation.tools_mcp import router as case_tools_mcp_router
 from flowweave.modules.catalog.presentation.router import router as catalog_router
 from flowweave.modules.conversations.presentation.router import router as conversations_router
 from flowweave.modules.credentials.presentation.router import router as credentials_router
@@ -46,17 +54,20 @@ from flowweave.modules.event_automations.presentation.router import (
 )
 from flowweave.modules.flows.presentation.router import router as flows_router
 from flowweave.modules.model_providers.presentation.router import router as providers_router
+from flowweave.modules.runs.presentation.router import artifact_content_router
 from flowweave.modules.runs.presentation.router import router as runs_router
 from flowweave.modules.users.application import service as users
 from flowweave.modules.users.application.audit import AuditRecord
 from flowweave.modules.users.application.security import (
+    FLOWWEAVE_USER_ID,
     bind_principal,
     reset_principal,
+    tenant_user,
 )
 from flowweave.modules.users.presentation.router import router as users_router
 from flowweave.runtime.dependencies import bind_runtime, reset_runtime
 from flowweave.shared.artifact_store import bind_artifact_store, reset_artifact_store
-from flowweave.shared.browser_preview import PREVIEW_PATH, read_preview
+from flowweave.shared.browser_preview import PREVIEW_PATH, PREVIEW_RESPONSE_HEADERS, read_preview
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import require_agent_session_access, require_authenticated_connection
 from flowweave.shared.observability import bind_metrics, reset_metrics
@@ -160,6 +171,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if not any(isinstance(item, SecretRedactionFilter) for item in access_logger.filters):
         access_logger.addFilter(SecretRedactionFilter())
 
+    async def _install_platform_mcps(container: Container, configured: Settings) -> None:
+        """Publish the platform-managed Case MCP versions; never block startup on failure."""
+
+        if not configured.platform_mcp_base_url:
+            return
+        settings_token = bind_settings(container.settings)
+        store_token = bind_artifact_store(container.artifact_store)
+        try:
+            with tenant_user(FLOWWEAVE_USER_ID):
+                async with container.database.session() as session:
+                    await session.run_sync(native_tools.ensure_installed)
+                    await session.commit()
+        except Exception:  # noqa: BLE001 - a bad base URL must not take the API down
+            logging.getLogger(__name__).exception("Platform MCP installation failed")
+        finally:
+            reset_artifact_store(store_token)
+            reset_settings(settings_token)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.container = container
@@ -173,6 +202,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             )
             await session.commit()
+        await _install_platform_mcps(container, configured)
         container.audit_writer.start()
         try:
             yield
@@ -204,9 +234,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     status_code=exc.status,
                     content=error_body(exc.code, exc.message, request_id),
                 )
+        case_artifact_request = is_native_artifact_request(
+            request.url.path, request.method, request.headers.get("authorization", "")
+        )
         if (
-            request.url.path.startswith("/api/v1/")
-            and request.url.path != MCP_PATH
+            not case_artifact_request
+            and request.url.path.startswith("/api/v1/")
+            and request.url.path
+            not in {
+                MCP_PATH,
+                CASE_MCP_PATH,
+                CASE_FLOW_TOOL_CONTRACT.path,
+                CASE_MATERIAL_TOOL_CONTRACT.path,
+            }
             and not native_launcher_path(request.url.path)
         ):
             async with container.database.session() as auth_session:
@@ -228,7 +268,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         is_public = (
             request.url.path.startswith("/health")
             or request.url.path.startswith("/internal/admin-control/")
-            or request.url.path == MCP_PATH
+            or case_artifact_request
+            or request.url.path
+            in {
+                MCP_PATH,
+                CASE_MCP_PATH,
+                CASE_FLOW_TOOL_CONTRACT.path,
+                CASE_MATERIAL_TOOL_CONTRACT.path,
+            }
             or native_launcher_path(request.url.path)
             or request.url.path
             in {
@@ -277,6 +324,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     mutation_binding_id,
                 )
             response = await call_next(request)
+            if preview is not None:
+                # Authorized opaque-origin previews must also be able to read
+                # errors such as a bounded transport's 413 response.
+                response.headers.update(PREVIEW_RESPONSE_HEADERS)
             response.headers["X-Request-ID"] = request_id
             audit_principal = principal or getattr(request.state, "audit_principal", None)
             if audit_principal is not None and request.url.path.startswith("/api/v1/"):
@@ -501,6 +552,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(admin_control_router)
     app.include_router(history_mcp_router)
     app.include_router(child_launcher_router)
+    app.include_router(case_tools_mcp_router)
+    app.include_router(artifact_content_router, prefix="/api/v1")
 
     app.include_router(
         agent_workspaces_router,

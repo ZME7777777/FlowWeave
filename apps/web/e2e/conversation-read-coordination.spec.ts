@@ -124,7 +124,7 @@ for (const node of [false, true]) {
     });
     const reads = await setup(page, node, { running: true, events: () => eventRead.promise });
     await expect.poll(() => reads.eventReads.length).toBe(1);
-    await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '节点资产', exact: true }).click();
+    await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '节点中心', exact: true }).click();
     await expect.poll(() => page.evaluate(() => (window as typeof window & { abortedEventReads: number }).abortedEventReads)).toBe(1);
     // Fulfill after cleanup too: the result must not resurrect the old workbench.
     eventRead.release();

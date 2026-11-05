@@ -18,7 +18,10 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
 )
 from flowweave.modules.agent_workspaces.application import work_directories
 from flowweave.modules.agent_workspaces.infrastructure.models import AgentWorkDirectory
-from flowweave.modules.credentials.application.service import resolve_credentials_for_agent
+from flowweave.modules.credentials.application.service import (
+    list_credentials,
+    resolve_credentials_for_agent,
+)
 from flowweave.modules.tasks.application.service import enqueue
 from flowweave.modules.tasks.infrastructure.models import BackgroundTask
 from flowweave.modules.users.application.security import tenant_user
@@ -148,6 +151,12 @@ def validate_template_configuration(
     return capabilities, credentials
 
 
+def _schedule_credential_ids(db: Session, schedule: AgentConversationSchedule) -> tuple[str, ...]:
+    if schedule.credentials_configured:
+        return tuple(schedule.credential_ids_json or [])
+    return tuple(str(credential["id"]) for credential in list_credentials(db))
+
+
 def _schedule_dict(db: Session, schedule: AgentConversationSchedule) -> dict[str, Any]:
     binding = _schedule_binding(db, schedule)
     directory = (
@@ -168,7 +177,7 @@ def _schedule_dict(db: Session, schedule: AgentConversationSchedule) -> dict[str
         "model_name": schedule.model_name,
         "reasoning_effort": schedule.reasoning_effort,
         "capability_version_ids": list(schedule.capability_version_ids_json or []),
-        "credential_ids": list(schedule.credential_ids_json or []),
+        "credential_ids": list(_schedule_credential_ids(db, schedule)),
         "name": schedule.name,
         "prompt": schedule.prompt,
         "cron_expression": schedule.cron_expression,
@@ -181,8 +190,17 @@ def _schedule_dict(db: Session, schedule: AgentConversationSchedule) -> dict[str
     }
 
 
-def _occurrence_dict(db: Session, item: AgentConversationScheduleOccurrence) -> dict[str, Any]:
-    binding = db.get(AgentConversationBinding, item.binding_id)
+def occurrence_dict(
+    db: Session,
+    item: AgentConversationScheduleOccurrence,
+    *,
+    bindings: dict[str, AgentConversationBinding] | None = None,
+) -> dict[str, Any]:
+    binding = (
+        bindings.get(item.binding_id)
+        if bindings is not None
+        else db.get(AgentConversationBinding, item.binding_id)
+    )
     return {
         "id": item.id,
         "scheduled_for": item.scheduled_for.isoformat() if item.scheduled_for else None,
@@ -256,7 +274,7 @@ def _write_automation_files(db: Session, schedule: AgentConversationSchedule) ->
         model_name=schedule.model_name,
         reasoning_effort=schedule.reasoning_effort,
         capability_version_ids=tuple(schedule.capability_version_ids_json or []),
-        credential_ids=tuple(schedule.credential_ids_json or []),
+        credential_ids=_schedule_credential_ids(db, schedule),
     )
 
 
@@ -301,6 +319,7 @@ def create_schedule(
         reasoning_effort=reasoning_effort,
         capability_version_ids_json=list(capabilities),
         credential_ids_json=list(credentials),
+        credentials_configured=True,
         name=name,
         prompt=prompt,
         cron_expression=cron_expression,
@@ -366,6 +385,7 @@ def update_schedule(
     schedule.reasoning_effort = reasoning_effort
     schedule.capability_version_ids_json = list(capabilities)
     schedule.credential_ids_json = list(credentials)
+    schedule.credentials_configured = True
     if conversation_mode == "NEW":
         schedule.binding_id = None
     elif not schedule.binding_id:
@@ -483,6 +503,43 @@ def delete_schedule(db: Session, workspace_id: str, schedule_id: str) -> None:
     finish(db)
 
 
+
+def delete_failed_occurrence(
+    db: Session, workspace_id: str, schedule_id: str, occurrence_id: str
+) -> None:
+    occurrence = db.scalar(
+        select(AgentConversationScheduleOccurrence)
+        .join(
+            AgentConversationSchedule,
+            AgentConversationSchedule.id == AgentConversationScheduleOccurrence.schedule_id,
+        )
+        .where(
+            AgentConversationScheduleOccurrence.id == occurrence_id,
+            AgentConversationScheduleOccurrence.schedule_id == schedule_id,
+            AgentConversationSchedule.workspace_id == workspace_id,
+        )
+        .with_for_update()
+    )
+    if occurrence is None:
+        raise not_found("agent_conversation_schedule_occurrence", occurrence_id)
+    if occurrence.state != "FAILED":
+        raise DomainError("AGENT_SCHEDULE_OCCURRENCE_DELETE_INVALID", "只能删除失败的运行记录", 409)
+    if db.get(AgentConversationBinding, occurrence.binding_id) is not None:
+        raise DomainError(
+            "AGENT_SCHEDULE_OCCURRENCE_CONVERSATION_EXISTS",
+            "该失败记录已有可管理会话，请在会话列表中删除",
+            409,
+        )
+    db.execute(
+        delete(BackgroundTask).where(
+            BackgroundTask.aggregate_type == "AGENT_CONVERSATION_SCHEDULE_OCCURRENCE",
+            BackgroundTask.aggregate_id == occurrence.id,
+        )
+    )
+    db.delete(occurrence)
+    finish(db)
+
+
 def list_occurrences(db: Session, workspace_id: str, schedule_id: str) -> list[dict[str, Any]]:
     schedule = db.scalar(
         select(AgentConversationSchedule).where(
@@ -493,7 +550,7 @@ def list_occurrences(db: Session, workspace_id: str, schedule_id: str) -> list[d
     if schedule is None:
         raise not_found("agent_conversation_schedule", schedule_id)
     return [
-        _occurrence_dict(db, item)
+        occurrence_dict(db, item)
         for item in db.scalars(
             select(AgentConversationScheduleOccurrence)
             .where(AgentConversationScheduleOccurrence.schedule_id == schedule.id)
@@ -552,9 +609,10 @@ def _bootstrap_run(
         reasoning_effort=schedule.reasoning_effort,
         content=_automation_prompt(schedule),
         capability_version_ids=tuple(schedule.capability_version_ids_json or []),
-        credential_ids=tuple(schedule.credential_ids_json or []),
+        credential_ids=_schedule_credential_ids(db, schedule),
         conversation_id=occurrence.binding_id,
         idempotency_key=_run_binding_id(schedule, occurrence),
+        interactive=False,
     )
 
 

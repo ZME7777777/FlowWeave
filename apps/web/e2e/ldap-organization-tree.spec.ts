@@ -121,7 +121,7 @@ test('hides and rejects the direct Agent session entry for an unapproved user', 
   await page.goto('/agent');
   await expect(page.getByRole('button', { name: 'Agent 会话' })).toHaveCount(0);
   await expect(page).not.toHaveURL(/\/agent$/);
-  await expect(page.getByText('节点资产', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('节点中心', { exact: true }).first()).toBeVisible();
 });
 
 

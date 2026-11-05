@@ -10,7 +10,9 @@ export function defaultConversationModel(
   const source = providers.find(
     (provider) => provider.id === sourceProviderId && provider.connection_state === 'CONNECTED',
   );
-  const provider = source ?? providers.find((candidate) => candidate.connection_state === 'CONNECTED');
+  const provider = source
+    ?? providers.find((candidate) => candidate.connection_state === 'CONNECTED' && candidate.is_primary)
+    ?? providers.find((candidate) => candidate.connection_state === 'CONNECTED');
   const model =
     provider?.models.find((candidate) => candidate.enabled && candidate.model_name === sourceModelName) ??
     provider?.models.find((candidate) => candidate.enabled && candidate.is_default) ??

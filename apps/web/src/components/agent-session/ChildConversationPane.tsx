@@ -1051,20 +1051,10 @@ export function ChildConversationPane({
                     efforts={efforts}
                     effort={model?.reasoningEffort ?? ''}
                     disabled={!writable || nativeBusy || condensing || mutating}
-                    onProviderChange={(id) => {
-                      const selected = providers.data?.find((item) => item.id === id);
-                      const next =
-                        selected?.models.find((item) => item.enabled && item.is_default) ??
-                        selected?.models.find((item) => item.enabled);
-                      if (next) void changeModel(id, next.model_name, next.default_reasoning_effort ?? null);
-                    }}
-                    onModelChange={(name) => {
-                      if (model)
-                        void changeModel(
-                          model.providerId,
-                          name,
-                          models.find((item) => item.model_name === name)?.default_reasoning_effort ?? null,
-                        );
+                    onSelect={(providerId, modelName) => {
+                      const selected = providers.data?.find((item) => item.id === providerId)
+                        ?.models.find((item) => item.enabled && item.model_name === modelName);
+                      if (selected) void changeModel(providerId, modelName, selected.default_reasoning_effort ?? null);
                     }}
                     onEffortChange={(effort) => {
                       if (model) void changeModel(model.providerId, model.modelName, effort || null);

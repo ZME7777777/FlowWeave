@@ -46,6 +46,33 @@ flowweave capability plugin-publish <resolution-id> \
 
 自定义受信任 Marketplace 先使用 `capability marketplace-preview --data-file ./marketplace.json` 审阅目录。异步 resolve 返回 `202` 时读取同一个 resolution ID 的状态，不要重复提交。OAuth 只经平台授权引用管理；不把 token 放进请求样例、文件或日志。
 
+### 远程 MCP 可选 Bearer 认证
+
+远程 MCP 可通过认证管理中的 Token 绑定访问，无需安装 mcporter 或把 Token
+写入 MCP JSON。先从平台读取真实能力版本 ID、当前用户的认证 ID 和服务地址：
+
+```bash
+flowweave api get /capabilities/<version-id>/mcp-authentication
+flowweave api get /website-credentials
+flowweave api put /capabilities/<version-id>/mcp-authentication \
+  --data '{"strategy":"bearer","credential_id":"<credential-id>","expected_row_version":0}' --dry-run
+```
+
+`expected_row_version` 使用读取结果的 `row_version`，首次未绑定为 0。去掉
+`--dry-run` 才会保存。凭据必须属于当前用户且为 Token，主机、显式端口和
+完整路径范围须与 MCP URL 匹配；不匹配时不要绕过校验。选择 `none` 并清空
+`credential_id` 可取消当前用户的额外认证，不改写共享能力版本。
+
+绑定用于新建 Agent 会话、FlowRun 节点执行及既有会话首次装配该 MCP。
+平台通过 OpenHands 原生 Secret Registry 与 Bearer auth 配置完成连接；
+已有原生连接不随默认绑定或 Token 更新而改变，应新建会话使用更新认证。
+能力详情和批量连接测试均使用当前账号绑定；详情还可显式指定一个只读工具
+及参数验证业务授权。`tools/list` 成功只证明工具目录可访问，不证明业务调用
+已获授权。KDocs 等服务应进一步检查只读工具返回的业务码。
+
+本地 stdio、内置 MCP 和原有 OAuth／Header 认证配置继续走各自契约。不得将
+专有网页登录换 Token 流程伪装成标准 OAuth，不得把明文 Token 发到聊天中。
+
 Agent Definition 仅接受 UTF-8 `.md`/`.markdown` 文件：必须包含 YAML frontmatter 和 Markdown 正文，`<example>…</example>` 用于触发示例；正文冻结为系统提示词。不要提交 JSON、分离脚本、嵌套 Skill/MCP/Hook 配置、显式模型或非治理权限／压缩设置。平台会将未声明的权限和压缩分别冻结为 `never_confirm` 与 `NoOpCondenser`。
 
 需要取回已发布 Skill 时，先读取能力确认其精确 ID 和版本，再下载冻结 ZIP：`flowweave capability download <capability-id> --output ./skill.zip --dry-run`。实际下载不会覆盖已存在的本地文件；下载产物只用于审阅、归档或后续受治理导入，不等于把它直接安装到 Runtime。

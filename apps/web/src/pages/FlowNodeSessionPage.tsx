@@ -5,6 +5,7 @@ import { flowNodeSessionGateway } from '../api/agent-session-gateway';
 import { AgentSessionWorkbench } from '../components/agent-session/AgentSessionWorkbench';
 import { flowNodeSessionHost } from '../components/agent-session/session-host';
 import { useWorkbenchStore } from '../store/workbench';
+import { flowRunLocationFromState, flowRunPath } from '../flowRunNavigation';
 
 /**
  * FlowRun node route host for the shared Agent workbench.  The route carries
@@ -66,6 +67,7 @@ export function FlowNodeSessionPage({
   }, [flowRunId, queryClient]);
   const returnToNodeAttempt = async () => {
     const source = window.history.state?.flowweaveFlowRun;
+    const location = flowRunLocationFromState(window.history.state) ?? { runId: flowRunId };
     const automatic = source?.mode === 'AUTOMATIC' && typeof source.automaticRecordId === 'string';
     const stepwise = source?.mode === 'MANUAL' && typeof source.stepwiseRecordId === 'string';
     useWorkbenchStore.setState({
@@ -77,11 +79,10 @@ export function FlowNodeSessionPage({
       selectedAutomaticRecordId: automatic ? source.automaticRecordId : undefined,
       selectedStepwiseRecordId: stepwise ? source.stepwiseRecordId : undefined,
     });
-    try {
-      await refreshFlowRunProjection();
-    } finally {
-      onNavigate('/', true);
-    }
+    // Navigate first: the destination renders from cached data, so returning
+    // must not wait on the projection refresh round trips.
+    onNavigate(flowRunPath(location), true);
+    void refreshFlowRunProjection().catch(() => undefined);
   };
   return <AgentSessionWorkbench
     gateway={gateway}

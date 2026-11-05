@@ -19,6 +19,34 @@ class Lease:
     generation: int
 
 
+class TaskDeferred(Exception):
+    """A healthy task is waiting for an external precondition, not failing."""
+
+    def __init__(self, reason: str, delay_seconds: int = 10):
+        super().__init__(reason)
+        self.delay_seconds = max(1, min(delay_seconds, 300))
+
+
+def defer(db: Session, lease: Lease, waiting: TaskDeferred, *, commit: bool = True) -> bool:
+    result = db.execute(
+        update(BackgroundTask)
+        .where(*_lease_filter(lease), BackgroundTask.lease_until >= datetime.now(UTC))
+        .values(
+            state=TaskState.RETRY,
+            lease_owner=None,
+            lease_until=None,
+            available_at=datetime.now(UTC) + timedelta(seconds=waiting.delay_seconds),
+            attempts=BackgroundTask.attempts - 1,
+            last_error=str(waiting),
+        )
+    )
+    if commit:
+        db.commit()
+    else:
+        db.flush()
+    return result.rowcount == 1
+
+
 def enqueue(
     db: Session,
     *,

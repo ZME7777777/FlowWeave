@@ -10,7 +10,7 @@ const authenticatedUser = {
 test('new schedule explains how to create a usable template when none exist', async ({ page }) => {
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
-    const path = new URL(request.url()).pathname;
+    const path = new URL(request.url()).pathname.replace(/^\/flowweave/, '');
     const respond = (body: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
     if (path.endsWith('/auth/me')) return respond(authenticatedUser);
     if (path === '/api/v1/flow-run-schedules' || path === '/api/v1/flows' || path === '/api/v1/flow-run-schedule-templates') return respond([]);
@@ -36,7 +36,7 @@ test('new schedule filters FlowRuns before choosing a continuous record', async 
     { id: 'record-2', name: '收盘巡检', flow_definition_id: 'flow-2', flow_name: '日报生成', parent_flow_run_id: 'run-2', parent_flow_run_name: '港股流程', parent_flow_run_no: 9, state: 'DRAFT', run_no: 3 },
   ];
   await page.route('**/api/v1/**', async route => {
-    const path = new URL(route.request().url()).pathname;
+    const path = new URL(route.request().url()).pathname.replace(/^\/flowweave/, '');
     const respond = (body: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
     if (path.endsWith('/auth/me')) return respond(authenticatedUser);
     if (path === '/api/v1/flow-run-schedules' || path === '/api/v1/flows') return respond([]);
@@ -67,7 +67,7 @@ test('schedule deletion uses a destructive icon and confirms cascading record cl
   };
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
-    const path = new URL(request.url()).pathname;
+    const path = new URL(request.url()).pathname.replace(/^\/flowweave/, '');
     const respond = (body: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
     if (path.endsWith('/auth/me')) return respond(authenticatedUser);
     if (path === '/api/v1/flow-run-schedules' && request.method() === 'GET') return respond([schedule]);
@@ -97,7 +97,7 @@ test('schedule rows expand across their full width and immediate trigger reports
   };
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
-    const path = new URL(request.url()).pathname;
+    const path = new URL(request.url()).pathname.replace(/^\/flowweave/, '');
     const respond = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
     if (path.endsWith('/auth/me')) return respond(authenticatedUser);
     if (path === '/api/v1/flow-run-schedules' && request.method() === 'GET') return respond([schedule]);
@@ -161,10 +161,11 @@ test('schedule history is paginated and only shows node states for an expanded r
     const request = route.request();
     const url = new URL(request.url());
     const respond = (body: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
-    if (url.pathname.endsWith('/auth/me')) return respond(authenticatedUser);
-    if (url.pathname === '/api/v1/flow-run-schedules' && request.method() === 'GET') return respond([schedule]);
-    if (url.pathname === '/api/v1/flow-run-schedule-templates' || url.pathname === '/api/v1/flows') return respond([]);
-    if (url.pathname.endsWith('/occurrences')) {
+    const path = url.pathname.replace(/^\/flowweave/, '');
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/flow-run-schedules' && request.method() === 'GET') return respond([schedule]);
+    if (path === '/api/v1/flow-run-schedule-templates' || path === '/api/v1/flows') return respond([]);
+    if (path.endsWith('/occurrences')) {
       const currentPage = Number(url.searchParams.get('page') ?? '1');
       return respond({ items: currentPage === 1 ? Array.from({ length: 10 }, (_, index) => occurrence(index + 1)) : [occurrence(11)], total: 11, page: currentPage, page_size: 10 });
     }
@@ -183,4 +184,85 @@ test('schedule history is paginated and only shows node states for an expanded r
   await page.getByRole('button', { name: '下一页', exact: true }).click();
   await expect(page.locator('.schedule-record-run')).toContainText('连续运行 11');
   await expect(page.getByText('第 2 / 2 页 · 共 11 条', { exact: true })).toBeVisible();
+});
+
+test('schedule records dominate the workspace with a fixed compact header and independent row scrolling', async ({ page }) => {
+  const schedule = {
+    id: 'compact-schedule-1', name: 'FW-E2E-current-audit-schedule-20261017 · 长任务名称布局验收',
+    status: 'PAUSED', cron_expression: '0 8 1 1 *', next_run_at: '2027-01-01T00:00:00Z',
+    last_run_at: '2026-10-17T11:31:18Z', row_version: 1,
+    source_flow_run: { name: '完整配置的连续运行母版' },
+  };
+  let releaseSecondPage: () => void = () => undefined;
+  const secondPage = new Promise<void>(resolve => { releaseSecondPage = resolve; });
+  const occurrence = (index: number) => ({
+    id: `compact-occurrence-${index}`, scheduled_for: index === 0 ? null : '2026-10-17T11:31:18Z',
+    trigger_kind: index % 2 ? 'SCHEDULED' : 'MANUAL', state: index % 3 ? 'STARTED' : 'PENDING',
+    flow_run: { id: `run-${index}`, parent_flow_run_id: 'parent-run', name: `闭环检查执行记录 ${index + 1}`, run_no: index + 1, started_at: '2026-10-17T11:31:18Z', node_runs: [] },
+  });
+  await page.route('**/api/v1/**', async route => {
+    const url = new URL(route.request().url());
+    const path = url.pathname.replace(/^\/flowweave/, '');
+    const respond = (body: unknown) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
+    if (path.endsWith('/auth/me')) return respond(authenticatedUser);
+    if (path === '/api/v1/flow-run-schedules') return respond([schedule, { ...schedule, id: 'compact-schedule-2', name: '另一个定时任务', status: 'ACTIVE' }]);
+    if (path.includes('/compact-schedule-2/occurrences')) return respond({ items: [occurrence(100)], total: 1, page: 1, page_size: 10 });
+    if (path.endsWith('/occurrences')) {
+      const current = Number(url.searchParams.get('page') ?? '1');
+      if (current === 2) await secondPage;
+      return respond({ items: Array.from({ length: 10 }, (_, index) => occurrence((current - 1) * 10 + index)), total: 21, page: current, page_size: 10 });
+    }
+    return respond([]);
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: '定时调度', exact: true }).click();
+  const workspace = page.locator('.schedule-workspace');
+  const header = workspace.locator('.schedule-conversation-head');
+  const table = workspace.getByRole('region', { name: '执行记录表格' });
+  const toolbar = table.locator('.schedule-record-toolbar');
+  const records = table.getByRole('list', { name: '执行记录' });
+  await expect(records.getByRole('listitem')).toHaveCount(10);
+  await expect(workspace.locator('.schedule-summary-card')).toHaveCount(0);
+  await expect(workspace.getByText('RUN HISTORY', { exact: true })).toHaveCount(0);
+  await page.getByLabel('任务信息', { exact: true }).click();
+  const info = workspace.locator('.schedule-header-info dl');
+  await expect(info).toContainText('2027/1/1 08:00:00');
+  await info.click();
+  await expect(info).toBeVisible();
+  await header.getByRole('heading').click();
+  await expect(info).toBeHidden();
+  await page.getByLabel('任务信息', { exact: true }).click();
+  await page.keyboard.press('Escape');
+  await expect(info).toBeHidden();
+  const firstTime = records.locator('.schedule-record').first().locator('time');
+  await expect(firstTime).toHaveAttribute('title', '运行创建时间：2026/10/17 19:31:18');
+  for (const width of [1920, 1440, 1024]) {
+    await page.setViewportSize({ width, height: 640 });
+    await records.evaluate(element => { element.scrollTop = 0; });
+    const positions = { header: (await header.boundingBox())!, toolbar: (await toolbar.boundingBox())!, pagination: (await table.getByRole('navigation').boundingBox())! };
+    expect(positions.header.height).toBeLessThanOrEqual(44);
+    expect(await records.evaluate(element => element.scrollHeight - element.clientHeight)).toBeGreaterThan(10);
+    const dimensions = await records.locator('.schedule-record').evaluateAll(elements => elements.map(element => ({ height: element.getBoundingClientRect().height, overflow: element.scrollWidth - element.clientWidth })));
+    expect(dimensions.every(item => item.height <= 50 && item.overflow <= 1)).toBe(true);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
+    expect(await page.evaluate(() => document.scrollingElement!.scrollHeight - document.scrollingElement!.clientHeight)).toBeLessThanOrEqual(1);
+    await records.hover();
+    await page.mouse.wheel(0, 600);
+    await expect.poll(() => records.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+    expect((await header.boundingBox())!.y).toBe(positions.header.y);
+    expect((await toolbar.boundingBox())!.y).toBe(positions.toolbar.y);
+    expect((await table.getByRole('navigation').boundingBox())!.y).toBe(positions.pagination.y);
+    expect(await workspace.locator('.schedule-conversation').evaluate(element => element.scrollTop)).toBe(0);
+  }
+  await page.setViewportSize({ width: 1440, height: 800 });
+  await records.evaluate(element => { element.scrollTop = 0; });
+  await workspace.screenshot({ path: '../../.tmp/ops23/schedule-workspace.png' });
+  await table.getByRole('button', { name: '下一页', exact: true }).click();
+  await expect(table.getByRole('status')).toContainText('正在加载');
+  await workspace.locator('.schedule-task-list button').filter({ hasText: '另一个定时任务' }).click();
+  await expect(records.getByRole('listitem')).toHaveCount(1);
+  await expect(records.getByText('闭环检查执行记录 101', { exact: true })).toBeVisible();
+  releaseSecondPage();
+  await expect(header.getByRole('heading')).toHaveText('另一个定时任务');
+  await expect(records.getByRole('listitem')).toHaveCount(1);
 });

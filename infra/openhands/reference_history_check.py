@@ -1,4 +1,4 @@
-"""Probe a governed history plugin with the source-lock SDK, without running an LLM.
+"""Probe governed history or Case context MCP with the source-lock SDK, without an LLM.
 
 Run under an isolated environment built from the locked vendor archive. All
 mutable state belongs in --state-dir under the caller's repository .tmp/.
@@ -56,6 +56,10 @@ def check(
     source_binding_id: str | None = None,
     restored_source_binding_id: str | None = None,
     initial_config: bool = False,
+    case_context: bool = False,
+    case_flows: bool = False,
+    case_flow_action_json: str | None = None,
+    case_materials: bool = False,
 ) -> dict[str, object]:
     os.environ["OPENHANDS_SUPPRESS_BANNER"] = "1"
     logging.disable(logging.CRITICAL)
@@ -73,6 +77,16 @@ def check(
     from openhands.sdk.utils.cipher import Cipher
 
     token = os.environ.pop("HISTORY_MCP_PROBE_TOKEN")
+    secret_name = (
+        "FLOWWEAVE_CASE_ACCESS" if case_context else "FLOWWEAVE_HISTORY_ACCESS"
+    )
+    tool_name = "read_case_context" if case_context else "read_referenced_conversation"
+    if case_flows:
+        secret_name = "FLOWWEAVE_CASE_FLOW_ACCESS"
+        tool_name = "manage_case_flow" if case_flow_action_json else "read_case_flow"
+    if case_materials:
+        secret_name = "FLOWWEAVE_CASE_MATERIAL_ACCESS"
+        tool_name = "read_case_material"
     plugin_root = marketplace / "plugins" / plugin_name
     plugin = Plugin.load(plugin_root)
     assert len(plugin.mcp_config) == 1, (
@@ -81,7 +95,7 @@ def check(
     server_name, server = next(iter(plugin.mcp_config.items()))
     assert server.url and urlsplit(server.url).hostname in {"127.0.0.1", "localhost"}
     assert server.headers and server.headers["Authorization"].get_secret_value() == (
-        "Bearer ${FLOWWEAVE_HISTORY_ACCESS}"
+        "Bearer ${" + secret_name + "}"
     )
     cipher = Cipher(secrets.token_hex(32))
 
@@ -120,7 +134,7 @@ def check(
     try:
         if initial_config:
             conversation.update_secrets(
-                {"FLOWWEAVE_HISTORY_ACCESS": StaticSecret(value=SecretStr(token))}
+                {secret_name: StaticSecret(value=SecretStr(token))}
             )
             conversation.send_message(
                 "Initial MCP contract probe; do not execute a model turn."
@@ -131,7 +145,7 @@ def check(
                 "Local contract probe; do not execute a model turn."
             )
             conversation.update_secrets(
-                {"FLOWWEAVE_HISTORY_ACCESS": StaticSecret(value=SecretStr(token))}
+                {secret_name: StaticSecret(value=SecretStr(token))}
             )
             conversation.load_plugin(f"{plugin_name}@history-probe")
         configured = conversation.agent.mcp_config[server_name]
@@ -141,13 +155,15 @@ def check(
         tools = [
             tool
             for name, tool in conversation.agent.tools_map.items()
-            if name.endswith("read_referenced_conversation")
+            if name.endswith(tool_name)
         ]
         assert len(tools) == 1
         tool = tools[0]
         arguments = (
             {"source_binding_id": source_binding_id} if source_binding_id else {}
         )
+        if case_flow_action_json:
+            arguments = json.loads(case_flow_action_json)
         result = tool.as_executable().executor(
             tool.action_from_arguments(arguments), conversation
         )
@@ -176,10 +192,7 @@ def check(
     try:
         assert restored.id == identity
         assert tuple(event.id for event in restored.state.events) == event_ids
-        assert (
-            restored.state.secret_registry.get_secret_value("FLOWWEAVE_HISTORY_ACCESS")
-            == token
-        )
+        assert restored.state.secret_registry.get_secret_value(secret_name) == token
         assert restored.agent.mcp_config[server_name].headers[
             "Authorization"
         ].get_secret_value() == (f"Bearer {token}")
@@ -187,12 +200,14 @@ def check(
         restored_tools = [
             tool
             for name, tool in restored.agent.tools_map.items()
-            if name.endswith("read_referenced_conversation")
+            if name.endswith(tool_name)
         ]
         assert len(restored_tools) == 1
         tool = restored_tools[0]
         restored_source = restored_source_binding_id or source_binding_id
         arguments = {"source_binding_id": restored_source} if restored_source else {}
+        if case_flow_action_json:
+            arguments = json.loads(case_flow_action_json)
         result = tool.as_executable().executor(
             tool.action_from_arguments(arguments), restored
         )
@@ -221,6 +236,10 @@ if __name__ == "__main__":
     parser.add_argument("--source-binding-id")
     parser.add_argument("--restored-source-binding-id")
     parser.add_argument("--initial-config", action="store_true")
+    parser.add_argument("--case-context", action="store_true")
+    parser.add_argument("--case-flows", action="store_true")
+    parser.add_argument("--case-materials", action="store_true")
+    parser.add_argument("--case-flow-action-json")
     args = parser.parse_args()
     print(
         json.dumps(
@@ -231,6 +250,10 @@ if __name__ == "__main__":
                 args.source_binding_id,
                 args.restored_source_binding_id,
                 args.initial_config,
+                args.case_context,
+                args.case_flows,
+                args.case_flow_action_json,
+                args.case_materials,
             )
         )
     )

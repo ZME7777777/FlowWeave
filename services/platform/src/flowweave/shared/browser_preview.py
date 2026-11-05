@@ -13,6 +13,15 @@ from flowweave.shared.credentials_crypto import decrypt_secret, encrypt_secret
 from flowweave.shared.errors import DomainError
 
 PREVIEW_TTL_SECONDS = 900
+PREVIEW_RESPONSE_HEADERS = {
+    "Cache-Control": "no-store",
+    "Referrer-Policy": "no-referrer",
+    "Access-Control-Allow-Origin": "*",
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": (
+        "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads"
+    ),
+}
 PREVIEW_PATH = re.compile(
     r"^/api/v1/agent-workspaces/(?P<workspace>[^/]+)/browser/"
     r"(?P<scheme>https?)/(?P<port>[0-9]+)/_preview/(?P<token>fwpreview_[A-Za-z0-9_=-]+)/"

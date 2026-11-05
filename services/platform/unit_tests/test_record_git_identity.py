@@ -3,7 +3,6 @@
 from types import SimpleNamespace
 
 import pytest
-from pydantic import ValidationError
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 
@@ -14,11 +13,7 @@ from flowweave.modules.users.infrastructure.models import User
 from flowweave.runtime.base import RuntimeAgentSpec
 from flowweave.runtime.request import build_runtime_request
 from flowweave.shared.models import FlowRun, NodeRun, RunSnapshot
-from flowweave.shared.schemas import (
-    AutomaticRunDraftWrite,
-    GitIdentityWrite,
-    StepwiseRunRecordWrite,
-)
+from flowweave.shared.schemas import AutomaticRunDraftWrite, StepwiseRunRecordWrite
 
 
 @pytest.fixture
@@ -42,6 +37,7 @@ def records(monkeypatch):
     monkeypatch.setattr(service, "_snapshot_definition", lambda *_args, **_kwargs: definition)
     monkeypatch.setattr(service, "_compile_runtime_manifest", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(service, "load_flow", lambda *_args: SimpleNamespace(name="Flow"))
+    monkeypatch.setattr(service, "_require_startable_flow", lambda *_args: None)
     monkeypatch.setattr(service, "finish", lambda db: db.commit())
     monkeypatch.setattr(service, "run_detail", lambda db, record_id: {"id": record_id})
     with Session(engine, expire_on_commit=False) as db, tenant_user("owner"):
@@ -80,7 +76,7 @@ def records(monkeypatch):
     engine.dispose()
 
 
-def test_stepwise_and_continuous_records_freeze_profile_and_manual_override(records, monkeypatch):
+def test_new_records_freeze_current_profile_and_runtime_uses_it(records, monkeypatch):
     db = records
     first = service._create_nested_stepwise_run_record(
         db, "parent", StepwiseRunRecordWrite(start_node_key="first")
@@ -88,18 +84,13 @@ def test_stepwise_and_continuous_records_freeze_profile_and_manual_override(reco
     second = service.create_nested_automatic_run_draft(
         db,
         "parent",
-        AutomaticRunDraftWrite(
-            environment_version_id="environment",
-            start_node_key="first",
-            git_identity=GitIdentityWrite(author="Override", email="override@example.test"),
-        ),
+        AutomaticRunDraftWrite(environment_version_id="environment", start_node_key="first"),
     )
     original = {"author": "真实姓名", "email": "name@example.test"}
     assert record_git_identity(first) == original
     other = db.get(FlowRun, second["id"])
-    assert record_git_identity(other) == {"author": "Override", "email": "override@example.test"}
+    assert record_git_identity(other) == original
     db.get(User, "owner").display_name = "Later Profile"
-    # A later automatic draft save must retain the record's original identity.
     from flowweave.shared.schemas import AutomaticRunDraftUpdateWrite
 
     service.update_automatic_run_draft(
@@ -112,7 +103,7 @@ def test_stepwise_and_continuous_records_freeze_profile_and_manual_override(reco
     db.commit()
     db.expire_all()
     assert record_git_identity(db.get(FlowRun, first.id)) == original
-    assert record_git_identity(db.get(FlowRun, other.id))["author"] == "Override"
+    assert record_git_identity(db.get(FlowRun, other.id)) == original
     monkeypatch.setattr("flowweave.runtime.request.credentials_for_agent", lambda _db: ({}, ""))
     monkeypatch.setattr(
         "flowweave.runtime.request.node_attempt_workspace_context",
@@ -120,7 +111,7 @@ def test_stepwise_and_continuous_records_freeze_profile_and_manual_override(reco
             runtime_working_directory="/runtime/workspace/project/" + kwargs["flow_run_id"]
         ),
     )
-    for record, author in ((first, "真实姓名"), (other, "Override")):
+    for record in (first, other):
         request = build_runtime_request(
             db,
             flow_run_id=record.id,
@@ -134,25 +125,11 @@ def test_stepwise_and_continuous_records_freeze_profile_and_manual_override(reco
             agent_spec=RuntimeAgentSpec(),
             node_attempt_id="attempt",
         )
-        assert request.git_identity[0] == author
+        assert request.git_identity == ("真实姓名", "name@example.test")
         assert request.workspace_root.endswith("/" + record.id)
 
 
-@pytest.mark.parametrize(
-    "value",
-    [
-        {"author": "  ", "email": "a@example.test"},
-        {"author": "bad\nname", "email": "a@example.test"},
-        {"author": "Name", "email": "invalid"},
-        {"author": "Name", "email": "a@example.test", "root": "/other-record"},
-    ],
-)
-def test_record_identity_rejects_invalid_names_addresses_and_paths(value):
-    with pytest.raises(ValidationError):
-        GitIdentityWrite.model_validate(value)
-
-
-def test_copy_and_portable_export_keep_record_identity_after_profile_changes(records):
+def test_copy_and_import_freeze_current_profile_without_exporting_identity(records):
     db = records
     from flowweave.shared.schemas import (
         AutomaticRecordConfigExportWrite,
@@ -162,7 +139,6 @@ def test_copy_and_portable_export_keep_record_identity_after_profile_changes(rec
         StepwiseRunRecordCopyWrite,
     )
 
-    original = {"author": "真实姓名", "email": "name@example.test"}
     step = service._create_nested_stepwise_run_record(
         db, "parent", StepwiseRunRecordWrite(start_node_key="first")
     )
@@ -172,6 +148,7 @@ def test_copy_and_portable_export_keep_record_identity_after_profile_changes(rec
         AutomaticRunDraftWrite(environment_version_id="environment", start_node_key="first"),
     )
     db.get(User, "owner").display_name = "Changed Profile"
+    expected = {"author": "Changed Profile", "email": "name@example.test"}
     copied_step = service.copy_nested_stepwise_run_record(
         db, "parent", step.id, StepwiseRunRecordCopyWrite(name="Step copy")
     )
@@ -179,7 +156,7 @@ def test_copy_and_portable_export_keep_record_identity_after_profile_changes(rec
         db, auto["id"], AutomaticRunCopyWrite(name="Auto copy")
     )
     for copied in (copied_step, copied_auto):
-        assert record_git_identity(db.get(FlowRun, copied["id"])) == original
+        assert record_git_identity(db.get(FlowRun, copied["id"])) == expected
     step_export = service.export_nested_stepwise_run_configs(
         db, "parent", StepwiseRecordConfigExportWrite(record_ids=[step.id])
     )
@@ -187,8 +164,9 @@ def test_copy_and_portable_export_keep_record_identity_after_profile_changes(rec
         db, "parent", AutomaticRecordConfigExportWrite(record_ids=[auto["id"]])
     )
     for exported in (step_export, auto_export):
-        assert exported["records"][0]["git_identity"] == original
+        assert "git_identity" not in exported["records"][0]
+    auto_export["records"][0]["git_identity"] = {"author": "Source", "email": "source@test"}
     imported = service.import_nested_automatic_run_configs(
         db, "parent", AutomaticRecordConfigImportWrite.model_validate(auto_export)
     )
-    assert record_git_identity(db.get(FlowRun, imported[0]["id"])) == original
+    assert record_git_identity(db.get(FlowRun, imported[0]["id"])) == expected

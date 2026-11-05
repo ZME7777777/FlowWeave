@@ -90,6 +90,8 @@ for (const marker of ['FLOWWEAVE_BUSINESS_RESULT_CONTRACT_V1', 'FLOWWEAVE_UPSTRE
       await expect(page.getByText('节点报告已生成。', { exact: true })).toBeVisible();
       await expect(page.locator('[data-user-event-id="internal-audit"]')).toHaveCount(0);
       await expect(page.getByText('隐藏的内部审计记录', { exact: false })).toHaveCount(0);
+      await expect(page.getByText('受控的节点补充约定', { exact: false })).toHaveCount(0);
+      await expect(page.getByText('FLOWWEAVE_', { exact: false })).toHaveCount(0);
       await expect(page.getByRole('separator', { name: '工作过程结束' })).toBeVisible();
       const process = page.getByLabel('展开工作过程', { exact: true });
       await expect(process).toHaveCount(1);

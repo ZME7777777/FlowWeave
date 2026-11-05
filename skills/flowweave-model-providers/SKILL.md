@@ -20,6 +20,8 @@ flowweave openapi --paths
 
 创建和修改的字段以线上 schema 为准。用 JSON 文件时，文件本身不得提交进仓库；完成后按团队安全流程处理。
 
+API Key 供应商只需一个 `base_url` 和一个 Key，一个供应商即可同时提供 Claude、GPT 等多种协议：每个模型的协议由 FlowWeave 按模型名自动判断（`claude*` 走 Anthropic Messages，`gpt-5`/`o*`/`codex*` 走 Responses，其余走 Chat Completions），必要时可在模型上用 `protocol` 手动覆盖。不再需要为同一网关按协议拆成多个供应商；旧的 `auth_type=ANTHROPIC_API_KEY` 和 `api_protocol` 仅作兼容别名。
+
 ```bash
 flowweave model create --data-file ./provider-local.json --dry-run
 flowweave model create --data-file ./provider-local.json
@@ -34,5 +36,9 @@ flowweave model test <provider-id>
 ## Codex OAuth
 
 仅对平台支持的供应商使用设备授权：先调用 `flowweave model oauth-start <provider-id>`，让用户在返回的验证地址完成授权，再用 `oauth-poll` 查看结果。用 `oauth-status` 查询，明确授权撤销后才 `oauth-revoke`。OAuth 设备码与令牌是敏感数据，不复制到日志或文件。
+
+## 主要供应商
+
+每个用户至多一个“主要供应商”：新会话与自动选择模型时优先使用它。只有已连接、且有默认模型的供应商可设为主要；设置新的主要供应商会自动取消原来的。接口为 `POST /model-providers/<provider-id>/primary`（设为主要）与 `DELETE /model-providers/<provider-id>/primary`（取消），列表与详情返回 `is_primary`。CLI 是否提供对应子命令以 `flowweave openapi --paths` 为准，不要猜测命令名。
 
 删除供应商前，先读取其引用状态并提示它可能影响节点/运行；只有用户指定精确 ID 并确认后执行 `flowweave model delete <provider-id>`。

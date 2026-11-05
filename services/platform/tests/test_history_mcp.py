@@ -215,6 +215,8 @@ def client(monkeypatch):
     async def read(*_args, **kwargs):
         assert kwargs["history"] is True
         state.reads += 1
+        if getattr(state, "history_unavailable", False):
+            raise DomainError("RUNTIME_READ_SATURATED", "busy", 503)
         return {"messages": [{"event_id": "formal", "content": "正文"}], "history_cursor": "older"}
 
     monkeypatch.setattr(history_access, "authorize", authorize)
@@ -250,17 +252,48 @@ def test_mcp_handshake_tool_schema_and_read(client):
     assert initialized.json()["result"]["protocolVersion"] == "2025-03-26"
     tool = rpc("tools/list").json()["result"]["tools"][0]
     assert tool["annotations"]["readOnlyHint"] is True
-    assert "source_binding_id" in tool["inputSchema"]["properties"]
+    properties = tool["inputSchema"]["properties"]
+    assert "source_binding_id" in properties
+    assert "36-character" in properties["source_binding_id"]["description"]
+    assert "1-10000" in properties["max_content_chars"]["description"]
     result = rpc("tools/call", {"name": tool["name"], "arguments": {}})
     assert result.headers["cache-control"] == "no-store"
     assert json.loads(result.json()["result"]["content"][0]["text"])["history_cursor"] == "older"
     assert state.reads == 1
+    capped = rpc("tools/call", {"name": tool["name"], "arguments": {"max_content_chars": 12_000}})
+    assert "result" in capped.json()
+    assert state.reads == 2
     invalid = rpc("tools/call", {"name": tool["name"], "arguments": {"source_binding_id": "other"}})
-    assert invalid.json()["error"]["code"] == -32602
-    assert state.reads == 1
+    invalid_result = invalid.json()["result"]
+    assert invalid_result["isError"] is True
+    invalid_detail = json.loads(invalid_result["content"][0]["text"])
+    assert invalid_detail["error"] == "invalid_arguments"
+    assert "source_binding_id" in invalid_detail["guidance"]
+    assert state.reads == 2
     state.authorized = False
     assert rpc("tools/list").status_code == 401
-    assert state.reads == 1
+    assert state.reads == 2
+
+
+def test_mcp_history_failure_is_a_tool_observation(client):
+    c, token, state = client
+    state.history_unavailable = True
+    response = c.post(
+        mcp.MCP_PATH,
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": mcp.TOOL["name"], "arguments": {}},
+        },
+    )
+
+    result = response.json()["result"]
+    assert result["isError"] is True
+    detail = json.loads(result["content"][0]["text"])
+    assert detail["error"] == "history_unavailable"
+    assert "Continue without it" in detail["guidance"]
 
 
 def test_mcp_transport_rejects_bad_auth_and_requests(client):
@@ -426,10 +459,79 @@ def test_locked_sdk_native_plugin_secret_and_restore(client, tmp_path):
         report = json.loads(result.stdout.strip().splitlines()[-1])
         assert report["status"] == "passed"
         assert report["events"] > 0
-        assert report["source_commit"] == "ae178d86f4e0e268cf31f8f9c5deda892f4ebf12"
+        source_lock = Path(__file__).parents[3] / "infra/openhands/source.lock.json"
+        assert report["source_commit"] == json.loads(source_lock.read_text())["source_commit"]
         assert "restored_native_mcp_call" in report["checks"]
         assert state.reads == 2
     finally:
         server.should_exit = True
         thread.join(timeout=5)
         listener.close()
+
+
+@pytest.mark.parametrize("method", ["initialize", "tools/list", "ping", "tools/call"])
+def test_catalog_probe_credential_never_authorizes_history(client, monkeypatch, method):
+    from flowweave.modules.agent_sessions.application import history_integration, history_probe
+    from flowweave.shared.settings import settings_context
+
+    c, _token, state = client
+    owner, version_id = str(uuid4()), str(uuid4())
+    monkeypatch.setattr(
+        history_integration,
+        "configured_capability",
+        lambda _db: SimpleNamespace(version=SimpleNamespace(id=version_id)),
+    )
+    with settings_context(Settings(_env_file=None)):
+        token = history_probe.issue(owner, version_id)
+        response = c.post(
+            mcp.MCP_PATH,
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": method,
+                "params": {
+                    "name": "read_referenced_conversation",
+                    "arguments": {"source_binding_id": str(uuid4())},
+                },
+            },
+        )
+    assert response.status_code == (401 if method == "tools/call" else 200)
+    if method == "tools/list":
+        assert response.json()["result"]["tools"][0]["name"] == "read_referenced_conversation"
+    assert state.reads == 0
+    assert token not in response.text
+
+
+def test_catalog_probe_expiry_tampering_and_version_binding(client, monkeypatch):
+    from flowweave.modules.agent_sessions.application import history_integration, history_probe
+    from flowweave.shared.settings import settings_context
+
+    c, _, state = client
+    owner, version_id = str(uuid4()), str(uuid4())
+    monkeypatch.setattr(history_probe.time, "time", lambda: 10_000)
+    with settings_context(Settings(_env_file=None)):
+        token = history_probe.issue(owner, version_id)
+        assert history_probe.identity(token) == (owner, version_id)
+        monkeypatch.setattr(history_probe.time, "time", lambda: 10_061)
+        with pytest.raises(DomainError):
+            history_probe.identity(token)
+        monkeypatch.setattr(history_probe.time, "time", lambda: 10_000)
+        with pytest.raises(DomainError):
+            history_probe.identity(token[:-10] + "tampered00")
+        monkeypatch.setattr(
+            history_integration,
+            "configured_capability",
+            lambda _db: SimpleNamespace(version=SimpleNamespace(id=str(uuid4()))),
+        )
+        response = c.post(
+            mcp.MCP_PATH,
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list",
+            },
+        )
+        assert response.status_code == 401
+    assert state.reads == 0

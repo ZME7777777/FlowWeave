@@ -28,6 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from flowweave.bootstrap.container import Container
 from flowweave.modules.agent_sessions import public as agent_sessions
+from flowweave.modules.agent_sessions.application import message_submissions
 from flowweave.modules.agent_sessions.application.runtime_config import resolve_session_config
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.environments import public as environments
@@ -58,8 +59,12 @@ from flowweave.shared.http import (
     run_terminal_control,
     run_terminal_stream,
 )
-from flowweave.shared.schemas import ConversationPatchWrite
 from flowweave.shared.runtime_stream import forward_runtime_stream
+from flowweave.shared.schemas import (
+    ConversationGoalWrite,
+    ConversationPatchWrite,
+    WorkspaceGitSwitchWrite,
+)
 from flowweave.shared.settings import bind_settings, reset_settings
 
 router = APIRouter()
@@ -125,6 +130,7 @@ class NodeSessionBootstrapFullWrite(_Write):
         list[NodeWorkspaceReference], Field(default_factory=list, max_length=20)
     )
     annotations: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
+    goal_objective: str | None = Field(default=None, min_length=1, max_length=20_000)
 
 
 class NodeSessionMessageWrite(_Write):
@@ -216,6 +222,9 @@ def _project_stream_event(
     projected_payload = {**payload, "content": content}
     if str(payload.get("source") or "").lower() in {"user", "human"}:
         projected_payload["display_content"] = display_content
+    answered = agent_sessions.flow_node_conversations.project_answered_question(content)
+    if answered and str(payload.get("source") or "").lower() in {"user", "human"}:
+        projected_payload["answered_question"] = answered
     if references:
         projected_payload["conversation_references"] = list(references)
     if workspace_references:
@@ -495,6 +504,7 @@ async def bootstrap_node_session(
             references=tuple(item.model_dump(exclude_none=True) for item in payload.references),
             workspace_references=tuple(item.model_dump() for item in payload.workspace_references),
             annotations=tuple(payload.annotations),
+            goal_objective=payload.goal_objective,
             legacy_image_urls=tuple(legacy_image_urls),
             conversation_id=payload.conversation_id,
             work_directory_id=payload.work_directory_id,
@@ -541,6 +551,7 @@ async def node_session_workspace_directory(
     limit: int = Query(default=100, ge=1, le=250),
     binding_id: str | None = Query(default=None),
     work_directory_id: str | None = Query(default=None),
+    include_hidden: bool = Query(default=False),
 ) -> dict[str, Any]:
     return await run_blocking_auxiliary(
         container,
@@ -553,6 +564,7 @@ async def node_session_workspace_directory(
             parent_path=parent_path,
             cursor=cursor,
             limit=limit,
+            include_hidden=include_hidden,
         ),
     )
 
@@ -591,6 +603,7 @@ async def node_session_workspace_file(
     download: bool = Query(default=False),
     preview: bool = Query(default=False),
     offset: int = Query(default=0, ge=0),
+    include_hidden: bool = Query(default=False),
 ) -> Response:
     content, content_type, filename, total_size, next_offset = await run_blocking_auxiliary(
         container,
@@ -604,6 +617,7 @@ async def node_session_workspace_file(
             draft_attachment_owner_id=draft_attachment_owner_id,
             preview=preview and not download,
             offset=offset,
+            include_hidden=include_hidden,
         ),
     )
     disposition = "attachment" if download else "inline"
@@ -616,6 +630,54 @@ async def node_session_workspace_file(
         content=content,
         media_type=content_type,
         headers=headers,
+    )
+
+
+@router.get(f"{_BASE}/workspace/git/branches")
+async def workspace_git_branches(
+    flow_run_id: str,
+    attempt_id: str,
+    container: ContainerDep,
+    repository_path: str = Query(...),
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_blocking_auxiliary(
+        container,
+        lambda session: agent_sessions.flow_node_workspace.list_git_branches(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            repository_path=repository_path,
+            binding_id=binding_id,
+            work_directory_id=work_directory_id,
+        ),
+    )
+
+
+@router.post(f"{_BASE}/workspace/git/switch")
+async def switch_workspace_git_branch(
+    flow_run_id: str,
+    attempt_id: str,
+    body: WorkspaceGitSwitchWrite,
+    container: ContainerDep,
+    repository_path: str = Query(...),
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_blocking_mutation(
+        container,
+        lambda session: agent_sessions.flow_node_workspace.switch_git_branch(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            repository_path=repository_path,
+            ref=body.ref,
+            expected_head=body.expected_head,
+            expected_ref=body.expected_ref,
+            binding_id=binding_id,
+            work_directory_id=work_directory_id,
+        ),
     )
 
 
@@ -1244,7 +1306,27 @@ async def node_session_message(
     container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
 ) -> dict[str, Any]:
-    del idempotency_key
+    node_messages = agent_sessions.flow_node_conversations
+    if idempotency_key:
+        await run_sync(
+            db,
+            lambda session: (
+                node_messages.authorize_node_message_submission(
+                    session,
+                    flow_run_id=flow_run_id,
+                    attempt_id=attempt_id,
+                    binding_id=binding_id,
+                ),
+                message_submissions.begin(session, binding_id, idempotency_key),
+            ),
+        )
+    fence = (
+        message_submissions.DispatchFence(
+            container.database.control_sessions, binding_id, idempotency_key
+        )
+        if idempotency_key
+        else None
+    )
     arguments = {
         "attachments": tuple(
             cast(dict[str, str | int], item.model_dump(exclude_none=True))
@@ -1254,32 +1336,65 @@ async def node_session_message(
         "workspace_references": tuple(item.model_dump() for item in payload.workspace_references),
         "annotations": tuple(payload.annotations),
     }
-    prepared = await run_sync(
-        db,
-        lambda session: agent_sessions.flow_node_conversations.prepare_running_node_message(
-            session,
-            flow_run_id=flow_run_id,
-            attempt_id=attempt_id,
-            binding_id=binding_id,
-            content=payload.content,
-            **arguments,
-        ),
-    )
-    result, queued_during_turn, compacted = await run_blocking_message(
-        container,
-        lambda _session: agent_sessions.flow_node_conversations.dispatch_running_node_message(
-            prepared
-        ),
-    )
+    try:
+        with message_submissions.fenced(fence):
+            prepared = await run_sync(
+                db,
+                lambda session: node_messages.prepare_running_node_message(
+                    session,
+                    flow_run_id=flow_run_id,
+                    attempt_id=attempt_id,
+                    binding_id=binding_id,
+                    content=payload.content,
+                    **arguments,
+                ),
+            )
+            result, queued_during_turn, compacted = await run_blocking_message(
+                container,
+                lambda _session: node_messages.dispatch_running_node_message(prepared),
+            )
+            return await run_sync(
+                db,
+                lambda session: node_messages.finalize_running_node_message(
+                    session,
+                    prepared,
+                    result,
+                    queued_during_turn=queued_during_turn,
+                    compacted=compacted,
+                ),
+            )
+
+    except DomainError:
+        if idempotency_key:
+            await run_sync(
+                db,
+                lambda session: message_submissions.discard_preparation(
+                    session, binding_id, idempotency_key
+                ),
+            )
+        raise
+
+
+@router.post(f"{_BASE}/{{binding_id}}/messages/{{submission_id}}/cancel")
+async def cancel_node_message_submission(
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    submission_id: str,
+    db: Db,
+) -> dict[str, bool]:
+    node_messages = agent_sessions.flow_node_conversations
     return await run_sync(
         db,
-        lambda session: agent_sessions.flow_node_conversations.finalize_running_node_message(
-            session,
-            prepared,
-            result,
-            queued_during_turn=queued_during_turn,
-            compacted=compacted,
-        ),
+        lambda session: (
+            node_messages.authorize_node_message_submission(
+                session,
+                flow_run_id=flow_run_id,
+                attempt_id=attempt_id,
+                binding_id=binding_id,
+            ),
+            message_submissions.cancel(session, binding_id, submission_id),
+        )[1],
     )
 
 
@@ -1354,8 +1469,6 @@ async def migrate_node_session(
     )
 
 
-
-
 class ResumableNodeAttachmentWrite(_Write):
     filename: str = Field(min_length=1, max_length=240)
     mime_type: str = Field(default="application/octet-stream", max_length=200)
@@ -1371,34 +1484,129 @@ async def _resumable_node_attachment_part(file: UploadFile) -> bytes:
 
 
 @router.post(f"{_BASE}/attachments/uploads", status_code=201)
-async def create_resumable_node_draft_attachment_upload(flow_run_id: str, attempt_id: str, payload: ResumableNodeAttachmentWrite, db: Db) -> dict[str, Any]:
-    return await run_sync(db, lambda session: agent_sessions.flow_node_conversations.create_resumable_node_attachment_upload(session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=None, filename=payload.filename, content_type=payload.mime_type, total_size=payload.total_size, attachment_owner_id=payload.conversation_id))
+async def create_resumable_node_draft_attachment_upload(
+    flow_run_id: str, attempt_id: str, payload: ResumableNodeAttachmentWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.create_resumable_node_attachment_upload(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=None,
+            filename=payload.filename,
+            content_type=payload.mime_type,
+            total_size=payload.total_size,
+            attachment_owner_id=payload.conversation_id,
+        ),
+    )
 
 
 @router.post(f"{_BASE}/{{binding_id}}/attachments/uploads", status_code=201)
-async def create_resumable_node_attachment_upload(flow_run_id: str, attempt_id: str, binding_id: str, payload: ResumableNodeAttachmentWrite, db: Db) -> dict[str, Any]:
-    return await run_sync(db, lambda session: agent_sessions.flow_node_conversations.create_resumable_node_attachment_upload(session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, filename=payload.filename, content_type=payload.mime_type, total_size=payload.total_size))
+async def create_resumable_node_attachment_upload(
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    payload: ResumableNodeAttachmentWrite,
+    db: Db,
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.create_resumable_node_attachment_upload(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+            filename=payload.filename,
+            content_type=payload.mime_type,
+            total_size=payload.total_size,
+        ),
+    )
 
 
 @router.get(f"{_BASE}/attachments/uploads/{{upload_id}}")
-async def resumable_node_attachment_upload_status(flow_run_id: str, attempt_id: str, upload_id: str, db: Db, binding_id: str | None = Query(default=None)) -> dict[str, Any]:
-    return await run_sync(db, lambda session: agent_sessions.flow_node_conversations.resumable_node_attachment_upload_status(session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, upload_id=upload_id))
+async def resumable_node_attachment_upload_status(
+    flow_run_id: str,
+    attempt_id: str,
+    upload_id: str,
+    db: Db,
+    binding_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.resumable_node_attachment_upload_status(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+            upload_id=upload_id,
+        ),
+    )
 
 
 @router.put(f"{_BASE}/attachments/uploads/{{upload_id}}/parts/{{part_number}}")
-async def upload_resumable_node_attachment_part(flow_run_id: str, attempt_id: str, upload_id: str, part_number: int, db: Db, file: Annotated[UploadFile, File()], binding_id: str | None = Query(default=None)) -> dict[str, Any]:
+async def upload_resumable_node_attachment_part(
+    flow_run_id: str,
+    attempt_id: str,
+    upload_id: str,
+    part_number: int,
+    db: Db,
+    file: Annotated[UploadFile, File()],
+    binding_id: str | None = Query(default=None),
+) -> dict[str, Any]:
     content = await _resumable_node_attachment_part(file)
-    return await run_sync(db, lambda session: agent_sessions.flow_node_conversations.upload_resumable_node_attachment_part(session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, upload_id=upload_id, part_number=part_number, content=content))
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.upload_resumable_node_attachment_part(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+            upload_id=upload_id,
+            part_number=part_number,
+            content=content,
+        ),
+    )
 
 
 @router.post(f"{_BASE}/attachments/uploads/{{upload_id}}/complete", status_code=201)
-async def complete_resumable_node_attachment_upload(flow_run_id: str, attempt_id: str, upload_id: str, db: Db, binding_id: str | None = Query(default=None)) -> dict[str, Any]:
-    return await run_sync(db, lambda session: agent_sessions.flow_node_conversations.complete_resumable_node_attachment_upload(session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, upload_id=upload_id))
+async def complete_resumable_node_attachment_upload(
+    flow_run_id: str,
+    attempt_id: str,
+    upload_id: str,
+    db: Db,
+    binding_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.complete_resumable_node_attachment_upload(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+            upload_id=upload_id,
+        ),
+    )
 
 
 @router.delete(f"{_BASE}/attachments/uploads/{{upload_id}}", status_code=204)
-async def cancel_resumable_node_attachment_upload(flow_run_id: str, attempt_id: str, upload_id: str, db: Db, binding_id: str | None = Query(default=None)) -> Response:
-    await run_sync(db, lambda session: agent_sessions.flow_node_conversations.cancel_resumable_node_attachment_upload(session, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, upload_id=upload_id))
+async def cancel_resumable_node_attachment_upload(
+    flow_run_id: str,
+    attempt_id: str,
+    upload_id: str,
+    db: Db,
+    binding_id: str | None = Query(default=None),
+) -> Response:
+    await run_sync(
+        db,
+        lambda session: agent_sessions.flow_node_conversations.cancel_resumable_node_attachment_upload(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+            upload_id=upload_id,
+        ),
+    )
     return Response(status_code=204)
 
 
@@ -1510,6 +1718,28 @@ async def interrupt_node_session(
             flow_run_id=flow_run_id,
             attempt_id=attempt_id,
             binding_id=binding_id,
+        ),
+    )
+
+
+@router.post(f"{_BASE}/{{binding_id}}/goal", status_code=202)
+async def control_node_session_goal(
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+    payload: ConversationGoalWrite,
+    container: ContainerDep,
+) -> dict[str, bool]:
+    return await run_blocking_control(
+        container,
+        lambda session: agent_sessions.flow_node_conversations.control_goal(
+            session,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding_id,
+            action=payload.action,
+            objective=payload.objective,
+            max_iterations=payload.max_iterations,
         ),
     )
 

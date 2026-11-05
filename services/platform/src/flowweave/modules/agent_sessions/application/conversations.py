@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 from typing import cast as typing_cast
 from urllib.parse import urlencode
 from uuid import UUID, uuid4, uuid5
@@ -20,10 +20,18 @@ from sqlalchemy import Numeric, and_, cast, delete, func, or_, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from flowweave.modules.agent_sessions.application import child_activity, resumable_attachments
+from flowweave.modules.agent_sessions.application import (
+    child_activity,
+    message_submissions,
+    resumable_attachments,
+)
 from flowweave.modules.agent_sessions.application import usage as usage_projection
 from flowweave.modules.agent_sessions.application.activity_reconciliation import (
     read_activity_completion,
+)
+from flowweave.modules.agent_sessions.application.capability_versions import (
+    current_capabilities,
+    validate_skill_upgrade,
 )
 from flowweave.modules.agent_sessions.application.child_relations import (
     guard_main_route,
@@ -74,7 +82,9 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentConversationBinding,
     AgentConversationCapability,
     AgentConversationCommand,
+    AgentConversationCredentialSync,
     AgentConversationMessageAttachment,
+    AgentMessageModelChange,
     AgentSidebarConversation,
 )
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
@@ -82,12 +92,19 @@ from flowweave.modules.agent_workspaces.application.git_settings import (
     apply_profile_identity,
     profile_identity,
 )
+from flowweave.modules.catalog.application import mcp_authentication
+from flowweave.modules.catalog.application.platform_capabilities import (
+    require_user_configurable_capability,
+)
 from flowweave.modules.catalog.public import resolve_version
 from flowweave.modules.credentials.application.service import (
     list_credentials,
     resolve_credentials_for_agent,
 )
-from flowweave.modules.model_providers.public import has_connected_default_model
+from flowweave.modules.model_providers.public import (
+    has_connected_default_model,
+    provider_model_label,
+)
 from flowweave.modules.sandboxes.public import ManagedSandbox
 from flowweave.modules.tasks.public import enqueue
 from flowweave.modules.users.application.security import (
@@ -266,6 +283,7 @@ def history_reference_bindings(
     """Authorize both ends of an explicit history reference without reading Runtime."""
 
     workspace = _workspace(db, workspace_id)
+
     # History tools never inherit an administrator's broader platform access.
     # Keep explicit owner/host predicates even with ORM isolation and RLS.
     def owned_binding(identity: str, *, lock: bool = False) -> AgentConversationBinding:
@@ -340,16 +358,19 @@ def _dict(
                 "capability_key": capability.capability_key,
                 "digest": capability.digest,
             }
-            for capability in db.scalars(
-                select(AgentConversationCapability)
-                .where(AgentConversationCapability.binding_id == item.id)
-                .order_by(AgentConversationCapability.position)
+            for capability in current_capabilities(
+                db.scalars(
+                    select(AgentConversationCapability)
+                    .where(AgentConversationCapability.binding_id == item.id)
+                    .order_by(AgentConversationCapability.position)
+                )
             )
         ],
         "streaming_callback_ready": item.streaming_callback_ready,
         "write_available": write_available and item.lifecycle == "ACTIVE",
         "pinned": item.pinned,
         "unread": item.unread,
+        "archived_at": item.archived_at.isoformat() if item.archived_at else None,
         "unread_origin": item.unread_origin,
         "final_reply_preview": final_reply_preview(item),
         "lifecycle": item.lifecycle,
@@ -462,7 +483,7 @@ def _page_dicts(
                 AgentConversationCapability.position,
             )
         )
-        for capability in capabilities:
+        for capability in current_capabilities(capabilities):
             capabilities_by_binding[capability.binding_id].append(
                 {
                     "id": capability.capability_version_id,
@@ -551,16 +572,8 @@ def _validated_capabilities(
         if version_id in seen_versions:
             raise DomainError("AGENT_CONVERSATION_CAPABILITY_DUPLICATE", "能力不能重复选择", 422)
         published = resolve_version(db, version_id)
+        require_user_configurable_capability(published)
         capability_type = published.package.capability_type
-        if (
-            capability_type == "MCP"
-            and published.package.capability_key == "flowweave-reference-history"
-        ):
-            raise DomainError(
-                "AGENT_HISTORY_CAPABILITY_PLATFORM_MANAGED",
-                "会话历史查询为平台默认能力，引用会话时自动连接，不能手动替换",
-                422,
-            )
         identity = (capability_type, published.package.capability_key)
         if capability_type not in allowed_types:
             raise DomainError(
@@ -589,16 +602,46 @@ def _workspace_credential_defaults(db: Session, workspace_id: str) -> tuple[str,
             AgentWorkspaceSessionConfiguration.owner_user_id == current_user_id(),
         )
     )
-    return tuple(config.credential_ids_json) if config is not None else None
+    return (
+        tuple(config.credential_ids_json)
+        if config is not None and config.credentials_configured
+        else None
+    )
 
 
-def workspace_session_configuration(db: Session, workspace_id: str) -> dict[str, list[str]]:
+def _session_configuration(
+    db: Session,
+    workspace: AgentWorkspace,
+    work_directory_id: str | None,
+) -> tuple[list[str], list[str] | tuple[str, ...] | None, AgentWorkDirectory | None]:
+    if work_directory_id is None:
+        capability_ids = [item["id"] for item in workspace_capabilities(db, workspace.id)]
+        return capability_ids, _workspace_credential_defaults(db, workspace.id), None
+    directory = db.scalar(
+        select(AgentWorkDirectory).where(
+            AgentWorkDirectory.id == work_directory_id,
+            AgentWorkDirectory.workspace_id == workspace.id,
+            AgentWorkDirectory.owner_user_id == current_user_id(),
+        )
+    )
+    if directory is None:
+        raise DomainError("AGENT_WORK_DIRECTORY_NOT_FOUND", "工作区不存在", 404)
+    return (
+        list(directory.session_capability_ids_json or []),
+        directory.session_credential_ids_json,
+        directory,
+    )
+
+
+def workspace_session_configuration(
+    db: Session, workspace_id: str, work_directory_id: str | None = None
+) -> dict[str, list[str]]:
     workspace = _workspace(db, workspace_id)
-    credential_ids = _workspace_credential_defaults(db, workspace.id)
+    capability_ids, credential_ids, _directory = _session_configuration(
+        db, workspace, work_directory_id
+    )
     return {
-        "capability_version_ids": [
-            item["id"] for item in workspace_capabilities(db, workspace.id)
-        ],
+        "capability_version_ids": capability_ids,
         "credential_ids": (
             list(credential_ids)
             if credential_ids is not None
@@ -612,34 +655,50 @@ def replace_workspace_session_configuration(
     workspace_id: str,
     capability_version_ids: tuple[str, ...],
     credential_ids: tuple[str, ...],
+    work_directory_id: str | None = None,
 ) -> dict[str, list[str]]:
     workspace = db.scalar(
         select(AgentWorkspace).where(AgentWorkspace.id == workspace_id).with_for_update()
     )
     if workspace is None:
         raise not_found("agent_workspace", workspace_id)
-    replace_workspace_capabilities(
-        db,
-        workspace_id,
-        capability_version_ids,
-        allowed_types=_CREATION_CAPABILITY_TYPES,
+    selected = _validated_capabilities(
+        db, capability_version_ids, allowed_types=_CREATION_CAPABILITY_TYPES
     )
     resolve_credentials_for_agent(db, credential_ids)
-    config = db.scalar(
-        select(AgentWorkspaceSessionConfiguration).where(
-            AgentWorkspaceSessionConfiguration.workspace_id == workspace.id,
-            AgentWorkspaceSessionConfiguration.owner_user_id == current_user_id(),
+    if work_directory_id is None:
+        replace_workspace_capabilities(
+            db,
+            workspace_id,
+            capability_version_ids,
+            allowed_types=_CREATION_CAPABILITY_TYPES,
         )
-    )
-    if config is None:
-        config = AgentWorkspaceSessionConfiguration(
-            workspace_id=workspace.id, owner_user_id=current_user_id()
+        config = db.scalar(
+            select(AgentWorkspaceSessionConfiguration).where(
+                AgentWorkspaceSessionConfiguration.workspace_id == workspace.id,
+                AgentWorkspaceSessionConfiguration.owner_user_id == current_user_id(),
+            )
         )
-        db.add(config)
-    config.credential_ids_json = list(dict.fromkeys(credential_ids))
-    config.updated_at = now()
+        if config is None:
+            config = AgentWorkspaceSessionConfiguration(
+                workspace_id=workspace.id, owner_user_id=current_user_id()
+            )
+            db.add(config)
+        config.credential_ids_json = list(dict.fromkeys(credential_ids))
+        config.credentials_configured = True
+        config.updated_at = now()
+    else:
+        _capability_ids, _credential_ids, directory = _session_configuration(
+            db, workspace, work_directory_id
+        )
+        assert directory is not None
+        directory.session_capability_ids_json = [
+            published.version.id for published, _type in selected
+        ]
+        directory.session_credential_ids_json = list(dict.fromkeys(credential_ids))
+        directory.updated_at = now()
     db.flush()
-    return workspace_session_configuration(db, workspace.id)
+    return workspace_session_configuration(db, workspace.id, work_directory_id)
 
 
 def replace_workspace_capabilities(
@@ -650,9 +709,7 @@ def replace_workspace_capabilities(
     allowed_types: frozenset[str] = _DYNAMIC_CAPABILITY_TYPES,
 ) -> list[dict[str, str]]:
     workspace = _workspace(db, workspace_id)
-    selected = _validated_capabilities(
-        db, capability_version_ids, allowed_types=allowed_types
-    )
+    selected = _validated_capabilities(db, capability_version_ids, allowed_types=allowed_types)
     for reference in db.scalars(
         select(AgentWorkspaceCapability)
         .where(AgentWorkspaceCapability.workspace_id == workspace.id)
@@ -709,7 +766,7 @@ def _binding_mcp_keys(db: Session, binding: AgentConversationBinding) -> tuple[s
 
 
 def probe_workspace_mcp_readiness(
-    db: Session, workspace_id: str, capability_version_id: str
+    db: Session, workspace_id: str, capability_version_id: str, *, read_only_tool_call=None
 ) -> dict[str, Any]:
     """Probe one published MCP from the active Agent Workspace Runtime.
 
@@ -719,6 +776,18 @@ def probe_workspace_mcp_readiness(
     conversations.
     """
 
+    def unavailable_result(reason: str) -> dict[str, Any]:
+        return {
+            "state": "UNAVAILABLE",
+            "error_kind": "unknown",
+            "reason": reason,
+            "tools": [],
+            "checked_at": now().isoformat(),
+        }
+
+    from flowweave.modules.agent_sessions.application import history_integration, history_probe
+    from flowweave.modules.cases.application import native_probe, native_tools
+
     workspace = _workspace(db, workspace_id)
     published = resolve_version(db, capability_version_id)
     if published.package.capability_type != "MCP":
@@ -727,7 +796,7 @@ def probe_workspace_mcp_readiness(
         select(AgentWorkspaceRuntime).where(AgentWorkspaceRuntime.workspace_id == workspace.id)
     )
     if runtime is None or runtime.status != "ACTIVE" or runtime.active_generation is None:
-        return {"state": "UNAVAILABLE", "error_kind": "unknown", "checked_at": now().isoformat()}
+        return unavailable_result("RUNTIME_NOT_READY")
     sandbox = db.scalar(
         select(ManagedSandbox).where(
             ManagedSandbox.owner_type == "AGENT_WORKSPACE",
@@ -737,7 +806,7 @@ def probe_workspace_mcp_readiness(
         )
     )
     if sandbox is None or not sandbox.backend_resource_name:
-        return {"state": "UNAVAILABLE", "error_kind": "unknown", "checked_at": now().isoformat()}
+        return unavailable_result("RUNTIME_NOT_READY")
     allocation = agent_workspace_host.runtime_allocation_for_agent_workspace(db, workspace.id)
     probe_id = str(uuid4())
     host_root = (
@@ -753,24 +822,84 @@ def probe_workspace_mcp_readiness(
         _, _, servers = materialize_agent_workspace_capabilities(
             (capability,), host_root=host_root, runtime_root=runtime_root
         )
+        server = servers[0]
+        case_contract = native_probe.contract_for(published.package.capability_key)
+        if case_contract is not None:
+            if native_tools.configured_version_id(db, case_contract) != published.version.id:
+                raise DomainError(
+                    "CASE_TOOL_VERSION_NOT_CURRENT",
+                    "请检测系统当前发布的场景工具版本",
+                    409,
+                )
+            token = native_probe.issue(case_contract, current_user_id(), published.version.id)
+            server = replace(
+                server, config={**server.config, "headers": {"Authorization": f"Bearer {token}"}}
+            )
+        builtin_history = published.package.capability_key == history_integration.SERVER_NAME
+        if builtin_history:
+            configured = history_integration.configured_capability(db)
+            if configured.version.id != published.version.id:
+                raise DomainError(
+                    "AGENT_HISTORY_VERSION_NOT_CURRENT",
+                    "请检测系统当前发布的历史查询版本",
+                    409,
+                )
+            token = history_probe.issue(current_user_id(), published.version.id)
+            server = replace(
+                server, config={**server.config, "headers": {"Authorization": f"Bearer {token}"}}
+            )
+        if not builtin_history and case_contract is None:
+            server, _ = mcp_authentication.prepare_server(db, server, probe=True)
+        from flowweave.runtime.base import RuntimeMCPToolCall
+
+        call = (
+            RuntimeMCPToolCall(
+                name=read_only_tool_call.name, arguments=read_only_tool_call.arguments
+            )
+            if read_only_tool_call is not None
+            else None
+        )
+        if (builtin_history or case_contract is not None) and call is not None:
+            raise DomainError("MCP_PROBE_READ_ONLY", "内置能力仅支持工具目录检测", 422)
         result = get_runtime().probe_mcp(
             RuntimeMCPProbeRequest(
-                server=servers[0],
+                server=server,
+                read_only_tool_call=call,
                 base_url=f"http://{sandbox.backend_resource_name}:8000",
                 runtime_resource_name=sandbox.backend_resource_name,
             )
         )
-    except DomainError:
-        return {"state": "UNAVAILABLE", "error_kind": "unknown", "checked_at": now().isoformat()}
+        if builtin_history and result.ok and "read_referenced_conversation" not in result.tools:
+            return unavailable_result("TOOLS_MISSING")
+    except DomainError as exc:
+        return unavailable_result(exc.code)
     finally:
         # The MCP test endpoint has consumed the materialized configuration
         # synchronously.  The temporary immutable probe directory is never a
         # Conversation capability and must not accumulate in the allocation.
         shutil.rmtree(host_root, ignore_errors=True)
+    invocation = None
+    if read_only_tool_call is not None:
+        business_code = None
+        try:
+            body = json.loads(result.tool_call_text or "")
+            value = body.get("code") if isinstance(body, dict) else None
+            if isinstance(value, int) and not isinstance(value, bool):
+                business_code = value
+        except (ValueError, TypeError):
+            pass
+        invocation = {
+            "name": read_only_tool_call.name,
+            "is_error": result.tool_call_is_error,
+            "business_code": business_code,
+        }
     return {
         "state": "READY" if result.ok else "UNAVAILABLE",
         "error_kind": None if result.ok else (result.error_kind or "unknown"),
+        "reason": None if result.ok else f"MCP_{(result.error_kind or 'unknown').upper()}",
+        "tools": list(result.tools) if result.ok else [],
         "checked_at": now().isoformat(),
+        **({"read_only_tool_call": invocation} if invocation is not None else {}),
     }
 
 
@@ -888,6 +1017,7 @@ def _handle(
         runtime_resource_name=sandbox.backend_resource_name,
         workspace_root=user_runtime_project_root(workspace.id),
         protocol_profile=parent_protocol_profile(binding),
+        working_directory=binding.working_directory or user_runtime_project_root(workspace.id),
     )
 
 
@@ -951,6 +1081,7 @@ def list_conversations(db: Session, workspace_id: str) -> list[dict[str, Any]]:
                 AgentConversationBinding.workspace_id == workspace_id,
                 AgentConversationBinding.lifecycle.in_(("ACTIVE", "DELETE_PENDING")),
                 ordinary_conversation_clause(),
+                AgentConversationBinding.archived_at.is_(None),
                 ~AgentConversationBinding.id.in_(
                     select(AgentSidebarConversation.sidebar_binding_id)
                 ),
@@ -976,6 +1107,7 @@ def list_pinned_conversations(
                 AgentConversationBinding.workspace_id == workspace_id,
                 AgentConversationBinding.lifecycle.in_(("ACTIVE", "DELETE_PENDING")),
                 ordinary_conversation_clause(),
+                AgentConversationBinding.archived_at.is_(None),
                 AgentConversationBinding.pinned.is_(True),
                 ~AgentConversationBinding.id.in_(
                     select(AgentSidebarConversation.sidebar_binding_id)
@@ -1011,6 +1143,7 @@ def conversation_activity(
                 AgentConversationBinding.workspace_id == workspace_id,
                 AgentConversationBinding.lifecycle.in_(("ACTIVE", "DELETE_PENDING")),
                 ordinary_conversation_clause(),
+                AgentConversationBinding.archived_at.is_(None),
                 ~AgentConversationBinding.id.in_(
                     select(AgentSidebarConversation.sidebar_binding_id)
                 ),
@@ -1030,6 +1163,8 @@ def conversation_activity(
             "condensation_failed_binding_ids": [],
             "possibly_stuck_binding_ids": [],
             "failed_binding_ids": [],
+            "waiting_user_input_binding_ids": [],
+            "waiting_user_input_actions": {},
         }
     binding_ids = {item.id for item in bindings}
     runtime = get_runtime()
@@ -1147,8 +1282,14 @@ def conversation_activity(
         for binding_id, summary in child_summaries.items()
         if summary["running"] or summary["unread"] or summary["condensing"] or summary["pending"]
     }
+    waiting_user_input_binding_ids = _open_question_binding_ids(
+        db, workspace, bindings, native_activity
+    )
+    for item in bindings:
+        if item.id in waiting_user_input_binding_ids:
+            _mirror_case_control_waiting(db, item)
     activity_binding_ids = (
-        running_binding_ids | set(condensing_binding_ids) | child_activity_parent_ids
+        running_binding_ids | set(condensing_binding_ids) | child_activity_parent_ids | set(waiting_user_input_binding_ids)
     )
     activity_bindings = [
         item for item in bindings if item.id in activity_binding_ids or item.unread
@@ -1182,6 +1323,8 @@ def conversation_activity(
         "failed_binding_ids": [
             item.id for item in bindings if item.openhands_conversation_id in failed_native_ids
         ],
+        "waiting_user_input_binding_ids": list(waiting_user_input_binding_ids),
+        "waiting_user_input_actions": waiting_user_input_binding_ids,
     }
 
 
@@ -1198,24 +1341,31 @@ def _management_conversation_scope(workspace_id: str, work_directory_id: str | N
 
 
 def list_management_conversations(
-    db: Session, workspace_id: str, *, work_directory_id: str | None = None
+    db: Session,
+    workspace_id: str,
+    *,
+    work_directory_id: str | None = None,
+    archived: bool | None = None,
 ) -> dict[str, Any]:
     """List durable direct conversations in one user-visible workspace group."""
 
     _workspace(db, workspace_id)
     limit = 500
+    predicates = [
+        AgentConversationBinding.workspace_id == workspace_id,
+        AgentConversationBinding.lifecycle.in_(("ACTIVE", "DELETE_PENDING")),
+        ordinary_conversation_clause(),
+        ~AgentConversationBinding.id.in_(select(AgentSidebarConversation.sidebar_binding_id)),
+        _management_conversation_scope(workspace_id, work_directory_id),
+    ]
+    if archived is True:
+        predicates.append(AgentConversationBinding.archived_at.is_not(None))
+    elif archived is False:
+        predicates.append(AgentConversationBinding.archived_at.is_(None))
     items = list(
         db.scalars(
             select(AgentConversationBinding)
-            .where(
-                AgentConversationBinding.workspace_id == workspace_id,
-                AgentConversationBinding.lifecycle.in_(("ACTIVE", "DELETE_PENDING")),
-                ordinary_conversation_clause(),
-                ~AgentConversationBinding.id.in_(
-                    select(AgentSidebarConversation.sidebar_binding_id)
-                ),
-                _management_conversation_scope(workspace_id, work_directory_id),
-            )
+            .where(*predicates)
             .order_by(
                 AgentConversationBinding.last_message_at.desc(),
                 AgentConversationBinding.created_at.desc(),
@@ -1225,13 +1375,23 @@ def list_management_conversations(
         )
     )
     truncated = len(items) > limit
+    totals = usage_projection.for_scope(
+        db, field="binding_id", ids=(item.id for item in items[:limit])
+    )
     return {
         "items": [
             {
                 "id": item.id,
                 "display_title": item.display_title,
+                "stored_event_count": item.stored_event_count,
+                "total_tokens": (
+                    totals[item.id]["total_tokens"]
+                    if item.usage_reconciled_at or totals[item.id]["observed_at"]
+                    else None
+                ),
                 "pinned": item.pinned,
                 "unread": item.unread,
+                "archived_at": item.archived_at.isoformat() if item.archived_at else None,
                 "created_at": item.created_at.isoformat(),
                 "updated_at": item.updated_at.isoformat(),
                 "last_message_at": (
@@ -1242,6 +1402,84 @@ def list_management_conversations(
         ],
         "truncated": truncated,
     }
+
+
+def _archive_binding(db: Session, workspace_id: str, binding_id: str) -> AgentConversationBinding:
+    item = _binding(db, workspace_id, binding_id, lock=True)
+    if item.archived_at is None:
+        assert_conversation_stopped(db, workspace_id, binding_id, lock=False)
+        item.archived_at = now()
+        item.updated_at = item.archived_at
+        db.flush()
+    return item
+
+
+def archive_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
+    return _dict(db, _archive_binding(db, workspace_id, binding_id))
+
+
+def archive_management_conversations(
+    db: Session,
+    workspace_id: str,
+    binding_ids: tuple[str, ...],
+    *,
+    work_directory_id: str | None = None,
+) -> dict[str, Any]:
+    """Archive selected direct conversations without archiving their workspace."""
+    _workspace(db, workspace_id)
+    eligible = set(
+        db.scalars(
+            select(AgentConversationBinding.id).where(
+                AgentConversationBinding.workspace_id == workspace_id,
+                AgentConversationBinding.lifecycle == "ACTIVE",
+                ~AgentConversationBinding.id.in_(
+                    select(AgentSidebarConversation.sidebar_binding_id)
+                ),
+                _management_conversation_scope(workspace_id, work_directory_id),
+                AgentConversationBinding.id.in_(binding_ids),
+            )
+        )
+    )
+    archived: list[dict[str, str]] = []
+    skipped: list[dict[str, str]] = []
+    # Stable lock order also makes overlapping batch requests safe to retry.
+    for binding_id in sorted(set(binding_ids)):
+        if binding_id not in eligible:
+            skipped.append({"id": binding_id, "code": "AGENT_CONVERSATION_SCOPE_MISMATCH"})
+            continue
+        try:
+            with db.begin_nested():
+                item = _archive_binding(db, workspace_id, binding_id)
+                assert item.archived_at is not None
+                archived.append({"id": item.id, "archived_at": item.archived_at.isoformat()})
+        except DomainError as exc:
+            skipped.append({"id": binding_id, "code": exc.code})
+    return {"archived": archived, "skipped": skipped}
+
+
+def restore_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
+    item = _binding(db, workspace_id, binding_id)
+    directory_id = _work_directory_id(db, item)
+    # Match directory batch operations' lock order. Restoring one child only
+    # restores its parent container; other archived conversations stay archived.
+    if directory_id:
+        directory = db.scalar(
+            select(AgentWorkDirectory)
+            .where(
+                AgentWorkDirectory.id == directory_id,
+                AgentWorkDirectory.workspace_id == workspace_id,
+            )
+            .with_for_update()
+        )
+        if directory is not None and directory.archived_at is not None:
+            directory.archived_at = None
+            directory.updated_at = now()
+    item = _binding(db, workspace_id, binding_id, lock=True)
+    if item.archived_at is not None:
+        item.archived_at = None
+        item.updated_at = now()
+    db.flush()
+    return _dict(db, item)
 
 
 def delete_management_conversations(
@@ -1317,6 +1555,7 @@ def list_conversation_page(
         AgentConversationBinding.workspace_id == workspace_id,
         AgentConversationBinding.lifecycle.in_(("ACTIVE", "DELETE_PENDING")),
         ordinary_conversation_clause(),
+        AgentConversationBinding.archived_at.is_(None),
         ~AgentConversationBinding.id.in_(select(AgentSidebarConversation.sidebar_binding_id)),
     )
     if work_directory_id is None:
@@ -1524,7 +1763,7 @@ def get_conversation(db: Session, workspace_id: str, binding_id: str) -> dict[st
     )
     try:
         batch = get_runtime().read_active_events(_handle(db, workspace, item))
-        usage_projection.capture(db, item, batch.usage)
+        usage_projection.capture(db, item, batch.usage, stored_event_count=batch.stored_event_count)
     except Exception:
         # Runtime availability must not make the read-only Conversation
         # locator unavailable. A later event read retries the formal usage
@@ -1652,8 +1891,10 @@ def _create_native_conversation(
     *,
     allow_existing: bool = False,
     system_message_suffix_append: str = "",
+    ask_user: bool = True,
     credential_ids: tuple[str, ...] | None = None,
     allow_child_capability: bool = True,
+    system_secrets: dict[str, str] | None = None,
 ) -> RuntimeHandle:
     ensure_credential_sync_schema(db)
     runtime = db.scalar(
@@ -1715,6 +1956,7 @@ def _create_native_conversation(
         system_message_suffix_append=system_message_suffix_append,
         protocol_profile=profile,
         runtime_server_identity=(parent_identity if profile in {"OH_FW_V3", "OH_FW_V4"} else None),
+        ask_user=ask_user,
     )
     if profile in {"OH_FW_V3", "OH_FW_V4"}:
         agent_spec = attach_parent_capability(
@@ -1742,6 +1984,7 @@ def _create_native_conversation(
     from flowweave.modules.agent_sessions.application import history_integration
 
     conversation_secrets.update(history_integration.creation_secrets(db, binding))
+    conversation_secrets.update(system_secrets or {})
     if credential_context:
         agent_spec = replace(
             agent_spec,
@@ -1775,6 +2018,7 @@ def _create_native_conversation(
         runtime_base_url=f"http://{handle.runtime_resource_name}:8000",
         conversation_secrets=conversation_secrets,
     )
+    request = mcp_authentication.prepare_request(db, request, f"conversation:{binding.id}")
     if profile == "OH_FW_V4":
         # The native parent's first Tool can arrive before bootstrap is ACTIVE.
         # Its immutable authority must already be independently readable.
@@ -1909,9 +2153,12 @@ def register_conversation_capabilities(
             )
         )
     )
-    existing_versions = {reference.capability_version_id for reference in existing}
-    existing_names = {
-        (reference.capability_type, reference.capability_key) for reference in existing
+    existing_versions = {
+        reference.capability_version_id for reference in current_capabilities(existing)
+    }
+    existing_by_name = {
+        (reference.capability_type, reference.capability_key): reference
+        for reference in current_capabilities(existing)
     }
     pending: list[tuple[Any, str]] = []
     already_loaded: list[str] = []
@@ -1920,15 +2167,10 @@ def register_conversation_capabilities(
         if version_id in existing_versions:
             already_loaded.append(version_id)
             continue
-        if (capability_type, published.package.capability_key) in existing_names:
-            raise DomainError(
-                "AGENT_CONVERSATION_CAPABILITY_CONFLICT",
-                "同类型同名称能力已在此会话加载其他版本",
-                409,
-                {"capability_key": published.package.capability_key},
-            )
+        previous = existing_by_name.get((capability_type, published.package.capability_key))
+        if previous is not None:
+            validate_skill_upgrade(db, previous, published)
         pending.append((published, capability_type))
-        existing_names.add((capability_type, published.package.capability_key))
 
     if not pending:
         return {
@@ -1952,8 +2194,15 @@ def register_conversation_capabilities(
     for published, capability_type in pending:
         version_id = published.version.id
         try:
-            plugin_name = materialize_agent_workspace_capability_marketplace(
+            material, auth_secrets = mcp_authentication.prepare_material(
+                db,
                 _frozen_runtime_capability(db, published, capability_type),
+                f"conversation:{binding.id}",
+            )
+            if auth_secrets:
+                runtime.update_conversation_secrets(handle, auth_secrets)
+            plugin_name = materialize_agent_workspace_capability_marketplace(
+                material,
                 host_root=host_root,
                 runtime_root=runtime_root,
                 marketplace_name=marketplace_name,
@@ -2065,6 +2314,7 @@ def _bootstrap_result(db: Session, binding: AgentConversationBinding) -> dict[st
         "conversation": _dict(db, binding),
         "accepted": True,
         "cursor": binding.initial_user_event_id,
+        "event_id": binding.initial_user_event_id,
     }
 
 
@@ -2095,6 +2345,7 @@ class PreparedRunningMessage:
     annotations: tuple[dict[str, Any], ...]
     git_profile: tuple[str, str] | None = None
     history_reference_ready: bool = True
+    answered_question: str | None = None
 
 
 def normalized_first_sentence(content: str) -> str:
@@ -2151,7 +2402,28 @@ def _activate_bootstrapped_conversation(
     command.state = "SUCCEEDED"
     command.updated_at = activated_at
     _record_message_attachments(db, binding, initial_event_id, first_message, attachments)
+    # The first message seeds the sent-model baseline so a later model switch is detected.
+    _record_model_change(db, binding, initial_event_id)
     _enqueue_title_task(db, binding, first_message)
+    db.commit()
+    return _bootstrap_result(db, binding)
+
+
+def _activate_bootstrapped_goal(
+    db: Session,
+    binding: AgentConversationBinding,
+    command: AgentConversationCommand,
+    objective: str,
+) -> dict[str, Any]:
+    binding.display_title = normalized_first_sentence(objective)
+    binding.title_state = "PENDING"
+    binding.lifecycle = "ACTIVE"
+    activated_at = now()
+    binding.last_message_at = activated_at
+    binding.updated_at = activated_at
+    command.state = "SUCCEEDED"
+    command.updated_at = activated_at
+    _enqueue_title_task(db, binding, objective)
     db.commit()
     return _bootstrap_result(db, binding)
 
@@ -2182,6 +2454,96 @@ def _bootstrap_command(
     return binding, command
 
 
+_BOOTSTRAP_CANCEL_REQUESTED = "AGENT_BOOTSTRAP_CANCEL_REQUESTED"
+_BOOTSTRAP_DISPATCHING = "AGENT_BOOTSTRAP_DISPATCHING"
+
+
+def _bootstrap_cancelled_error() -> DomainError:
+    return DomainError("AGENT_MESSAGE_CANCELLED", "已取消发送，消息已回到发送框", 409)
+
+
+def cancel_bootstrap(db: Session, workspace_id: str, submission_id: str) -> dict[str, bool]:
+    """Cancel a first-message creation until its user event is dispatched.
+
+    The creator claims DISPATCHING under the same row lock before the native
+    append, so exactly one side wins. After that the append is irreversible and
+    the caller must use the formal interrupt instead.
+    """
+
+    if not submission_id or len(submission_id) > 200:
+        raise DomainError("AGENT_SUBMISSION_ID_INVALID", "消息提交标识无效", 422)
+    workspace = _workspace(db, workspace_id)
+    binding, command = _bootstrap_command(db, workspace.id, submission_id)
+    if command is None:
+        # The request has not reserved a binding yet. Leave a tombstone so a
+        # late-arriving creation with this key is rejected instead of sending.
+        existing = db.scalar(
+            select(AgentConversationCommand)
+            .where(AgentConversationCommand.idempotency_key == submission_id)
+            .with_for_update()
+        )
+        if existing is None:
+            db.add(
+                AgentConversationCommand(
+                    workspace_id=workspace.id,
+                    host_kind="AGENT_WORKSPACE",
+                    host_id=workspace.id,
+                    binding_id=str(uuid4()),
+                    command_type="CREATE",
+                    idempotency_key=submission_id,
+                    state="FAILED",
+                    last_error_code=_BOOTSTRAP_CANCEL_REQUESTED,
+                    failure_summary="Cancelled before the conversation was reserved",
+                )
+            )
+            db.commit()
+        return {"cancelled": True}
+    assert binding is not None
+    if (
+        command.state != "PENDING"
+        or binding.lifecycle != "PROVISIONING"
+        or command.last_error_code == _BOOTSTRAP_DISPATCHING
+    ):
+        return {"cancelled": False}
+    command.last_error_code = _BOOTSTRAP_CANCEL_REQUESTED
+    db.commit()
+    return {"cancelled": True}
+
+
+def _abort_cancelled_bootstrap(
+    db: Session,
+    binding: AgentConversationBinding,
+    command: AgentConversationCommand,
+    handle: RuntimeHandle | None = None,
+) -> NoReturn:
+    if handle is not None:
+        try:
+            get_runtime().delete_conversation(handle)
+        except DomainError:
+            pass
+    error = _bootstrap_cancelled_error()
+    _record_bootstrap_failure(db, binding, command, error)
+    raise error
+
+
+def _claim_bootstrap_dispatch(
+    db: Session,
+    binding: AgentConversationBinding,
+    command: AgentConversationCommand,
+    handle: RuntimeHandle | None,
+    *,
+    dispatching: bool,
+) -> None:
+    """Honor a cancellation request, or atomically forbid later cancellation."""
+
+    db.refresh(command, with_for_update=True)
+    if command.last_error_code == _BOOTSTRAP_CANCEL_REQUESTED:
+        _abort_cancelled_bootstrap(db, binding, command, handle)
+    if dispatching:
+        command.last_error_code = _BOOTSTRAP_DISPATCHING
+    db.commit()
+
+
 def _record_bootstrap_failure(
     db: Session,
     binding: AgentConversationBinding,
@@ -2194,19 +2556,26 @@ def _record_bootstrap_failure(
     failure must leave no Binding or command row behind.
     """
 
-    del error
+    _logger.warning("Agent bootstrap rejected: code=%s status=%s", error.code, error.status)
     # Draft attachments are already private to this reserved binding ID.  A
     # definitively failed first message must release those files too, even
     # though no attachment projection has been committed yet.
     if binding.workspace_id is not None:
         agent_workspace_host.delete_session_attachment_files(db, binding.workspace_id, binding.id)
-    from flowweave.modules.agent_sessions.application import history_integration, history_sessions
+    from flowweave.modules.agent_sessions.application import history_sessions
 
     history_sessions.delete_binding_access(db, binding.id)
+    # Native creation records selected credentials before first-message delivery.
+    # Remove that dependent projection before deleting a failed reservation so
+    # its FK cannot mask the original Runtime/history error.
+    db.execute(
+        delete(AgentConversationCredentialSync).where(
+            AgentConversationCredentialSync.binding_id == binding.id,
+        )
+    )
     db.execute(
         delete(AgentConversationCapability).where(
             AgentConversationCapability.binding_id == binding.id,
-            AgentConversationCapability.capability_key == history_integration.SERVER_NAME,
         )
     )
     db.delete(command)
@@ -2230,13 +2599,20 @@ def bootstrap_conversation(
     references: tuple[dict[str, str], ...] = (),
     workspace_references: tuple[dict[str, str], ...] = (),
     annotations: tuple[dict[str, Any], ...] = (),
+    goal_objective: str | None = None,
     capability_version_ids: tuple[str, ...] | None = None,
     credential_ids: tuple[str, ...] | None = None,
     idempotency_key: str,
     system_message_suffix_append: str = "",
     allow_child_capability: bool = True,
+    implicit_history_source_ids: tuple[str, ...] = (),
+    case_control_round_id: str | None = None,
+    interactive: bool = True,
 ) -> dict[str, Any]:
     """Create a native conversation only while accepting its first user event.
+
+    ``interactive=False`` (unattended automation) withholds the ask_user tool: nobody would
+    ever answer, so the conversation would wait forever.
 
     A browser draft has no database representation. The first submission first
     commits a private reservation keyed by the browser command ID, then creates
@@ -2245,6 +2621,17 @@ def bootstrap_conversation(
     """
 
     message_text = content.strip()
+    normalized_goal_objective = goal_objective.strip() if goal_objective else None
+    if normalized_goal_objective and (
+        attachments or references or workspace_references or annotations
+    ):
+        raise DomainError(
+            "AGENT_GOAL_CONTEXT_UNSUPPORTED",
+            "目标模式暂不支持附件、引用或批注；请先移除这些内容后启动",
+            422,
+        )
+    if normalized_goal_objective and message_text != normalized_goal_objective:
+        raise DomainError("AGENT_GOAL_OBJECTIVE_MISMATCH", "目标内容必须与首条消息一致", 422)
     if references and any(
         not isinstance(item.get("source_binding_id"), str) for item in references
     ):
@@ -2264,8 +2651,17 @@ def bootstrap_conversation(
     normalized_workspace_references = _validated_workspace_references(workspace_references)
     workspace = _workspace(db, workspace_id)
     binding, command = _bootstrap_command(db, workspace.id, idempotency_key)
+    if binding is None and db.scalar(
+        select(AgentConversationCommand.id).where(
+            AgentConversationCommand.idempotency_key == idempotency_key,
+            AgentConversationCommand.last_error_code == _BOOTSTRAP_CANCEL_REQUESTED,
+        )
+    ):
+        raise _bootstrap_cancelled_error()
     if binding is not None and command is not None:
-        if binding.lifecycle == "ACTIVE" and binding.initial_user_event_id is not None:
+        if binding.lifecycle == "ACTIVE" and (
+            binding.initial_user_event_id is not None or normalized_goal_objective is not None
+        ):
             return _bootstrap_result(db, binding)
         if command.state == "AMBIGUOUS":
             reconciled = _initial_user_event_id(
@@ -2330,17 +2726,20 @@ def bootstrap_conversation(
         )
         db.add(binding)
         db.flush()
+        default_capability_ids, default_credential_ids, _directory = _session_configuration(
+            db, workspace, work_directory_id
+        )
         _freeze_capabilities(
             db,
             binding,
             (
                 capability_version_ids
                 if capability_version_ids is not None
-                else tuple(item["id"] for item in workspace_capabilities(db, workspace.id))
+                else tuple(default_capability_ids)
             ),
         )
-        if credential_ids is None:
-            credential_ids = _workspace_credential_defaults(db, workspace.id)
+        if credential_ids is None and default_credential_ids is not None:
+            credential_ids = tuple(default_credential_ids)
         command = AgentConversationCommand(
             workspace_id=workspace.id,
             host_kind="AGENT_WORKSPACE",
@@ -2365,6 +2764,15 @@ def bootstrap_conversation(
         allow_provisioning=True,
     )
     source_references = _resolve_message_references(db, workspace, binding, references)
+    implicit_history_references = _resolve_message_references(
+        db,
+        workspace,
+        binding,
+        tuple({"source_binding_id": source_id} for source_id in implicit_history_source_ids),
+    )
+    history_references = _validated_conversation_references(
+        tuple((*source_references, *implicit_history_references))
+    )
     prompt, image_urls = _message_payload(
         message_text, attachments, source_references, normalized_workspace_references, annotations
     )
@@ -2396,7 +2804,13 @@ def bootstrap_conversation(
     try:
         from flowweave.modules.agent_sessions.application import history_integration
 
-        history_integration.prepare_creation(db, workspace, binding, source_references)
+        _claim_bootstrap_dispatch(db, binding, command, None, dispatching=False)
+        history_integration.prepare_creation(db, workspace, binding, history_references)
+        system_secrets: dict[str, str] = {}
+        if case_control_round_id is not None:
+            from flowweave.modules.cases.public import prepare_case_native_tools
+
+            system_secrets = prepare_case_native_tools(db, case_control_round_id, binding)
         handle = _create_native_conversation(
             db,
             workspace,
@@ -2405,9 +2819,15 @@ def bootstrap_conversation(
             binding.working_directory,
             allow_existing=command.attempt_count > 1,
             system_message_suffix_append=system_message_suffix_append,
+            ask_user=interactive,
             credential_ids=credential_ids,
             allow_child_capability=allow_child_capability,
+            system_secrets=system_secrets,
         )
+        if case_control_round_id is not None and command.attempt_count > 1:
+            from flowweave.modules.cases.public import assert_case_native_tools
+
+            assert_case_native_tools(db, binding.id, handle)
         previous_event_id = get_runtime().reload_conversation(handle).event_id
         binding.bootstrap_parent_event_id = previous_event_id
         db.commit()
@@ -2430,6 +2850,18 @@ def bootstrap_conversation(
             ) from exc
         _record_bootstrap_failure(db, binding, command, exc)
         raise
+    _claim_bootstrap_dispatch(db, binding, command, handle, dispatching=True)
+    if normalized_goal_objective:
+        try:
+            get_runtime().start_goal(handle, normalized_goal_objective, 3)
+        except DomainError as exc:
+            try:
+                get_runtime().delete_conversation(handle)
+            except DomainError:
+                pass
+            _record_bootstrap_failure(db, binding, command, exc)
+            raise
+        return _activate_bootstrapped_goal(db, binding, command, normalized_goal_objective)
     try:
         _ensure_history_references(db, workspace, binding, source_references)
         if handle.protocol_profile == "OH_FW_V4":
@@ -2556,7 +2988,12 @@ def set_conversation_unread(
 
 
 def delete_conversation(
-    db: Session, workspace_id: str, binding_id: str, idempotency_key: str
+    db: Session,
+    workspace_id: str,
+    binding_id: str,
+    idempotency_key: str,
+    *,
+    keep_attachment_files: bool = False,
 ) -> dict[str, Any] | None:
     workspace = _workspace(db, workspace_id)
     item = _binding(db, workspace_id, binding_id, lock=True)
@@ -2579,7 +3016,7 @@ def delete_conversation(
         if existing.state == "SUCCEEDED":
             return
         raise DomainError("AGENT_CONVERSATION_DELETE_PENDING", "会话删除仍在处理中", 409)
-    assert_conversation_stopped(db, workspace_id, binding_id, lock=False)
+    assert_conversation_stopped(db, workspace_id, binding_id, lock=False, allow_missing=True)
     item.lifecycle = "DELETE_PENDING"
     command = AgentConversationCommand(
         workspace_id=workspace.id,
@@ -2610,19 +3047,30 @@ def delete_conversation(
     # The native conversation is now gone, so its private attachment objects
     # must not outlive it.  The helper only unlinks files bearing this binding's
     # opaque owner UUID and never traverses arbitrary workspace paths.
-    agent_workspace_host.delete_session_attachment_files(db, workspace.id, item.id)
+    if not keep_attachment_files:
+        agent_workspace_host.delete_session_attachment_files(db, workspace.id, item.id)
     delete_binding_records(db, item.id)
     db.flush()
 
 
 def assert_conversation_stopped(
-    db: Session, workspace_id: str, binding_id: str, *, lock: bool = True
+    db: Session,
+    workspace_id: str,
+    binding_id: str,
+    *,
+    lock: bool = True,
+    allow_missing: bool = False,
 ) -> None:
     """Reject destructive operations while OpenHands is executing a turn."""
 
     workspace = _workspace(db, workspace_id)
     binding = _binding(db, workspace_id, binding_id, lock=lock)
-    readiness = get_runtime().input_readiness(_handle(db, workspace, binding))
+    try:
+        readiness = get_runtime().input_readiness(_handle(db, workspace, binding))
+    except DomainError as exc:
+        if allow_missing and exc.code == "RUNTIME_CONVERSATION_MISSING":
+            return
+        raise
     if readiness.execution_status.strip().lower() in {
         "starting",
         "running",
@@ -2818,6 +3266,19 @@ def _project_conversation_events(
     for attachment in stored:
         attachments_by_event.setdefault(attachment.event_id, []).append(attachment)
 
+    model_changes_by_event = {
+        change.event_id: change
+        for change in (
+            db.scalars(
+                select(AgentMessageModelChange).where(
+                    AgentMessageModelChange.binding_id == binding.id,
+                    AgentMessageModelChange.event_id.in_(event_ids),
+                )
+            ).all()
+            if event_ids
+            else []
+        )
+    }
     reply_annotations_by_event = _structured_reply_annotations(batch.events)
     terminal_assistant_ids = terminal_assistant_message_ids(batch)
 
@@ -2847,6 +3308,9 @@ def _project_conversation_events(
             payload["workspace_references"] = list(workspace_references)
         if annotations:
             payload["collaboration_annotations"] = list(annotations)
+        answered = project_answered_question(str(event.payload.get("content") or ""))
+        if answered and str(payload.get("source") or "").lower() in {"user", "human"}:
+            payload["answered_question"] = answered
         reply_annotations = reply_annotations_by_event.get(event.cursor, ())
         if reply_annotations:
             payload["collaboration_annotations"] = list(reply_annotations)
@@ -2890,6 +3354,12 @@ def _project_conversation_events(
                     }
                     for path in legacy_paths
                 ]
+        model_change = model_changes_by_event.get(event.cursor)
+        if model_change is not None:
+            payload["model_change"] = {
+                "from": model_change.from_label,
+                "to": model_change.to_label,
+            }
         return {"id": event.cursor, "event_type": event.event_type, "payload": payload}
 
     execution_status = str(
@@ -2924,6 +3394,7 @@ def _project_conversation_events(
             batch.events,
             conversation_completed=bool(batch.result and batch.result.status == "COMPLETED"),
             terminal_event_missing=terminal_event_missing,
+            execution_status=execution_status,
         ),
     }
 
@@ -2983,6 +3454,30 @@ def pending_confirmation(db: Session, workspace_id: str, binding_id: str) -> dic
                 "digest": action.digest,
             }
             for action in pending.actions
+        ],
+    }
+
+
+def pending_question(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
+    """Return the formal ask_user question the native conversation waits on."""
+
+    workspace = _workspace(db, workspace_id)
+    question = get_runtime().get_pending_question(
+        _handle(db, workspace, _binding(db, workspace_id, binding_id))
+    )
+    if question is None:
+        return {"pending": False}
+    return {
+        "pending": True,
+        "action_id": question.action_id,
+        "tool_call_id": question.tool_call_id,
+        "question": question.question,
+        "options": list(question.options),
+        "recommendation": question.recommendation,
+        "cursor": question.cursor,
+        "questions": [
+            {"question": text, "options": list(options), "recommendation": recommendation}
+            for text, options, recommendation in question.follow_ups
         ],
     }
 
@@ -3052,6 +3547,13 @@ def terminal_container_details(db: Session, workspace_id: str) -> tuple[str, str
     return sandbox.backend_resource_name, sandbox.id, sandbox.backend_resource_id
 
 
+def authorize_message_submission(db: Session, workspace_id: str, binding_id: str) -> None:
+    _workspace(db, workspace_id)
+    binding = _binding(db, workspace_id, binding_id)
+    if binding.owner_user_id != current_user_id() or binding.host_kind != "AGENT_WORKSPACE":
+        raise DomainError("AGENT_CONVERSATION_NOT_FOUND", "会话不存在或已删除", 404)
+
+
 def prepare_running_message(
     db: Session,
     workspace_id: str,
@@ -3061,6 +3563,7 @@ def prepare_running_message(
     references: tuple[dict[str, str], ...] = (),
     workspace_references: tuple[dict[str, str], ...] = (),
     annotations: tuple[dict[str, Any], ...] = (),
+    answered_question: str | None = None,
 ) -> PreparedRunningMessage:
     """Finish local authorization before a possible long native append."""
 
@@ -3105,6 +3608,7 @@ def prepare_running_message(
         annotations=annotations,
         git_profile=profile_identity(db),
         history_reference_ready=history_ready,
+        answered_question=answered_question,
     )
 
 
@@ -3136,11 +3640,12 @@ def dispatch_running_message(prepared: PreparedRunningMessage) -> RuntimeResult 
         prepared.references,
         prepared.workspace_references,
         prepared.annotations,
+        prepared.answered_question,
     )
     if prepared.git_profile is not None:
         runtime.workspace_git_identity(prepared.handle, profile=prepared.git_profile)
     try:
-        return runtime.send_message(prepared.handle, prompt, image_urls)
+        return message_submissions.dispatch(runtime, prepared.handle, prompt, image_urls)
     except DomainError as exc:
         if exc.status >= 500:
             raise DomainError(
@@ -3164,6 +3669,7 @@ def finalize_running_message(
         _record_message_attachments(
             db, binding, result.cursor, prepared.content.strip(), prepared.attachments
         )
+        _record_model_change(db, binding, result.cursor)
     activity_at = now()
     # New messages do not change the default creation-time or manual ordering.
     binding.last_message_at = activity_at
@@ -3173,6 +3679,7 @@ def finalize_running_message(
     return {
         "accepted": True,
         "cursor": result.cursor,
+        "event_id": result.cursor,
         "compacted": False,
         "queued_during_turn": True,
     }
@@ -3206,6 +3713,60 @@ def _condenser_credential_failure_event_id(runtime: Any, handle: RuntimeHandle) 
     return leaf.cursor
 
 
+_OPEN_QUESTION_PROBE_LIMIT = 8
+
+
+def _open_question_binding_ids(
+    db: Session,
+    workspace: Any,
+    bindings: list[AgentConversationBinding],
+    native_activity: dict[str, Any],
+) -> dict[str, str]:
+    """Binding id -> action id of the latest ask_user with no user reply yet (bounded, best effort).
+
+    ask_user parks the run in waiting_for_user_input (ready for input); the fact is read from the formal
+    events. Only recently active, non-running conversations are probed to keep this poll cheap.
+    """
+
+    candidates = [
+        item
+        for item in bindings
+        if (activity := native_activity.get(item.openhands_conversation_id)) is not None
+        and activity.execution_status not in _UNREADY_EXECUTION_STATUSES
+        and not activity_timestamp_is_stale(activity.updated_at)
+    ]
+    candidates.sort(
+        key=lambda item: native_activity[item.openhands_conversation_id].updated_at or "",
+        reverse=True,
+    )
+    runtime = get_runtime()
+    open_ids: dict[str, str] = {}
+    for item in candidates[:_OPEN_QUESTION_PROBE_LIMIT]:
+        try:
+            pending = runtime.get_pending_question(_handle(db, workspace, item))
+            if pending is not None:
+                open_ids[item.id] = pending.action_id
+        except Exception:  # noqa: BLE001 - a probe failure must not break the activity poll
+            continue
+    return open_ids
+
+
+def _mirror_case_control_waiting(db: Session, binding: AgentConversationBinding) -> None:
+    from flowweave.modules.cases.public import note_case_control_waiting
+
+    note_case_control_waiting(db, binding.id)
+
+
+def _mirror_case_control_reply(
+    db: Session, binding: AgentConversationBinding, reply_event_id: str | None
+) -> None:
+    """A user reply in a Case control conversation also resumes a WAITING_HUMAN (open ask_user) pause."""
+
+    from flowweave.modules.cases.public import note_case_control_reply
+
+    note_case_control_reply(db, binding.id, reply_event_id)
+
+
 def message(
     db: Session,
     workspace_id: str,
@@ -3215,6 +3776,7 @@ def message(
     references: tuple[dict[str, str], ...] = (),
     workspace_references: tuple[dict[str, str], ...] = (),
     annotations: tuple[dict[str, Any], ...] = (),
+    answered_question: str | None = None,
 ) -> dict[str, Any]:
     if (
         not content.strip()
@@ -3241,7 +3803,7 @@ def message(
     )
     references = _resolve_message_references(db, workspace, binding, references)
     prompt, image_urls = _message_payload(
-        content, attachments, references, workspace_references, annotations
+        content, attachments, references, workspace_references, annotations, answered_question
     )
     if not binding.streaming_callback_ready:
         raise DomainError(
@@ -3270,7 +3832,7 @@ def message(
             diagnostic(handle, operation="agent_running_direct", readiness=readiness)
         try:
             _ensure_history_references(db, workspace, binding, references)
-            result = runtime.send_message(handle, prompt, image_urls)
+            result = message_submissions.dispatch(runtime, handle, prompt, image_urls)
         except DomainError as exc:
             if exc.status >= 500:
                 raise DomainError(
@@ -3280,13 +3842,16 @@ def message(
         _observe_task_watchdogs_after_send(db, binding, handle)
         if result.cursor:
             _record_message_attachments(db, binding, result.cursor, content.strip(), attachments)
+            _record_model_change(db, binding, result.cursor)
         activity_at = now()
         binding.last_connected_at = activity_at
         binding.updated_at = activity_at
         db.flush()
+        _mirror_case_control_reply(db, binding, result.cursor)
         return {
             "accepted": True,
             "cursor": result.cursor,
+            "event_id": result.cursor,
             "compacted": False,
             "queued_during_turn": True,
         }
@@ -3397,7 +3962,7 @@ def message(
         )
     try:
         _ensure_history_references(db, workspace, binding, references)
-        result = runtime.send_message(handle, prompt, image_urls)
+        result = message_submissions.dispatch(runtime, handle, prompt, image_urls)
     except DomainError as exc:
         if exc.status >= 500:
             raise DomainError(
@@ -3407,22 +3972,25 @@ def message(
     _observe_task_watchdogs_after_send(db, binding, handle)
     if result.cursor:
         _record_message_attachments(db, binding, result.cursor, content.strip(), attachments)
+        _record_model_change(db, binding, result.cursor)
     activity_at = now()
     # New messages do not change the default creation-time or manual ordering.
     binding.last_message_at = activity_at
     binding.last_connected_at = activity_at
     binding.updated_at = activity_at
     db.flush()
+    _mirror_case_control_reply(db, binding, result.cursor)
     return {
         "accepted": True,
         "cursor": result.cursor,
+        "event_id": result.cursor,
         "compacted": False,
         "queued_during_turn": False,
     }
 
 
 _ATTACHMENT_PATH = re.compile(
-    rf"^(?P<workspace_root>{_RUNTIME_WORKSPACE_PATH})/uploads/"
+    rf"^(?P<workspace_root>{_RUNTIME_WORKSPACE_PATH})(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/(?:\.uploads|uploads)/"
     r"(?P<owner>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-"
     r"(?P<object>[0-9a-f]{32})(?:--(?P<filename>[A-Za-z0-9][A-Za-z0-9._-]{0,180}))?$"
 )
@@ -3468,6 +4036,7 @@ def _message_payload(
     references: tuple[dict[str, str], ...] = (),
     workspace_references: tuple[dict[str, str], ...] = (),
     annotations: tuple[dict[str, Any], ...] = (),
+    answered_question: str | None = None,
 ) -> tuple[str, tuple[str, ...]]:
     if len(attachments) > 10:
         raise DomainError("AGENT_ATTACHMENT_INVALID", "附件引用无效，请重新上传", 422)
@@ -3503,6 +4072,14 @@ def _message_payload(
     prompt = content.strip()
     normalized_references = _validated_conversation_references(references)
     normalized_workspace_references = _validated_workspace_references(workspace_references)
+    workspace_reference_aliases = [
+        {
+            "alias": f"@本地文件{index}",
+            "filename": reference["display_name"],
+            "path": reference["path"],
+        }
+        for index, reference in enumerate(normalized_workspace_references, start=1)
+    ]
     # Attachments need the same hidden transport envelope as other contextual
     # material: the Runtime receives stable aliases and paths, while history
     # continues to render only the user's original text and attachment cards.
@@ -3511,6 +4088,7 @@ def _message_payload(
         and not normalized_references
         and not normalized_workspace_references
         and not annotations
+        and not answered_question
     ):
         return prompt, tuple(image_urls)
     prompt = (
@@ -3522,7 +4100,9 @@ def _message_payload(
                 "reference_materials": normalized_references,
                 "workspace_references": normalized_workspace_references,
                 "collaboration_annotations": annotations,
+                **({"answered_question": answered_question[:2000]} if answered_question else {}),
                 "attachment_aliases": attachment_aliases,
+                "workspace_reference_aliases": workspace_reference_aliases,
                 "current_user_request": {"content": prompt},
             },
             ensure_ascii=False,
@@ -3547,6 +4127,7 @@ def _validated_conversation_references(
             source_id = item.get("source_binding_id")
             native_id = item.get("source_conversation_id")
             title = item.get("title")
+            resolved_content = item.get("resolved_content")
             identity = f"conversation:{source_id}"
             if (
                 not isinstance(source_id, str)
@@ -3555,29 +4136,42 @@ def _validated_conversation_references(
                 or not 1 <= len(native_id) <= 100
                 or not isinstance(title, str)
                 or not 1 <= len(title) <= 240
+                or resolved_content is not None
+                and (
+                    not isinstance(resolved_content, str)
+                    or not resolved_content.strip()
+                    or len(resolved_content) > _MAX_CONVERSATION_REFERENCE_CHARS
+                )
                 or identity in seen
             ):
                 raise DomainError(
                     "AGENT_CONVERSATION_REFERENCE_INVALID", "会话引用无效，请重新选择", 422
                 )
             total_chars += len(title)
+            if isinstance(resolved_content, str):
+                total_chars += len(resolved_content)
             if total_chars > _MAX_CONVERSATION_REFERENCE_CHARS:
                 raise DomainError(
                     "AGENT_CONVERSATION_REFERENCE_TOO_LARGE",
                     "引用内容过长，请缩小引用范围后重试",
                     422,
                 )
-            normalized.append(
-                {
-                    "kind": "conversation",
-                    "event_id": "",
-                    "content": title,
-                    "title": title,
-                    "source_binding_id": source_id,
-                    "source_conversation_id": native_id,
-                    "history_tool": "read_referenced_conversation",
-                }
-            )
+            value = {
+                "kind": "conversation",
+                "event_id": "",
+                "content": title,
+                "title": title,
+                "source_binding_id": source_id,
+                "source_conversation_id": native_id,
+                "history_tool": (
+                    "platform_conversation_history"
+                    if isinstance(resolved_content, str)
+                    else "read_referenced_conversation"
+                ),
+            }
+            if isinstance(resolved_content, str):
+                value["resolved_content"] = resolved_content.strip()
+            normalized.append(value)
             seen.add(identity)
             continue
         if (
@@ -3601,10 +4195,26 @@ def _validated_conversation_references(
                 "引用内容过长，请缩小引用范围后重试",
                 422,
             )
-        value = {"event_id": event_id.strip(), "content": text}
+        value: dict[str, Any] = {"event_id": event_id.strip(), "content": text}
         source_id = item.get("source_binding_id")
         if isinstance(source_id, str) and source_id.strip():
             value["source_binding_id"] = source_id
+        selection = item.get("selection")
+        if selection is not None:
+            start = selection.get("compact_start") if isinstance(selection, dict) else None
+            end = selection.get("compact_end") if isinstance(selection, dict) else None
+            if (
+                isinstance(start, bool)
+                or not isinstance(start, int)
+                or isinstance(end, bool)
+                or not isinstance(end, int)
+                or start < 0
+                or end <= start
+            ):
+                raise DomainError(
+                    "AGENT_CONVERSATION_REFERENCE_INVALID", "会话选区无效，请重新选择", 422
+                )
+            value["selection"] = {"compact_start": start, "compact_end": end}
         normalized.append(value)
         seen.add(event_id)
     return tuple(normalized)
@@ -3618,7 +4228,10 @@ def _ensure_history_references(
     *,
     allow_install: bool = True,
 ) -> bool:
-    if not any(item.get("kind") == "conversation" for item in references):
+    if not any(
+        item.get("kind") == "conversation" and not item.get("resolved_content")
+        for item in references
+    ):
         return True
     from flowweave.modules.agent_sessions.application import history_integration
 
@@ -3722,6 +4335,8 @@ def _resolve_source_conversation_reference(
                 "AGENT_CONVERSATION_REFERENCE_UNAVAILABLE", "来源会话暂时不可引用", 409
             )
         title = (source.display_title or "未命名会话").strip()[:240] or "未命名会话"
+        # Whole-conversation references carry metadata only. The Agent reads the
+        # history on demand through the governed read_referenced_conversation MCP.
         return {
             "kind": "conversation",
             "event_id": "",
@@ -3749,7 +4364,14 @@ def _resolve_source_conversation_reference(
     selected_text = _selected_reference_text(visible, selection)
     if not selected_text:
         raise DomainError("AGENT_CONVERSATION_REFERENCE_INVALID", "会话选区无效，请重新选择", 422)
-    return {"event_id": source_event_id, "content": selected_text, "source_binding_id": source.id}
+    reference: dict[str, Any] = {
+        "event_id": source_event_id,
+        "content": selected_text,
+        "source_binding_id": source.id,
+    }
+    if selection is not None:
+        reference["selection"] = selection
+    return reference
 
 
 def _resolve_message_references(
@@ -3915,6 +4537,20 @@ def _validated_workspace_references(
     return tuple(normalized)
 
 
+def project_answered_question(content: str) -> str | None:
+    """The ask_user question a user reply carries in its V5 envelope, if any."""
+
+    _prefix, marker, encoded = content.rpartition(_MESSAGE_CONTEXT_V5_MARKER)
+    if not marker:
+        return None
+    try:
+        parsed = json.loads(encoded)
+    except (TypeError, ValueError):
+        return None
+    value = parsed.get("answered_question") if isinstance(parsed, dict) else None
+    return value if isinstance(value, str) and value.strip() else None
+
+
 def _project_conversation_references(
     content: str,
 ) -> tuple[
@@ -4064,6 +4700,48 @@ def _record_message_attachments(
         db.flush()
 
 
+def _record_model_change(
+    db: Session, binding: AgentConversationBinding, event_id: str | None
+) -> None:
+    """Remember the model of this user event; project a divider when it changed.
+
+    The first send only seeds the baseline, so a fresh conversation shows no
+    divider. A divider is keyed by the formal user event identity.
+    """
+
+    provider_id, model_name = binding.model_provider_id, binding.model_name
+    previous_provider, previous_model = binding.last_sent_provider_id, binding.last_sent_model_name
+    changed = previous_model is not None and (
+        previous_provider != provider_id or previous_model != model_name
+    )
+    if changed and event_id:
+        exists = db.scalar(
+            select(AgentMessageModelChange.id).where(
+                AgentMessageModelChange.binding_id == binding.id,
+                AgentMessageModelChange.event_id == event_id,
+            )
+        )
+        if exists is None:
+            db.add(
+                AgentMessageModelChange(
+                    binding_id=binding.id,
+                    event_id=event_id,
+                    from_provider_id=previous_provider,
+                    from_model_name=previous_model,
+                    from_label=provider_model_label(db, previous_provider, previous_model),
+                    to_provider_id=provider_id,
+                    to_model_name=model_name,
+                    to_label=provider_model_label(db, provider_id, model_name),
+                )
+            )
+    binding.last_sent_provider_id = provider_id
+    binding.last_sent_model_name = model_name
+    db.flush()
+
+
+record_model_change = _record_model_change
+
+
 def delete_draft_attachments(db: Session, workspace_id: str, owner_id: str) -> int:
     workspace = _workspace(db, workspace_id)
     owner = assert_attachment_owner_unbound(
@@ -4137,8 +4815,13 @@ def upload_attachment(
             owner_id = str(UUID(attachment_owner_id or ""))
         except ValueError as exc:
             raise DomainError("AGENT_CONVERSATION_ID_INVALID", "附件必须关联有效会话", 422) from exc
-        agent_workspace_host.conversation_work_directory_context(
+        _, working_directory = agent_workspace_host.conversation_work_directory_context(
             db, workspace.id, work_directory_id
+        )
+        agent_workspace_host.ensure_private_upload_directory_ignored(
+            agent_workspace_host.agent_workspace_record_path(db, workspace.id),
+            user_runtime_project_root(workspace.id),
+            working_directory,
         )
         resource_name, resource_id = terminal_resource_details(db, workspace.id)
         handle = RuntimeHandle(
@@ -4147,11 +4830,17 @@ def upload_attachment(
             runtime_resource_id=resource_id,
             runtime_resource_name=resource_name,
             workspace_root=user_runtime_project_root(workspace.id),
+            working_directory=working_directory,
         )
     else:
         bound_conversation = _binding(db, workspace_id, binding_id)
         owner_id = bound_conversation.id
         handle = _handle(db, workspace, bound_conversation)
+        agent_workspace_host.ensure_private_upload_directory_ignored(
+            agent_workspace_host.agent_workspace_record_path(db, workspace.id),
+            handle.workspace_root,
+            handle.working_directory,
+        )
     path = get_runtime().upload_workspace_file(
         handle,
         filename=filename,
@@ -4664,6 +5353,40 @@ def hydrate_conversation(db: Session, workspace_id: str, binding_id: str) -> dic
             )
 
 
+def restore_condenser_credentials(
+    db: Session, workspace_id: str, binding_id: str
+) -> dict[str, bool]:
+    workspace = _workspace(db, workspace_id)
+    binding = _binding(db, workspace_id, binding_id, lock=True)
+    active = db.scalar(
+        select(BackgroundTask.id).where(
+            BackgroundTask.task_type == "CONDENSE_AGENT_CONVERSATION",
+            BackgroundTask.aggregate_id == binding.id,
+            BackgroundTask.state.in_([TaskState.PENDING, TaskState.RUNNING]),
+        )
+    )
+    handle = _handle(db, workspace, binding)
+    runtime = get_runtime()
+    if active is not None or not runtime.can_accept_input(handle):
+        raise DomainError("AGENT_CONVERSATION_BUSY", "请在当前回复或压缩完成后恢复摘要器认证", 409)
+    provider = runtime_provider(
+        db,
+        {"asset": {"executor": {"model_provider_id": binding.model_provider_id}}},
+        model_name=binding.model_name,
+        reasoning_effort=binding.reasoning_effort,
+    )
+    runtime.restore_condenser_credentials(handle, provider)
+    log_conversation_diagnostic(
+        operation="condenser_credentials_restored",
+        host_kind="agent_workspace",
+        binding_id=binding.id,
+        workspace_id=workspace.id,
+        outcome="success",
+        force=True,
+    )
+    return {"restored": True}
+
+
 def switch_conversation_model(
     db: Session,
     workspace_id: str,
@@ -4998,6 +5721,41 @@ def input_readiness(db: Session, workspace_id: str, binding_id: str) -> dict[str
     return readiness.as_dict()
 
 
+def control_goal(
+    db: Session,
+    workspace_id: str,
+    binding_id: str,
+    *,
+    action: str,
+    objective: str | None,
+    max_iterations: int,
+) -> dict[str, bool]:
+    workspace = _workspace(db, workspace_id)
+    binding = _binding(db, workspace_id, binding_id, lock=True)
+    runtime = db.scalar(
+        select(AgentWorkspaceRuntime)
+        .where(AgentWorkspaceRuntime.workspace_id == workspace.id)
+        .with_for_update()
+    )
+    if runtime is not None and runtime.status == "RECONNECTING":
+        raise DomainError(
+            "AGENT_RUNTIME_UNAVAILABLE", "Agent 运行环境暂时不可写入，请稍后重试", 503
+        )
+    if runtime is None or runtime.status != "ACTIVE" or runtime.active_generation is None:
+        raise DomainError("AGENT_RUNTIME_RECOVERING", "Agent 运行环境正在恢复，数据已保留", 503)
+    handle = _handle(db, workspace, binding)
+    native = get_runtime()
+    if action == "START":
+        native.start_goal(handle, objective or "", max_iterations)
+    elif action == "STOP":
+        native.stop_goal(handle)
+    elif action == "RESUME":
+        native.resume_goal(handle)
+    else:
+        raise DomainError("GOAL_ACTION_INVALID", "不支持的目标操作", 422)
+    return {"accepted": True}
+
+
 def rewrite_message(
     db: Session,
     workspace_id: str,
@@ -5056,13 +5814,18 @@ def rewrite_message(
     _observe_task_watchdogs_after_send(db, binding, handle)
     if result.cursor:
         _record_message_attachments(db, binding, result.cursor, content.strip(), attachments)
+        _record_model_change(db, binding, result.cursor)
     activity_at = now()
     # New messages do not change the default creation-time or manual ordering.
     binding.last_message_at = activity_at
     binding.last_connected_at = activity_at
     binding.updated_at = activity_at
     db.flush()
-    return {"accepted": True, "cursor": result.cursor}
+    return {
+        "accepted": True,
+        "cursor": result.cursor,
+        "event_id": result.cursor,
+    }
 
 
 def resume(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
