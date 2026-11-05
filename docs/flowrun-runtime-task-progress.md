@@ -109,7 +109,28 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 bd3160fa 未修改源码服务器对照复现，涉及场景文案／启动按钮断言、会话
 回复读取、隐藏 DOM 定位及流程列表旧夹具。工作台 ESLint 的未使用 Plug
 与 bootstrap 依赖提示亦在 HEAD 原源码复现。本片完成导航抢占修复，页面
-导航由本次两项隔离 API 专项验证，线上验收仍需正式发布。
+导航由本次两项隔离 API 专项验证，正式发布验收见下。
+
+#### FIX-CASE-NAV Web 发布验收
+
+2026-11-05 正式 Web 预检、commit-bound 最小上下文和发布收尾通过，发布
+0f55feb63a15fd6cee494659747a048e657c1f59。源码归档 SHA-256 为
+cec9946c663dfb4e4c6c0e46db8dbe9e2d4199df10d659e156682fbe8a8efce4，
+linux/amd64 Web 镜像 ID 为
+sha256:7d80506129791e319fefea6655408840294992661832a5fc27c0831338c2392a。
+保留旧 Web 回滚镜像及服务日志，定向 recreate Web 后 revision 与 HTTP
+健康通过。服务器配置哈希及其余 47 个容器的镜像和启动时间复核通过。
+
+公网首页、Agent 深链、根登录页和 API 鉴权边界通过，HTML、入口 JS／CSS
+与会话工作台 JS／CSS 共五项资源的 SHA-256 与实际运行镜像一致。全新
+Chromium 的平台登录页、Agent 深链与根登录页通过，应用 JavaScript 错误
+为零，两个 API 请求均带部署前缀。以实际运行镜像静态资源及隔离 API
+夹具执行本片两项交互回归通过，71 个 API 请求均带部署前缀。
+
+remote-release-finish 完成四项过期受管上下文及一个精确 Web 历史 tag
+回收，保留 24 小时上下文、实际引用和每仓库一个回滚镜像。收尾后 Web
+revision／健康、API／stream-api 健康与 readiness、服务器配置及 47 个保护
+容器再次复核通过。交互验收使用隔离夹具，真实业务资源未参与写入。
 
 ### OPS-87-CS 会话管理事件数与累计 Token — DONE
 
