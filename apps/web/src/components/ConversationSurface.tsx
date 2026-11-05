@@ -2991,6 +2991,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     const element = surface.current;
     if (!element || !hasTranscript) return;
     let previousWidth = element.clientWidth;
+    let previousHeight = element.clientHeight;
     let wasHidden = !element.clientHeight;
     // Observe only viewport visibility/width. Tool tabs hide this retained DOM,
     // and returning to a wider transcript reflows Markdown without new events.
@@ -2999,6 +3000,13 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       if (!element.clientHeight) {
         wasHidden = true;
         return;
+      }
+      // The surface itself shrinks when a dock card (ask_user, confirmation) appears below it. A reader
+      // following the latest content must be pushed up with it instead of being covered by the card.
+      const heightChanged = element.clientHeight !== previousHeight;
+      if (!wasHidden && heightChanged && element.clientWidth === previousWidth && followLatest.current && !userScrolledAway.current) {
+        alignWithLatest();
+        setIsAtLatest(true);
       }
       if (wasHidden || element.clientWidth !== previousWidth) {
         if (followLatest.current && !userScrolledAway.current) {
@@ -3010,6 +3018,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
       }
       wasHidden = false;
       previousWidth = element.clientWidth;
+      previousHeight = element.clientHeight;
       lastVisibleScrollTop.current = element.scrollTop;
     });
     observer.observe(element);

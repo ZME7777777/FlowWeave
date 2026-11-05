@@ -124,3 +124,14 @@ test('several questions are answered step by step and submitted once with the qu
   expect(sent[0]).toBe('先在灰度验证');
   expect(sent.asked?.[0]).toBe('是否把版本 2.3 发布到生产环境？');
 });
+
+test('the question card pushes the transcript up instead of covering its last line', async ({ page }) => {
+  await openAskedConversation(page, [], false);
+  const card = page.getByTestId('agent-user-question');
+  await expect(card).toBeVisible();
+  const row = page.locator('[data-ask-user-event-id="ask-user-action"]');
+  await expect.poll(async () => {
+    const [rowBox, cardBox] = await Promise.all([row.boundingBox(), card.boundingBox()]);
+    return Boolean(rowBox && cardBox && rowBox.y + rowBox.height <= cardBox.y + 1);
+  }).toBe(true);
+});

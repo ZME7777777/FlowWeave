@@ -16374,3 +16374,7 @@ runtime-provider／api／stream-api／worker／web，再执行 `runtime-replace`
 SDK `baseline` 提交 `89dd0d1b0c9bccdee8bbae4eb710500d12115455`：`ask_user` 描述要求模型在用户只回答部分问题时先回应已答内容，再仅对未答问题重新调用 `ask_user`。归档 SHA-256 `63b3aebec0a76e305961040a68452a7e05e99e578b6cbf83c96072b656c32b0f`。Web 端仅发送已答问题（`ec3e5a50`）。2026-11-05 以 commit `5bf11a77d330ecd9ac36697247eb6bca18429ede` 完成 runtime 范围发布：Runtime `flowweave-openhands-runtime:1` 现为 `sha256:848f9d5f5c0a…`（旧镜像保留为 `rollback-b2131e0e-pre`，`d48c26d42c72`）；平台 `sha256:177c6ad06108…`，Web `sha256:37c2d3713bb8…`。门禁：原生会话 357 个，error 16／finished 321／idle 2／paused 15／stuck 3，无运行态；服务器侧先备份 `state/`（权限 600，gzip 校验通过；一个历史会话目录在备份期间变化）。migration 退出码 0，随后重建 runtime-provider／api／stream-api／worker／web，再执行 `runtime-replace`。新容器 digest、`build_git_sha=89dd0d1b0…`、四包 1.58.2 与 source lock 一致，`ask_user.py` 含新描述，公网首页、`/agent`、`/agent/schedules` 为 200。
 
 未完成项：尚未用真实模型端到端验证“只答部分问题后模型回应并重新提问”；`tests/architecture` 既有 11 项失败与发布前一致。
+
+### OPS-BL1585 ask_user 先处理已答问题再重问与 baseline 805bb3fe0 同步 — CODE-DONE（待 Runtime 发布）
+
+SDK `baseline` 提交 `805bb3fe0a57cdc3e383e26019fa216a6892e608`，归档 SHA-256 `eaf4322c182d2ea80202840b43834cb72697371e479eca91aaf03dc458adb208`。线上试验（`89dd0d1b0`）发现模型在用户只答一题后立即重新调用 `ask_user`，没有先做已答问题对应的实际工作；描述改为：先依据已答内容完成实际工作并汇报，再仅对未答问题重问。Web：提问卡片出现导致会话容器变矮时，跟随最新内容的会话保持贴底，不被卡片遮挡。Runtime 发布与 replacement 尚未执行，不得声称已同步。
