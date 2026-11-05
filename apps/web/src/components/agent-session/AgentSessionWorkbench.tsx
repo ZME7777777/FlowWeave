@@ -31,7 +31,7 @@ import { ConversationSurface, OpenQuestionContext, ConversationTaskPlan, goalRou
 import { isOpenHandsAgentReply, isOpenHandsConversationInterrupt, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, projectFlowWeaveMessageContext, projectHistoricalAgentReplies } from '../conversationEvents';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
-import { ASK_USER_SKIP_REPLY, UserQuestionCard } from './UserQuestionCard';
+import { UserQuestionCard } from './UserQuestionCard';
 import { useRetainedPageActive } from '../RetainedPages';
 import { MermaidDiagram } from '../MermaidDiagram';
 import { isMermaidDiagram, markdownCodeText } from '../markdownCodeBlock';
@@ -10298,9 +10298,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!canWrite || conversationDraft || !selected || !pendingQuestion) return;
     setOperationError(undefined);
     if (pendingQuestion.action_id) dismissQuestionAction(pendingQuestion.action_id);
-    // Skipping never resumes: OpenHands keeps waiting (WAITING_FOR_USER_INPUT) and the
-    // conversation offers "回答问题" to reopen the card. Only a real answer is sent.
-    if (content === ASK_USER_SKIP_REPLY) return;
     // The answer is an ordinary user message; sending it is what resumes the
     // native WAITING_FOR_USER_INPUT conversation.
     dispatchMessage({

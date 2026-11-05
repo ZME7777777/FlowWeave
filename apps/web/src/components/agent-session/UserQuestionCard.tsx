@@ -3,19 +3,20 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { AgentPendingQuestion } from '../../types';
 import { useEscapeClose } from '../useEscapeClose';
 
-/** Fixed text the Agent receives when the user skips every question. */
-export const ASK_USER_SKIP_REPLY = '用户选择跳过这个问题，请基于现有信息自行做出最稳妥的判断，并说明你采用的假设后继续。';
-const SKIPPED_ANSWER = '（已跳过，请自行判断并说明假设）';
-
 interface Step { question: string; options: string[]; recommendation?: string | null }
 interface Answer { choice?: string; text: string; skipped: boolean }
 
-/** Compose the reply for every step; it is an ordinary user message. */
-export function composeQuestionReply(steps: Step[], answers: Answer[]): string {
-  if (answers.every(answer => answer.skipped)) return ASK_USER_SKIP_REPLY;
-  const answerOf = (answer: Answer) => answer.skipped ? SKIPPED_ANSWER : (answer.text.trim() || answer.choice || SKIPPED_ANSWER);
-  if (steps.length === 1) return answerOf(answers[0]!);
-  return steps.map((_, index) => `${index + 1}. ${answerOf(answers[index]!)}`).join('\n');
+/** The reply carries only the questions the user actually answered; skipped ones are simply absent and stay open for the Agent to re-ask. */
+export function composeQuestionReply(steps: Step[], answers: Answer[]): { content: string; answered: string } | undefined {
+  const given = steps
+    .map((step, index) => ({ question: step.question, answer: answers[index]?.skipped ? '' : (answers[index]?.text.trim() || answers[index]?.choice || '') }))
+    .filter(item => item.answer);
+  if (!given.length) return undefined;
+  if (given.length === 1) return { content: given[0]!.answer, answered: given[0]!.question };
+  return {
+    content: given.map((item, index) => `${index + 1}. ${item.answer}`).join('\n'),
+    answered: given.map((item, index) => `${index + 1}. ${item.question}`).join('\n'),
+  };
 }
 
 /**
@@ -51,9 +52,11 @@ export function UserQuestionCard({ question, busy, onAnswer, onClose }: {
   const patch = (value: Partial<Answer>) => setAnswers(current => current.map((item, i) => i === index ? { ...item, skipped: false, ...value } : item));
   const answered = Boolean(answer.text.trim() || answer.choice);
   const advance = (next: Answer[]) => {
-    // Any skipped question keeps the Agent waiting: nothing is sent, the card just closes (回答问题 reopens it).
-    if (last && next.some(item => item.skipped)) onClose();
-    else if (last) onAnswer(composeQuestionReply(steps, next), steps.map((item, i) => steps.length > 1 ? `${i + 1}. ${item.question}` : item.question).join('\n'));
+    if (last) {
+      // Nothing answered (everything skipped): send nothing, the Agent keeps waiting; 回答问题 reopens the card.
+      const reply = composeQuestionReply(steps, next);
+      if (reply) onAnswer(reply.content, reply.answered); else onClose();
+    }
     else setIndex(current => current + 1);
   };
   const commit = (value: Partial<Answer>) => {

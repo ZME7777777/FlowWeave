@@ -120,6 +120,7 @@ test('several questions are answered step by step and submitted once with the qu
   await card.getByRole('button', { name: '下一题' }).click();
   await card.getByRole('button', { name: '跳过' }).click();
   await expect.poll(() => sent.length).toBe(1);
-  expect(sent[0]).toBe('1. 先在灰度验证\n2. （已跳过，请自行判断并说明假设）');
-  expect(sent.asked?.[0]).toBe('1. 是否把版本 2.3 发布到生产环境？\n2. 回滚策略？');
+  // Only the answered question is sent; the skipped one is not mentioned.
+  expect(sent[0]).toBe('先在灰度验证');
+  expect(sent.asked?.[0]).toBe('是否把版本 2.3 发布到生产环境？');
 });
