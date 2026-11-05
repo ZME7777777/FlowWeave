@@ -116,6 +116,20 @@ test('Escape and an outside click close the menu without changing the model', as
   expect(saved).toHaveLength(0);
 });
 
+test('a long model list scrolls inside a fixed-height card and hovering needs a short dwell', async ({ page }) => {
+  providers[0].models = Array.from({ length: 30 }, (_, i) => ({ model_name: `many-${i}`, enabled: true, is_default: i === 0 }));
+  await openConversation(page);
+  await page.getByLabel(/打开模型与推理设置/).click();
+  const cascade = page.locator('.agent-model-cascade');
+  const models = page.locator('.agent-model-cascade-models');
+  const before = (await cascade.boundingBox())!.height;
+  expect(before).toBeLessThanOrEqual(240);
+  expect(await models.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+  await page.getByRole('option', { name: '供应商 供应商乙' }).hover();
+  await expect(page.getByRole('option', { name: '模型 beta-2' })).toBeVisible();
+  expect(Math.abs((await cascade.boundingBox())!.height - before)).toBeLessThan(1);
+});
+
 test('keyboard focus on a provider reveals its models like hover', async ({ page }) => {
   await openConversation(page);
   await page.getByLabel(/打开模型与推理设置/).click();

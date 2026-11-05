@@ -15,10 +15,15 @@ export function ComposerModelMenu({
   const [panel, setPanel] = useState<'root' | 'effort'>('root');
   // Hover/focus only reveals a provider's models; clicking a model applies it at once.
   const [hoverProviderId, setHoverProviderId] = useState('');
+  const hoverTimer = useRef<number>();
   const menu = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const popover = useRef<HTMLDivElement>(null);
-  const reset = () => { setPanel('root'); setHoverProviderId(''); };
+  const cancelHover = () => { window.clearTimeout(hoverTimer.current); hoverTimer.current = undefined; };
+  // Hover switches providers only after a short dwell so a diagonal move toward the models column does not flip them.
+  const hoverProvider = (id: string) => { cancelHover(); hoverTimer.current = window.setTimeout(() => setHoverProviderId(id), 220); };
+  useEffect(() => cancelHover, []);
+  const reset = () => { cancelHover(); setPanel('root'); setHoverProviderId(''); };
   const close = () => { setOpen(false); reset(); trigger.current?.focus(); };
   useEscapeClose(close, open);
   useEffect(() => {
@@ -60,12 +65,12 @@ export function ComposerModelMenu({
       if (next !== undefined) { event.preventDefault(); buttons[next]?.focus(); }
       if (event.key === 'Tab') setOpen(false);
     }}>{panel === 'root' ? <>
-      <div className="agent-model-cascade" onMouseLeave={() => setHoverProviderId('')}>
+      <div className="agent-model-cascade" onMouseLeave={() => { cancelHover(); setHoverProviderId(''); }}>
         <div className="agent-model-cascade-providers" role="listbox" aria-label="供应商">{providers.map(provider => {
           const active = provider.id === shownProviderId;
-          return <button type="button" role="option" key={provider.id} aria-selected={provider.id === target.providerId} aria-label={`供应商 ${provider.name}`} className={`agent-model-picker-option${active ? ' hovered' : ''}${provider.id === target.providerId ? ' selected' : ''}`} onMouseEnter={() => setHoverProviderId(provider.id)} onFocus={() => setHoverProviderId(provider.id)} onClick={() => setHoverProviderId(provider.id)}><span>{provider.name}{provider.is_primary && <small className="agent-model-primary">主要</small>}</span><ChevronRight size={14}/></button>;
+          return <button type="button" role="option" key={provider.id} aria-selected={provider.id === target.providerId} aria-label={`供应商 ${provider.name}`} className={`agent-model-picker-option${active ? ' hovered' : ''}${provider.id === target.providerId ? ' selected' : ''}`} onMouseEnter={() => hoverProvider(provider.id)} onFocus={() => { cancelHover(); setHoverProviderId(provider.id); }} onClick={() => { cancelHover(); setHoverProviderId(provider.id); }}><span>{provider.name}{provider.is_primary && <small className="agent-model-primary">主要</small>}</span><ChevronRight size={14}/></button>;
         })}{!providers.length && <p className="agent-model-picker-empty">暂无可用供应商</p>}</div>
-        <div className="agent-model-cascade-models" role="listbox" aria-label="模型">{shownModels.map(model => {
+        <div className="agent-model-cascade-models" role="listbox" aria-label="模型" onMouseEnter={cancelHover}>{shownModels.map(model => {
           const selected = target.providerId === shownProviderId && target.modelName === model.model_name;
           return <button type="button" role="option" key={model.model_name} aria-selected={selected} aria-label={`模型 ${model.model_name}`} className={`agent-model-picker-option${selected ? ' selected' : ''}`} onClick={() => choose(shownProviderId, model.model_name)}><span>{model.model_name}</span>{selected && <Check size={15}/>}</button>;
         })}{shownProvider && !shownModels.length && <p className="agent-model-picker-empty">该供应商没有可用模型</p>}</div>
