@@ -1112,6 +1112,7 @@ def conversation_activity(
             "possibly_stuck_binding_ids": [],
             "failed_binding_ids": [],
             "waiting_user_input_binding_ids": [],
+            "waiting_user_input_actions": {},
         }
     binding_ids = {item.id for item in bindings}
     runtime = get_runtime()
@@ -1253,7 +1254,8 @@ def conversation_activity(
         "failed_binding_ids": [
             item.id for item in bindings if item.openhands_conversation_id in failed_native_ids
         ],
-        "waiting_user_input_binding_ids": waiting_user_input_binding_ids,
+        "waiting_user_input_binding_ids": list(waiting_user_input_binding_ids),
+        "waiting_user_input_actions": waiting_user_input_binding_ids,
     }
 
 
@@ -3576,8 +3578,8 @@ def _open_question_binding_ids(
     workspace: Any,
     bindings: list[AgentConversationBinding],
     native_activity: dict[str, Any],
-) -> list[str]:
-    """Bindings whose latest ask_user has no user reply yet (bounded, best effort).
+) -> dict[str, str]:
+    """Binding id -> action id of the latest ask_user with no user reply yet (bounded, best effort).
 
     ask_user never changes the native execution status, so the fact is read from the formal
     events. Only recently active, non-running conversations are probed to keep this poll cheap.
@@ -3595,11 +3597,12 @@ def _open_question_binding_ids(
         reverse=True,
     )
     runtime = get_runtime()
-    open_ids: list[str] = []
+    open_ids: dict[str, str] = {}
     for item in candidates[:_OPEN_QUESTION_PROBE_LIMIT]:
         try:
-            if runtime.get_pending_question(_handle(db, workspace, item)) is not None:
-                open_ids.append(item.id)
+            pending = runtime.get_pending_question(_handle(db, workspace, item))
+            if pending is not None:
+                open_ids[item.id] = pending.action_id
         except Exception:  # noqa: BLE001 - a probe failure must not break the activity poll
             continue
     return open_ids

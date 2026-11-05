@@ -31,7 +31,7 @@ async function openAskedConversation(page: import('@playwright/test').Page, foll
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
-    if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [], waiting_user_input_binding_ids: sent.length ? [] : [conversation.id] });
+    if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [], waiting_user_input_binding_ids: sent.length ? [] : [conversation.id], waiting_user_input_actions: sent.length ? {} : { [conversation.id]: 'ask-user-action' } });
     if (path.endsWith('/hydration')) return json(route, { events: batch, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 100, usage_current: true }, readiness: { ready: true, execution_status: 'finished' } });
     if (path.endsWith('/events') && request.method() === 'GET') return json(route, batch);
     if (path.endsWith('/input-readiness')) return json(route, { ready: true, execution_status: 'finished' });
@@ -59,7 +59,7 @@ test('an open ask_user question shows the sidebar badge, the question card and a
   await expect(card).toBeVisible();
   await expect(card.getByText('是否把版本 2.3 发布到生产环境？')).toBeVisible();
   await expect(page.locator('[data-conversation-binding-id="ask-user-conversation"]').getByText('需要用户输入')).toBeVisible();
-  await expect(page.locator('[data-ask-user-event-id="ask-user-action"]')).toContainText('等待你的回答');
+  await expect(page.locator('[data-ask-user-event-id="ask-user-action"]')).toContainText('是否把版本 2.3 发布到生产环境？');
 });
 
 test('Escape closes the card and a typed reply is sent as an ordinary user message', async ({ page }) => {
@@ -70,19 +70,29 @@ test('Escape closes the card and a typed reply is sent as an ordinary user messa
   await expect(card).toHaveCount(0);
   // The composer stays usable for a free-form reply after the card is dismissed.
   await expect(page.getByRole('button', { name: '发送消息' })).toBeDisabled();
+  // A closed question stays closed after a refresh, and its sidebar badge goes away.
   await page.reload();
-  const reopened = page.getByTestId('agent-user-question');
-  await expect(reopened).toBeVisible();
-  await reopened.getByLabel('回复 Agent 的提问').fill('先灰度');
-  await reopened.getByRole('button', { name: '提交' }).click();
+  await expect(page.getByPlaceholder('给 Agent 发消息…')).toBeVisible();
+  await expect(page.getByTestId('agent-user-question')).toHaveCount(0);
+  await expect(page.locator('[data-conversation-binding-id="ask-user-conversation"]').getByText('需要用户输入')).toHaveCount(0);
+  await page.getByPlaceholder('给 Agent 发消息…').fill('先灰度');
+  await page.getByRole('button', { name: '发送消息' }).click();
   await expect.poll(() => [...sent]).toEqual(['先灰度']);
 });
 
-test('skip sends the fixed hand-over-to-agent reply', async ({ page }) => {
+test('skipping after the final reply sends nothing and just closes the card', async ({ page }) => {
   const sent = await openAskedConversation(page);
   await page.getByTestId('agent-user-question').getByRole('button', { name: '跳过' }).click();
-  await expect.poll(() => sent.length).toBe(1);
-  expect(sent[0]).toContain('请基于现有信息自行做出最稳妥的判断');
+  await expect(page.getByTestId('agent-user-question')).toHaveCount(0);
+  await page.waitForTimeout(500);
+  expect(sent.length).toBe(0);
+});
+
+test('the question card sits above the composer, not inside it', async ({ page }) => {
+  await openAskedConversation(page);
+  const card = await page.getByTestId('agent-user-question').boundingBox();
+  const composer = await page.locator('.agent-composer').boundingBox();
+  expect(card && composer && card.y + card.height <= composer.y + 1).toBe(true);
 });
 
 test('several questions are answered step by step and submitted once with the questions attached', async ({ page }) => {

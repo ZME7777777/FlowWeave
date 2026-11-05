@@ -1331,15 +1331,18 @@ function SkillLoadRow({ entry, reveal = false, running }: { entry: ActivityEntry
   </article>;
 }
 
-/** The agent's ask_user call: a quiet one-line process note; the question itself lives in the composer card. */
+/** The agent's ask_user call: the concrete question(s), one quiet ellipsized line each; the answer UI lives above the composer. */
 function AskUserRow({ entry, reveal = false }: { entry: ActivityEntry; reveal?: boolean }) {
   const action = entry.action ?? entry.item;
   const details = action.event.payload.details as { question?: unknown; questions?: unknown } | undefined;
-  const count = 1 + (Array.isArray(details?.questions) ? details.questions.length : 0);
+  const asked = [
+    details?.question,
+    ...(Array.isArray(details?.questions) ? details.questions.map(item => (item as { question?: unknown } | null)?.question) : []),
+  ].filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
   const refused = entry.results.some(result => result.event.payload.details?.asked === false);
   return <article className={`conversation-activity-row tool ask-user${refused ? ' error' : ''}${reveal ? ' conversation-text-reveal-block' : ''}`} aria-label="Agent 提问" data-ask-user-event-id={action.event.id}>
     <MessageCircleQuestion size={13}/>
-    <div><b>{refused ? '提问未送达' : count > 1 ? `等待你回答 ${count} 个问题` : '等待你的回答'}</b></div>
+    <div>{refused ? <b>提问未送达</b> : asked.length ? asked.map((text, index) => <b key={index} title={text}>{asked.length > 1 ? `${index + 1}. ` : ''}{text}</b>) : <b>向你提问</b>}</div>
   </article>;
 }
 

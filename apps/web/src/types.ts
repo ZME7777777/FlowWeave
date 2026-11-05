@@ -1146,6 +1146,8 @@ export interface AgentConversationActivity {
   failed_binding_ids?: string[];
   /** Native status is `waiting_for_user_input` (the agent asked via ask_user). */
   waiting_user_input_binding_ids?: string[];
+  /** Binding id -> action id of its open ask_user question. */
+  waiting_user_input_actions?: Record<string, string>;
 }
 export interface AgentConversationSearchHit {
   binding_id: string;

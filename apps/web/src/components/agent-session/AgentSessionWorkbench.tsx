@@ -8,7 +8,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { type InfiniteData, useQueries, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronsDownUp, ChevronsUpDown, Archive, Unlink, Pause, ArrowLeft, ChevronLeft, Minus, ArrowRight, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, Eye, EyeOff, FileCode2, FileText, Folder, FolderOpen, FolderPlus, Gauge, GitBranch, Globe2, GripVertical, Home, ImageIcon, Link2, ListRestart, LoaderCircle, LockKeyhole, LocateFixed, Maximize, Maximize2, Minimize, Minimize2, MessageSquareText, MonitorCog, MonitorOff, PanelRight, PanelRightOpen, Pencil, Pin, PinOff, Play, Plug, Plus, Quote, RefreshCw, Search, Send, Settings, ShieldAlert, Square, SquareCheck, SquarePlus, SquareTerminal, Trash2, X, Target } from 'lucide-react';
-import { createContext, isValidElement, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
+import { createContext, isValidElement, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentPropsWithoutRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import { ComposerModelMenu } from './ComposerModelMenu';
@@ -31,7 +31,7 @@ import { ConversationSurface, ConversationTaskPlan, goalRoundDurations, type Con
 import { isOpenHandsAgentReply, isOpenHandsConversationInterrupt, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, projectFlowWeaveMessageContext, projectHistoricalAgentReplies } from '../conversationEvents';
 import { useProductDialog } from '../ProductDialogContext';
 import { useEscapeClose } from '../useEscapeClose';
-import { UserQuestionCard } from './UserQuestionCard';
+import { ASK_USER_SKIP_REPLY, UserQuestionCard } from './UserQuestionCard';
 import { useRetainedPageActive } from '../RetainedPages';
 import { MermaidDiagram } from '../MermaidDiagram';
 import { isMermaidDiagram, markdownCodeText } from '../markdownCodeBlock';
@@ -62,6 +62,23 @@ const MAX_UNAVAILABLE_HYDRATION_RETRIES = 2;
 const BACKGROUND_HYDRATION_PREFETCH_DELAY_MS = 250;
 const BACKGROUND_HYDRATION_PREFETCH_LIMIT = 1;
 const EMPTY_TASK_CONTROL: RuntimeTaskControlSnapshot[] = [];
+const DISMISSED_QUESTIONS_KEY = 'flowweave.dismissedQuestions';
+let dismissedQuestionIds: string[] = [];
+try { dismissedQuestionIds = JSON.parse(localStorage.getItem(DISMISSED_QUESTIONS_KEY) ?? '[]') as string[]; } catch { dismissedQuestionIds = []; }
+const dismissedQuestionListeners = new Set<() => void>();
+/** Closing a question card is remembered per ask_user action on this device, so refreshes keep it closed. */
+function dismissQuestionActionId(actionId: string) {
+  if (dismissedQuestionIds.includes(actionId)) return;
+  dismissedQuestionIds = [...dismissedQuestionIds, actionId].slice(-200);
+  try { localStorage.setItem(DISMISSED_QUESTIONS_KEY, JSON.stringify(dismissedQuestionIds)); } catch { /* storage is optional */ }
+  dismissedQuestionListeners.forEach(listener => listener());
+}
+function useDismissedQuestionIds(): string[] {
+  return useSyncExternalStore(
+    listener => { dismissedQuestionListeners.add(listener); return () => { dismissedQuestionListeners.delete(listener); }; },
+    () => dismissedQuestionIds,
+  );
+}
 const TERMINAL_CONVERSATION_CACHE_TTL_MS = 5 * 60 * 1000;
 const ACTIVE_CONVERSATION_CACHE_TTL_MS = 30_000;
 // A hydration response seeds the coherent event and readiness projections.
@@ -6005,10 +6022,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     () => new Set(activitySnapshot?.possibly_stuck_binding_ids ?? []),
     [activitySnapshot],
   );
-  const waitingUserInputConversationIds = useMemo(
-    () => new Set(activitySnapshot?.waiting_user_input_binding_ids ?? []),
-    [activitySnapshot],
-  );
+  const dismissedQuestionSnapshot = useDismissedQuestionIds();
+  const waitingUserInputConversationIds = useMemo(() => {
+    const actions = activitySnapshot?.waiting_user_input_actions;
+    const ids = activitySnapshot?.waiting_user_input_binding_ids ?? [];
+    return new Set(ids.filter(id => !actions?.[id] || !dismissedQuestionSnapshot.includes(actions[id]!)));
+  }, [activitySnapshot, dismissedQuestionSnapshot]);
   const failedConversationIds = useMemo(
     () => new Set(activitySnapshot?.failed_binding_ids ?? []),
     [activitySnapshot],
@@ -8469,10 +8488,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     refetchOnWindowFocus: false,
     retry: false,
   });
-  const [dismissedQuestionId, setDismissedQuestionId] = useState<string>();
-  const pendingQuestion = questionQuery.data?.pending && questionQuery.data.action_id !== dismissedQuestionId
+  // Closing the card is remembered per ask_user action (device-local), so a refresh does not bring it back.
+  const dismissedQuestionIds = useDismissedQuestionIds();
+  const dismissQuestionAction = dismissQuestionActionId;
+  const pendingQuestion = questionQuery.data?.pending && !dismissedQuestionIds.includes(questionQuery.data.action_id ?? '')
     ? questionQuery.data
     : undefined;
+  const dismissPendingQuestion = useCallback(() => {
+    if (pendingQuestion?.action_id) dismissQuestionAction(pendingQuestion.action_id);
+  }, [dismissQuestionAction, pendingQuestion]);
   const refresh = useCallback((bindingId = selected?.id) => {
     if (!workspace) return;
     void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'runtime', workspace.id) });
@@ -10222,7 +10246,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const answerPendingQuestion = useCallback((content: string, answeredQuestion?: string) => {
     if (!canWrite || conversationDraft || !selected || !pendingQuestion) return;
     setOperationError(undefined);
-    setDismissedQuestionId(pendingQuestion.action_id);
+    if (pendingQuestion.action_id) dismissQuestionAction(pendingQuestion.action_id);
+    // Skipping after the Agent already gave its final reply has nothing to hand back: no new turn.
+    if (content === ASK_USER_SKIP_REPLY && effectiveTurnState !== 'running') return;
     // The answer is an ordinary user message; sending it is what resumes the
     // native WAITING_FOR_USER_INPUT conversation.
     dispatchMessage({
@@ -10241,7 +10267,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       deliveryState: 'queued',
       createdAt: Date.now(),
     }, true);
-  }, [canWrite, conversationDraft, dispatchMessage, effectiveTurnState, pendingQuestion, selected]);
+  }, [canWrite, conversationDraft, dismissQuestionAction, dispatchMessage, effectiveTurnState, pendingQuestion, selected]);
   const sendQueuedMessageImmediately = useCallback((message: QueuedMessage) => {
     if (selectedCondensing || !queueModeEnabled || !canWrite || effectiveTurnState !== 'running' || !selected?.streaming_callback_ready || message.scope !== selected.id || message.deliveryState !== 'queued') return;
     dispatchMessage({ ...message, bindingId: selected.id, nativeGuidance: true });
@@ -11257,8 +11283,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       {visibleError && <ConversationErrorNotice key={`error:${composerScope}`} error={visibleError} onDismiss={dismissOperationError} transient={visibleError === operationError} onRetry={visibleError === hydrationError ? retryConversationHydration : undefined}/>}
       </div>
       {(selected || conversationDraft) && runtime?.state !== 'RECOVERING' && !conversationInitialLoading && !conversationSnapshotUnavailable && <div className="agent-composer-dock">
+        {pendingQuestion && !pendingConfirmation && <UserQuestionCard question={pendingQuestion} busy={!canWrite} onAnswer={answerPendingQuestion} onClose={dismissPendingQuestion}/>}
         <div className={`agent-composer ${conversationVisuallyActive || pendingConfirmation ? 'busy' : ''}`}>
-        {pendingQuestion && !pendingConfirmation && <UserQuestionCard question={pendingQuestion} busy={!canWrite} onAnswer={answerPendingQuestion} onClose={() => setDismissedQuestionId(pendingQuestion.action_id)}/>}
         {pendingConfirmation && <section className="agent-confirmation" aria-label="工具执行确认"><header><ShieldAlert size={17}/><div><b>工具正在等待你的确认</b><span>动作尚未执行。请核对整批内容后批准或拒绝。</span></div></header><div className="agent-confirmation-actions">{(pendingConfirmation.actions ?? []).map((action: AgentPendingConfirmationAction) => <article key={action.digest}><div><b>{action.summary || action.tool_name}</b><span>{action.security_risk || 'UNKNOWN'}</span></div>{Object.keys(action.arguments).length > 0 && <pre>{JSON.stringify(action.arguments, null, 2)}</pre>}</article>)}</div><textarea aria-label="工具确认理由" value={confirmationReason} maxLength={2000} placeholder="填写批准或拒绝理由…" onChange={event => setConfirmationReason(event.target.value)}/><footer><button type="button" className="danger" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(false)}><X size={14}/>拒绝整批</button><button type="button" className="primary" disabled={!confirmationReason.trim() || decideConfirmation.isPending} onClick={() => decideConfirmation.mutate(true)}><Check size={14}/>批准整批</button></footer></section>}
         {(visibleQueuedMessages.length > 0 || (selected && !queueModeEnabled)) && <section className="agent-queued-messages" aria-label="消息投递队列">
           <header><b>消息队列</b><span>{queueModeEnabled ? `${visibleQueuedMessages.length} 条等待发送` : `队列模式已关闭；保留 ${visibleQueuedMessages.length} 条消息`}</span>{!queueModeEnabled && visibleQueuedMessages.length === 0 && <button type="button" className="queue-mode-toggle" onClick={toggleQueueMode}><ListRestart size={12}/>启用队列模式</button>}</header>
