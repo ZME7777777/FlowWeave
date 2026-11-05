@@ -799,3 +799,6 @@
 .agent-file-tree-sync>b{font-weight:600}
 .agent-file-tree-sync>.behind{color:#2a6fdb}
 .agent-file-tree-sync>.ahead{color:#2f8a4b}
+.agent-file-tree-virtual-row{box-sizing:border-box;height:28px;overflow:hidden}
+.agent-file-tree-virtual-row>.agent-file-tree-load-more{height:28px;margin-top:0;margin-bottom:0}
+.agent-file-tree-virtual-row>.agent-file-tree-row{height:28px}

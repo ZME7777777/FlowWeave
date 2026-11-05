@@ -7,7 +7,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal as XTerm } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { type InfiniteData, useQueries, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, Unlink, Pause, ArrowLeft, ChevronLeft, Minus, ArrowRight, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, Eye, EyeOff, FileCode2, FileText, Folder, FolderOpen, FolderPlus, Gauge, GitBranch, Globe2, GripVertical, Home, ImageIcon, Link2, ListRestart, LoaderCircle, LockKeyhole, LocateFixed, Maximize, Maximize2, Minimize, Minimize2, MessageSquareText, MonitorCog, MonitorOff, PanelRight, PanelRightOpen, Pencil, Pin, PinOff, Play, Plug, Plus, Quote, RefreshCw, Search, Send, Settings, ShieldAlert, Square, SquareCheck, SquarePlus, SquareTerminal, Trash2, X, Target } from 'lucide-react';
+import { ChevronsDownUp, ChevronsUpDown, Archive, Unlink, Pause, ArrowLeft, ChevronLeft, Minus, ArrowRight, ArrowUp, Bell, Bot, Boxes, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDot, Copy, CornerDownRight, Download, Ellipsis, Eye, EyeOff, FileCode2, FileText, Folder, FolderOpen, FolderPlus, Gauge, GitBranch, Globe2, GripVertical, Home, ImageIcon, Link2, ListRestart, LoaderCircle, LockKeyhole, LocateFixed, Maximize, Maximize2, Minimize, Minimize2, MessageSquareText, MonitorCog, MonitorOff, PanelRight, PanelRightOpen, Pencil, Pin, PinOff, Play, Plug, Plus, Quote, RefreshCw, Search, Send, Settings, ShieldAlert, Square, SquareCheck, SquarePlus, SquareTerminal, Trash2, X, Target } from 'lucide-react';
 import { createContext, isValidElement, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
@@ -2877,7 +2877,14 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
 }
 
-function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expanded, pagination, loadingDirectories, onExpandedChange, onLoadMore, onSelect, onSelectionChange, onActivateDirectory, onContextMenu, fileDownloadUrl, repositoryBranches }: { repositoryBranches?: Map<string, WorkspaceGitRepository>; entries: WorkspaceEntry[]; root: string; selectedFile?: string; selectedPaths: Set<string>; expanded: Set<string>; pagination: Map<string, string | undefined>; loadingDirectories: Set<string>; onExpandedChange: (updater: (current: Set<string>) => Set<string>) => void; onLoadMore: (parentPath?: string) => void; onSelect: (path?: string) => void; onSelectionChange: (paths: Set<string>) => void; onActivateDirectory: (path?: string) => void; onContextMenu: (path: string, kind: 'file' | 'directory', event: ReactMouseEvent<HTMLButtonElement>) => void; fileDownloadUrl: (path: string) => string }) {
+// The file tree is virtualized: only rows near the viewport are mounted and
+// "expand all" loads just the directories whose rows are in view.
+const FILE_TREE_ROW_HEIGHT = 28;
+const FILE_TREE_OVERSCAN = 12;
+const DIRECTORY_LOAD_CONCURRENCY = 4;
+const EXPAND_ALL_SKIPPED_DIRECTORIES = new Set(['node_modules', '.git', '.venv', 'venv', '__pycache__', 'dist', 'build', 'target', '.gradle', '.idea', '.next', 'coverage', 'vendor']);
+
+function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expanded, pagination, loadingDirectories, onExpandedChange, onLoadMore, onSelect, onSelectionChange, onActivateDirectory, onContextMenu, fileDownloadUrl, repositoryBranches, expandAll, loadedDirectories }: { expandAll?: boolean; loadedDirectories?: Set<string>; repositoryBranches?: Map<string, WorkspaceGitRepository>; entries: WorkspaceEntry[]; root: string; selectedFile?: string; selectedPaths: Set<string>; expanded: Set<string>; pagination: Map<string, string | undefined>; loadingDirectories: Set<string>; onExpandedChange: (updater: (current: Set<string>) => Set<string>) => void; onLoadMore: (parentPath?: string) => void; onSelect: (path?: string) => void; onSelectionChange: (paths: Set<string>) => void; onActivateDirectory: (path?: string) => void; onContextMenu: (path: string, kind: 'file' | 'directory', event: ReactMouseEvent<HTMLButtonElement>) => void; fileDownloadUrl: (path: string) => string }) {
   const nodes = useMemo(() => workspaceTree(entries, root), [entries, root]);
   const selectionAnchor = useRef<string | undefined>(undefined);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
@@ -2902,22 +2909,68 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
     document.addEventListener('keydown', copySelectedEntries);
     return () => document.removeEventListener('keydown', copySelectedEntries);
   }, [root, selectedNodes]);
-  const visibleNodes = useMemo(() => {
-    const visible: Array<{ node: WorkspaceTreeNode; depth: number }> = [];
+  // In expand-all mode every directory is open except well-known generated
+  // ones; manual toggles are kept as overrides so the parent set never grows.
+  const [openOverrides, setOpenOverrides] = useState<Map<string, boolean>>(() => new Map());
+  useEffect(() => { if (!expandAll) setOpenOverrides(new Map()); }, [expandAll]);
+  const isOpen = useCallback((node: WorkspaceTreeNode) => node.kind === 'directory' && (
+    expandAll ? (openOverrides.get(node.path) ?? (expanded.has(node.path) || !EXPAND_ALL_SKIPPED_DIRECTORIES.has(node.name))) : expanded.has(node.path)
+  ), [expandAll, expanded, openOverrides]);
+  const toggleDirectory = (node: WorkspaceTreeNode) => {
+    if (expandAll) setOpenOverrides(current => new Map(current).set(node.path, !isOpen(node)));
+    else onExpandedChange(current => { const next = new Set(current); if (next.has(node.path)) next.delete(node.path); else next.add(node.path); return next; });
+  };
+  type TreeRow = { kind: 'node'; node: WorkspaceTreeNode; depth: number } | { kind: 'more'; path: string; depth: number };
+  const rows = useMemo(() => {
+    const flat: TreeRow[] = [];
     const collect = (items: WorkspaceTreeNode[], depth = 0) => items.forEach(node => {
-      visible.push({ node, depth });
-      if (node.kind === 'directory' && expanded.has(node.path)) collect(node.children, depth + 1);
+      flat.push({ kind: 'node', node, depth });
+      if (node.kind === 'directory' && isOpen(node)) {
+        collect(node.children, depth + 1);
+        if (pagination.get(node.path)) flat.push({ kind: 'more', path: node.path, depth: depth + 1 });
+      }
     });
     collect(nodes);
-    return visible;
-  }, [expanded, nodes]);
+    return flat;
+  }, [isOpen, nodes, pagination]);
+  const visibleNodes = useMemo(() => rows.flatMap(row => row.kind === 'node' ? [{ node: row.node, depth: row.depth }] : []), [rows]);
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const [viewport, setViewport] = useState({ top: 0, height: 480 });
   useEffect(() => {
-    if (!selectedFile) return;
-    // Source navigation can expand several lazy directory pages before the
-    // target row exists. Once it does, keep the selected source visible rather
-    // than merely marking an off-screen row active.
-    rowRefs.current.get(selectedFile)?.scrollIntoView({ block: 'nearest' });
-  }, [selectedFile, visibleNodes]);
+    const element = scrollerRef.current;
+    if (!element) return;
+    const measure = () => setViewport(current => current.top === element.scrollTop && current.height === element.clientHeight ? current : { top: element.scrollTop, height: element.clientHeight });
+    measure();
+    element.addEventListener('scroll', measure, { passive: true });
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(measure);
+    observer?.observe(element);
+    return () => { element.removeEventListener('scroll', measure); observer?.disconnect(); };
+  }, []);
+  const startIndex = Math.max(0, Math.floor(viewport.top / FILE_TREE_ROW_HEIGHT) - FILE_TREE_OVERSCAN);
+  const endIndex = Math.min(rows.length, Math.ceil((viewport.top + viewport.height) / FILE_TREE_ROW_HEIGHT) + FILE_TREE_OVERSCAN);
+  // Load only directories that are open AND scrolled into the window.
+  useEffect(() => {
+    if (!expandAll) return;
+    let budget = DIRECTORY_LOAD_CONCURRENCY - loadingDirectories.size;
+    for (let index = startIndex; index < endIndex && budget > 0; index += 1) {
+      const row = rows[index];
+      if (row?.kind !== 'node' || row.node.kind !== 'directory' || !isOpen(row.node)) continue;
+      if (loadedDirectories?.has(row.node.path) || loadingDirectories.has(row.node.path)) continue;
+      onLoadMore(row.node.path);
+      budget -= 1;
+    }
+  }, [endIndex, expandAll, isOpen, loadedDirectories, loadingDirectories, onLoadMore, rows, startIndex]);
+  const selectedRowIndex = useMemo(() => selectedFile ? rows.findIndex(row => row.kind === 'node' && row.node.path === selectedFile) : -1, [rows, selectedFile]);
+  useEffect(() => {
+    // Source navigation can expand lazy directory pages before the target row
+    // exists. Once it does, bring the selected row into view (rows are virtual).
+    const element = scrollerRef.current;
+    if (!element || selectedRowIndex < 0) return;
+    const top = selectedRowIndex * FILE_TREE_ROW_HEIGHT;
+    if (top < element.scrollTop || top + FILE_TREE_ROW_HEIGHT > element.scrollTop + element.clientHeight) {
+      element.scrollTop = Math.max(0, top - element.clientHeight / 2);
+    }
+  }, [selectedFile, selectedRowIndex]);
   const selectEntry = (node: WorkspaceTreeNode, event: ReactMouseEvent<HTMLButtonElement>) => {
     const toggling = event.metaKey || event.ctrlKey;
     const anchorIndex = selectionAnchor.current ? visibleNodes.findIndex(item => item.node.path === selectionAnchor.current) : -1;
@@ -2949,20 +3002,19 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
     if (node.kind === 'file') onSelect(node.path);
     else {
       onActivateDirectory(node.path);
-      onExpandedChange(current => {
-        const next = new Set(current);
-        if (next.has(node.path)) next.delete(node.path); else next.add(node.path);
-        return next;
-      });
+      toggleDirectory(node);
     }
   };
-  const renderNodes = (items: WorkspaceTreeNode[] = nodes, depth = 0): ReactNode => items.map(node => {
-    const open = expanded.has(node.path);
-    const hasMore = node.kind === 'directory' && open && Boolean(pagination.get(node.path));
-    const loading = loadingDirectories.has(node.path);
-    return <div key={node.path} className={`agent-file-tree-node${node.kind === 'directory' && open ? ' open-directory' : ''}`}>
+  const renderRow = (row: TreeRow) => {
+    if (row.kind === 'more') {
+      const loading = loadingDirectories.has(row.path);
+      return <div key={`${row.path}\0more`} className="agent-file-tree-virtual-row"><button type="button" className="agent-file-tree-load-more" style={{ '--tree-depth': row.depth } as CSSProperties} disabled={loading} onClick={() => onLoadMore(row.path)}>{loading ? '正在加载…' : '加载更多'}</button></div>;
+    }
+    const { node, depth } = row;
+    const open = isOpen(node);
+    return <div key={node.path} className={`agent-file-tree-node agent-file-tree-virtual-row${node.kind === 'directory' && open ? ' open-directory' : ''}`}>
       <div ref={element => { if (element) rowRefs.current.set(node.path, element); else rowRefs.current.delete(node.path); }} className={`agent-file-tree-row${selectedPaths.has(node.path) ? ' selected' : ''}`} role="treeitem" aria-expanded={node.kind === 'directory' ? open : undefined} aria-level={depth + 1} aria-selected={selectedPaths.has(node.path)} style={{ '--tree-depth': depth } as CSSProperties}>
-      {node.kind === 'directory' ? <button type="button" className="agent-file-tree-disclosure" aria-label={`${open ? '收起' : '展开'}目录 ${node.name}`} onClick={() => onExpandedChange(current => { const next = new Set(current); if (next.has(node.path)) next.delete(node.path); else next.add(node.path); return next; })}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}</button> : <span className="agent-tree-spacer" aria-hidden="true"/>}
+      {node.kind === 'directory' ? <button type="button" className="agent-file-tree-disclosure" aria-label={`${open ? '收起' : '展开'}目录 ${node.name}`} onClick={() => toggleDirectory(node)}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}</button> : <span className="agent-tree-spacer" aria-hidden="true"/>}
       <button type="button" draggable={node.kind === 'file'} className={`agent-file-tree-item ${node.kind}${selectedFile === node.path ? ' active' : ''}`} onDragStart={event => {
         if (node.kind !== 'file') return;
         event.dataTransfer.effectAllowed = 'copy';
@@ -2982,11 +3034,14 @@ function WorkspaceFileTree({ entries, root, selectedFile, selectedPaths, expande
       </button>
       {node.kind === 'file' && <span className="agent-file-tree-file-meta"><em className="agent-file-tree-size">{formatFileSize(node.size)}</em><a className="agent-file-tree-download" href={fileDownloadUrl(node.path)} aria-label={`下载 ${node.name}`} title={`下载 ${node.name}`}><Download size={12}/></a></span>}
       </div>
-      {node.kind === 'directory' && open && <div role="group">{renderNodes(node.children, depth + 1)}{hasMore && <button type="button" className="agent-file-tree-load-more" style={{ '--tree-depth': depth + 1 } as CSSProperties} disabled={loading} onClick={() => onLoadMore(node.path)}>{loading ? '正在加载…' : '加载更多'}</button>}</div>}
     </div>;
-  });
-  return <div className="agent-file-tree" role="tree" aria-label="工作区目录树">
-    {nodes.length ? renderNodes() : <p>当前目录没有可展示的文件。</p>}
+  };
+  return <div ref={scrollerRef} className="agent-file-tree" role="tree" aria-label="工作区目录树">
+    {rows.length ? <>
+      <div aria-hidden="true" style={{ height: startIndex * FILE_TREE_ROW_HEIGHT }}/>
+      {rows.slice(startIndex, endIndex).map(renderRow)}
+      <div aria-hidden="true" style={{ height: (rows.length - endIndex) * FILE_TREE_ROW_HEIGHT }}/>
+    </> : <p>当前目录没有可展示的文件。</p>}
     {pagination.get('') && <button type="button" className="agent-file-tree-load-more" disabled={loadingDirectories.has('')} onClick={() => onLoadMore()}>{loadingDirectories.has('') ? '正在加载…' : '加载更多'}</button>}
   </div>;
 }
@@ -4317,14 +4372,16 @@ function WorkspaceDrawer({
   }, [rootDirectoryQuery.data, rootDirectoryQuery.dataUpdatedAt]);
   useEffect(() => {
     if (!details || !open || scopeState.activeTabId !== 'files') return;
-    const missing = [...expandedFilePaths].filter(path => !directoryPages.has(path));
+    const missing = [...expandedFilePaths]
+      .filter(path => !directoryPages.has(path) && !loadingDirectoryPaths.has(path))
+      .slice(0, Math.max(0, DIRECTORY_LOAD_CONCURRENCY - loadingDirectoryPaths.size));
     if (!missing.length) return;
     let cancelled = false;
     void Promise.all(missing.map(async parentPath => {
       if (!cancelled) await loadDirectory(parentPath);
     }));
     return () => { cancelled = true; };
-  }, [details, directoryPages, expandedFilePaths, loadDirectory, open, scopeState.activeTabId]);
+  }, [details, directoryPages, expandedFilePaths, loadDirectory, loadingDirectoryPaths, open, scopeState.activeTabId]);
   useEffect(() => {
     if (!pendingSourceNavigation || !details || !open || scopeState.activeTabId !== 'files') return;
     const { directories, line, path } = pendingSourceNavigation;
@@ -4432,32 +4489,14 @@ function WorkspaceDrawer({
     }
     return [...files.values()].filter(entry => showHiddenFiles || !relativeWorkspacePath(entry.path, details?.working_directory ?? '').split('/').some(segment => segment.startsWith('.') && segment !== '.' && segment !== '..'));
   }, [attachments, details?.working_directory, directoryPages, showHiddenFiles]);
-  const fileDirectoryPaths = useMemo(() => {
-    if (!details) return [];
-    const paths: string[] = [];
-    const collect = (items: WorkspaceTreeNode[]) => items.forEach(node => {
-      if (node.kind !== 'directory') return;
-      paths.push(node.path);
-      collect(node.children);
-    });
-    collect(workspaceTree(visibleFiles, details.working_directory));
-    return paths;
-  }, [details, visibleFiles]);
-  useEffect(() => {
-    if (!expandAllFileDirectories) return;
-    setExpandedFilePaths(current => {
-      const missing = fileDirectoryPaths.filter(path => !current.has(path));
-      return missing.length ? new Set([...current, ...missing]) : current;
-    });
-  }, [expandAllFileDirectories, fileDirectoryPaths]);
+  const loadedDirectorySet = useMemo(() => new Set(directoryPages.keys()), [directoryPages]);
+  const collapseAllFileDirectories = () => {
+    setExpandAllFileDirectories(false);
+    setExpandedFilePaths(new Set());
+  };
   const toggleAllFileDirectories = () => {
-    if (expandAllFileDirectories) {
-      setExpandAllFileDirectories(false);
-      setExpandedFilePaths(new Set());
-      return;
-    }
+    // Virtualized and lazy: the tree opens directories as rows scroll into view.
     setExpandAllFileDirectories(true);
-    setExpandedFilePaths(new Set(fileDirectoryPaths));
   };
   const updateExpandedFilePaths = (updater: (current: Set<string>) => Set<string>) => {
     setExpandedFilePaths(current => {
@@ -5161,9 +5200,9 @@ function WorkspaceDrawer({
               setGitContextPath(details.working_directory);
               setGitSidebarRequested(fullScreen);
             }}>
-              <header className="agent-file-tree-toolbar"><span>{selectedEntryPaths.size ? `已选 ${selectedEntryPaths.size} 项` : '文件'}</span><div className="agent-file-tree-actions"><button type="button" title="在文件栏中定位当前文件" aria-label="在文件栏中定位当前文件" disabled={!selectedFile} onClick={() => { if (selectedFile) openSourcePath(selectedFile, sourceFileNavigation?.path === selectedFile ? sourceFileNavigation.line : 1); }}><LocateFixed size={13}/></button><input ref={workspaceUploadInput} type="file" multiple hidden onChange={event => { Array.from(event.target.files ?? []).forEach(file => startWorkspaceUpload(file)); event.currentTarget.value = ''; }}/><button type="button" title="上传文件" aria-label="上传文件" disabled={!api.uploadWorkspaceFile} onClick={() => workspaceUploadInput.current?.click()}><ArrowUp size={13}/></button><button type="button" title="新建文件" aria-label="新建文件" onClick={() => createAtActiveDirectory('FILE')}><FileCode2 size={13}/></button><button type="button" title="新建目录" aria-label="新建目录" onClick={() => createAtActiveDirectory('DIRECTORY')}><FolderPlus size={13}/></button><button type="button" className={`agent-file-tree-hidden-toggle${showHiddenFiles ? ' active' : ''}`} title={showHiddenFiles ? '隐藏以 . 开头的文件和目录' : '显示以 . 开头的文件和目录'} aria-label={showHiddenFiles ? '隐藏隐藏文件和目录' : '显示隐藏文件和目录'} aria-pressed={showHiddenFiles} onClick={() => setShowHiddenFiles(current => !current)}>{showHiddenFiles ? <Eye size={13}/> : <EyeOff size={13}/>}</button><button type="button" className={`agent-file-tree-expand-toggle${expandAllFileDirectories ? ' expanded' : ''}`} title={expandAllFileDirectories ? '全部收起' : '全部展开'} aria-label={expandAllFileDirectories ? '全部收起目录' : '全部展开目录'} disabled={!fileDirectoryPaths.length} onClick={toggleAllFileDirectories}>{expandAllFileDirectories ? <ChevronRight size={13}/> : <ChevronDown size={13}/>}</button><button type="button" title="刷新 Git 分支信息" aria-label="刷新 Git 分支信息" disabled={gitBranchRefreshing} onClick={() => void refreshGitBranches()}><RefreshCw className={gitBranchRefreshing ? 'spin' : undefined} size={13}/></button><button type="button" className="danger" title="删除选中项" aria-label="删除选中项" disabled={!selectedEntryRoots.length} onClick={() => void removeEntries(selectedEntryRoots.map(path => ({ path, kind: visibleFiles.find(item => item.path === path)?.kind ?? 'directory' })))}><Trash2 size={13}/></button></div></header>
+              <header className="agent-file-tree-toolbar"><span>{selectedEntryPaths.size ? `已选 ${selectedEntryPaths.size} 项` : '文件'}</span><div className="agent-file-tree-actions"><button type="button" title="在文件栏中定位当前文件" aria-label="在文件栏中定位当前文件" disabled={!selectedFile} onClick={() => { if (selectedFile) openSourcePath(selectedFile, sourceFileNavigation?.path === selectedFile ? sourceFileNavigation.line : 1); }}><LocateFixed size={13}/></button><input ref={workspaceUploadInput} type="file" multiple hidden onChange={event => { Array.from(event.target.files ?? []).forEach(file => startWorkspaceUpload(file)); event.currentTarget.value = ''; }}/><button type="button" title="上传文件" aria-label="上传文件" disabled={!api.uploadWorkspaceFile} onClick={() => workspaceUploadInput.current?.click()}><ArrowUp size={13}/></button><button type="button" title="新建文件" aria-label="新建文件" onClick={() => createAtActiveDirectory('FILE')}><FileCode2 size={13}/></button><button type="button" title="新建目录" aria-label="新建目录" onClick={() => createAtActiveDirectory('DIRECTORY')}><FolderPlus size={13}/></button><button type="button" className={`agent-file-tree-hidden-toggle${showHiddenFiles ? ' active' : ''}`} title={showHiddenFiles ? '隐藏以 . 开头的文件和目录' : '显示以 . 开头的文件和目录'} aria-label={showHiddenFiles ? '隐藏隐藏文件和目录' : '显示隐藏文件和目录'} aria-pressed={showHiddenFiles} onClick={() => setShowHiddenFiles(current => !current)}>{showHiddenFiles ? <Eye size={13}/> : <EyeOff size={13}/>}</button><button type="button" className="agent-file-tree-expand-toggle" title="全部展开" aria-label="全部展开目录" aria-pressed={expandAllFileDirectories} disabled={expandAllFileDirectories || !visibleFiles.some(entry => entry.kind === 'directory')} onClick={toggleAllFileDirectories}><ChevronsUpDown size={13}/></button><button type="button" className="agent-file-tree-expand-toggle" title="全部收起" aria-label="全部收起目录" disabled={!expandAllFileDirectories && !expandedFilePaths.size} onClick={collapseAllFileDirectories}><ChevronsDownUp size={13}/></button><button type="button" title="刷新 Git 分支信息" aria-label="刷新 Git 分支信息" disabled={gitBranchRefreshing} onClick={() => void refreshGitBranches()}><RefreshCw className={gitBranchRefreshing ? 'spin' : undefined} size={13}/></button><button type="button" className="danger" title="删除选中项" aria-label="删除选中项" disabled={!selectedEntryRoots.length} onClick={() => void removeEntries(selectedEntryRoots.map(path => ({ path, kind: visibleFiles.find(item => item.path === path)?.kind ?? 'directory' })))}><Trash2 size={13}/></button></div></header>
               {workspaceUploads.length > 0 && <div className="agent-workspace-upload-list" aria-label="工作区上传">{workspaceUploads.map(item => <article key={item.id} className={item.state}><span>{item.file.name}</span><small>{item.state === 'uploading' ? `${item.progress}%` : '上传失败'}</small>{item.state === 'uploading' ? <i style={{ '--upload-progress': `${item.progress}%` } as CSSProperties}/> : <button type="button" onClick={() => retryWorkspaceUpload(item.id)}>重试</button>}</article>)}</div>}
-              <WorkspaceFileTree repositoryBranches={workspaceRepositoryBranches} entries={visibleFiles} root={details.working_directory} selectedFile={selectedFile} selectedPaths={selectedEntryPaths} expanded={expandedFilePaths} pagination={new Map([...directoryPages].map(([path, page]) => [path, page.nextCursor]))} loadingDirectories={loadingDirectoryPaths} onExpandedChange={updateExpandedFilePaths} onLoadMore={parentPath => { void loadDirectory(parentPath); }} onSelect={path => { setActiveDirectory(undefined); selectFile(path); }} onSelectionChange={setSelectedEntryPaths} onActivateDirectory={path => { setActiveDirectory(path); setGitContextPath(path); setGitSidebarRequested(Boolean(path)); }} onContextMenu={(path, kind, event) => { setEntryMenu({ path, kind, x: event.clientX, y: event.clientY }); }} fileDownloadUrl={path => fileUrl(workspaceId, path, { bindingId, workDirectoryId, includeHidden: showHiddenFiles, download: true })}/>
+              <WorkspaceFileTree expandAll={expandAllFileDirectories} loadedDirectories={loadedDirectorySet} repositoryBranches={workspaceRepositoryBranches} entries={visibleFiles} root={details.working_directory} selectedFile={selectedFile} selectedPaths={selectedEntryPaths} expanded={expandedFilePaths} pagination={new Map([...directoryPages].map(([path, page]) => [path, page.nextCursor]))} loadingDirectories={loadingDirectoryPaths} onExpandedChange={updateExpandedFilePaths} onLoadMore={parentPath => { void loadDirectory(parentPath); }} onSelect={path => { setActiveDirectory(undefined); selectFile(path); }} onSelectionChange={setSelectedEntryPaths} onActivateDirectory={path => { setActiveDirectory(path); setGitContextPath(path); setGitSidebarRequested(Boolean(path)); }} onContextMenu={(path, kind, event) => { setEntryMenu({ path, kind, x: event.clientX, y: event.clientY }); }} fileDownloadUrl={path => fileUrl(workspaceId, path, { bindingId, workDirectoryId, includeHidden: showHiddenFiles, download: true })}/>
             </div>
             <div className="agent-file-tree-resizer" role="separator" tabIndex={0} aria-label={fileTreeCollapsed ? '展开文件目录' : '调整文件目录宽度'} aria-orientation="vertical" title={fileTreeCollapsed ? '双击展开文件目录' : '拖动调整文件目录宽度'} onPointerDown={startFileTreeResize} onDoubleClick={expandFileTree} onKeyDown={event => { if (fileTreeCollapsed && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); expandFileTree(); } }}/>
             <div className="agent-file-preview">{candidatePreview ? <>
