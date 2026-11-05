@@ -34,6 +34,10 @@
 .conversation-message{font-size:14px;line-height:1.78;overflow-wrap:anywhere}
 .conversation-message p{margin:0 0 10px}
 .conversation-message p:last-child{margin-bottom:0}
+.conversation-message :is(ol,ul){margin:8px 0}
+.conversation-message :is(ol,ul) :is(ol,ul){margin:4px 0}
+.conversation-message li{margin:2px 0}
+.conversation-message li>p{margin:0}
 .conversation-surface :is(.conversation-message,.conversation-activity-row) a{color:var(--green);text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:2px}
 .conversation-surface :is(.conversation-message,.conversation-activity-row) a:hover{color:#0f4e39}
 .conversation-surface :is(.conversation-message,.conversation-activity-row) a:focus-visible{outline:2px solid #8eb9a0;outline-offset:2px;border-radius:2px}
