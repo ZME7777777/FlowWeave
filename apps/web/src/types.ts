@@ -591,7 +591,7 @@ export interface CaseAgentTask {
 export interface CaseControlPlan {
   id: string; case_id: string; stage_id: string; source_binding_id?: string | null;
   execution_flow_run_id?: string | null; node_run_id?: string | null; node_attempt_id?: string | null;
-  action: 'CREATE_EXECUTION_COPY' | 'CONFIGURE_EXECUTION' | 'START_EXECUTION' | 'START_STEPWISE_NODE' | 'ACCEPT_STEPWISE_ATTEMPT' | 'REJECT_STEPWISE_ATTEMPT' | 'CANCEL_STEPWISE_ATTEMPT' | 'STOP_EXECUTION' | 'RERUN_STEPWISE_NODE' | 'COPY_CONTINUOUS_EXECUTION' | 'ADVANCE_CASE_STAGE' | 'COMPLETE_CASE' | 'CONCLUDE_CASE' | 'ASK_HUMAN';
+  action: 'CREATE_EXECUTION_COPY' | 'CONFIGURE_EXECUTION' | 'START_EXECUTION' | 'START_STEPWISE_NODE' | 'ACCEPT_STEPWISE_ATTEMPT' | 'REJECT_STEPWISE_ATTEMPT' | 'CANCEL_STEPWISE_ATTEMPT' | 'STOP_EXECUTION' | 'RERUN_STEPWISE_NODE' | 'COPY_CONTINUOUS_EXECUTION' | 'ADVANCE_CASE_STAGE' | 'COMPLETE_CASE' | 'CONCLUDE_CASE';
   state: 'PENDING' | 'VALIDATED' | 'EXECUTING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
   idempotency_key: string; retry_of_plan_id?: string | null; reason: string; input_snapshot: Record<string, unknown>; result: Record<string, unknown>;
   error_code?: string | null; created_at: string; validated_at?: string | null; executed_at?: string | null;

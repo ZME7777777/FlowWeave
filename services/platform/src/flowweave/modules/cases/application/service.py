@@ -1031,7 +1031,7 @@ def note_case_control_waiting(db: Session, binding_id: str) -> bool:
 
 
 def note_case_control_reply(db: Session, binding_id: str, reply_event_id: str | None) -> bool:
-    """Resume a Case waiting on ASK_HUMAN once the human replied in the control conversation.
+    """Resume a Case waiting on an open ask_user question once the human replied in the control conversation.
 
     The reply is the formal user MessageEvent that resumes the native ask_user wait; this only
     mirrors that fact onto the Case. Returns True when a Case was resumed.

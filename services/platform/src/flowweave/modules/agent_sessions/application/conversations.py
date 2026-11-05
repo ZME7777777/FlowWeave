@@ -3617,7 +3617,7 @@ def _mirror_case_control_waiting(db: Session, binding: AgentConversationBinding)
 def _mirror_case_control_reply(
     db: Session, binding: AgentConversationBinding, reply_event_id: str | None
 ) -> None:
-    """A user reply in a Case control conversation also resumes an ASK_HUMAN pause."""
+    """A user reply in a Case control conversation also resumes a WAITING_HUMAN (open ask_user) pause."""
 
     from flowweave.modules.cases.public import note_case_control_reply
 

@@ -454,9 +454,9 @@ function PathTab({ item, artifactCounts, onUpdated, onOpenRecord }: { item: Case
 }
 
 function CaseActivity({ item, onOpenRun, onRetry, onOpenConversation }: { item: Case; onOpenRun: (id: string) => void; onRetry?: (id: string) => void; onOpenConversation?: (planId?: string) => void }) {
-  const labels: Record<Case['control_plans'][number]['action'], string> = { CREATE_EXECUTION_COPY: '创建执行副本', CONFIGURE_EXECUTION: '修改执行配置', START_EXECUTION: '启动流程', START_STEPWISE_NODE: '启动逐步节点', ACCEPT_STEPWISE_ATTEMPT: '接受节点结果', REJECT_STEPWISE_ATTEMPT: '拒绝节点结果', CANCEL_STEPWISE_ATTEMPT: '取消投递失败的节点尝试', STOP_EXECUTION: '停止执行', RERUN_STEPWISE_NODE: '重跑节点', COPY_CONTINUOUS_EXECUTION: '复制连续运行', ADVANCE_CASE_STAGE: '进入下一阶段', COMPLETE_CASE: '完成场景', CONCLUDE_CASE: '提前结束场景', ASK_HUMAN: '向人工提问' };
+  const labels: Record<Case['control_plans'][number]['action'], string> = { CREATE_EXECUTION_COPY: '创建执行副本', CONFIGURE_EXECUTION: '修改执行配置', START_EXECUTION: '启动流程', START_STEPWISE_NODE: '启动逐步节点', ACCEPT_STEPWISE_ATTEMPT: '接受节点结果', REJECT_STEPWISE_ATTEMPT: '拒绝节点结果', CANCEL_STEPWISE_ATTEMPT: '取消投递失败的节点尝试', STOP_EXECUTION: '停止执行', RERUN_STEPWISE_NODE: '重跑节点', COPY_CONTINUOUS_EXECUTION: '复制连续运行', ADVANCE_CASE_STAGE: '进入下一阶段', COMPLETE_CASE: '完成场景', CONCLUDE_CASE: '提前结束场景' };
   const events = [
-    ...item.control_plans.map(plan => ({ id: `plan-${plan.id}`, planId: plan.id, kind: '控制动作', action: labels[plan.action], state: plan.state, reason: plan.reason, error: plan.error_code, runId: plan.execution_flow_run_id, created: plan.created_at })),
+    ...item.control_plans.map(plan => ({ id: `plan-${plan.id}`, planId: plan.id, kind: '控制动作', action: labels[plan.action] ?? plan.action, state: plan.state, reason: plan.reason, error: plan.error_code, runId: plan.execution_flow_run_id, created: plan.created_at })),
     ...item.decision_proposals.map(proposal => ({ id: `decision-${proposal.id}`, planId: undefined, kind: '执行决策', action: ({ START_STAGE_EXECUTION: '启动阶段', CONTINUE_STEPWISE: '继续逐步运行', STOP_FLOW_RUN: '停止流程', RERUN_STEPWISE_NODE: '重跑节点', COPY_AUTOMATIC_RUN: '复制连续运行' })[proposal.action], state: proposal.state, reason: proposal.reason, error: '', runId: proposal.flow_run_id, created: proposal.created_at })),
     ...item.tasks.map(task => ({ id: `task-${task.id}`, planId: undefined, kind: '观察任务', action: ({ OBSERVE: '观察结果', PROPOSE_REVISION: '建议修订', REVIEW: '复核' })[task.task_type], state: task.state, reason: '', error: '', runId: task.flow_run_id, created: task.created_at })),
   ].sort((left, right) => right.created.localeCompare(left.created));
@@ -549,9 +549,20 @@ function ScenarioWorkspace({ item, workspaceId, onUpdated, onDelete, onOpenConve
   const stateLabel = item.control_conversation_binding_id || item.stages.some(stage => stage.current_execution_flow_run_id) ? CASE_STATE[item.state] : terminal ? CASE_STATE[item.state] : '待启动';
   const agentStatus = item.state === 'PAUSED' ? '协调已暂停，后台不会执行新的自主动作' : active?.state === 'REVIEW_PENDING' ? '结果已就绪，等待 Agent 判断' : active?.execution?.active_node ? `Agent 正在跟进：${active.execution.active_node.node_name}` : failedPlans.length || failedDeliveries.length ? `有 ${failedPlans.length + failedDeliveries.length} 项 Agent 动作未成功，需要重试或人工处理` : item.control_conversation_binding_id ? 'Agent 正在监控当前场景' : '启动 Agent 后将持续协调此路径';
   const panelTitle = panel === 'basics' ? '场景信息' : panel === 'agent' ? 'Agent 配置' : panel === 'actions' ? 'Agent 动作' : '未解决的问题';
-  // The Agent parks the Case with ASK_HUMAN; surface its question until the Case is resumed.
-  const latestPlan = [...item.control_plans].sort((left, right) => right.created_at.localeCompare(left.created_at))[0];
-  const pendingQuestion = item.state === 'PAUSED' && item.pause_reason === 'WAITING_HUMAN' && latestPlan?.action === 'ASK_HUMAN' && latestPlan.state === 'SUCCEEDED' ? latestPlan : undefined;
+  // The Agent asks through the formal ask_user tool; the platform parks the Case (WAITING_HUMAN) while the
+  // question is open, so the question text comes from the control conversation itself.
+  const waitingHuman = item.state === 'PAUSED' && item.pause_reason === 'WAITING_HUMAN' && Boolean(item.control_conversation_binding_id) && Boolean(workspaceId);
+  const questionRead = useQuery({
+    queryKey: ['case-control-question', workspaceId, item.control_conversation_binding_id, item.row_version],
+    queryFn: () => api.agentPendingQuestion(workspaceId, item.control_conversation_binding_id!),
+    enabled: waitingHuman,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+  const askedQuestions = questionRead.data?.pending
+    ? [questionRead.data.question, ...(questionRead.data.questions ?? []).map(entry => entry.question)].filter((text): text is string => Boolean(text?.trim()))
+    : [];
+  const pendingQuestion = waitingHuman ? { reason: askedQuestions.length ? askedQuestions.join(' / ') : (item.pause_note || 'Agent 正在等待你在会话中的回复') } : undefined;
   const conclusionProposed = item.state === 'PAUSED' && item.pause_reason === 'CONCLUSION_PROPOSED';
   const conclusionProposal = item.state === 'PAUSED' && item.pause_reason === 'CONCLUSION_PROPOSED' ? (item.pause_note || '') : undefined;
   return <main className="scenario-workspace case-single-workspace"><div className="scenario-workspace-inner">

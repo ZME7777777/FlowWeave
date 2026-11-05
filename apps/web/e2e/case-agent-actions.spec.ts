@@ -7,9 +7,9 @@ const base = { id: 'c1', name: '提问场景', objective: '目标', description:
 test('case workspace lists every Agent action and surfaces a pending question', async ({ page }) => {
   let item: Record<string, unknown> = {
     ...base, state: 'PAUSED', pause_reason: 'WAITING_HUMAN',
+    control_conversation_binding_id: 'cb1',
     control_plans: [
       plan('p1', 'ACCEPT_STEPWISE_ATTEMPT', '结果可信，接受', '2026-01-02T00:00:00Z'),
-      plan('p2', 'ASK_HUMAN', '空结果：确实没有，还是范围找错了？推荐方案 A', '2026-01-03T00:00:00Z'),
     ],
   };
   let resumed = 0;
@@ -19,8 +19,9 @@ test('case workspace lists every Agent action and surfaces a pending question', 
     if (path === '/auth/me') return route.fulfill({ json: user });
     if (path === '/cases' && req.method() === 'GET') return route.fulfill({ json: [item] });
     if (path === '/cases/c1/coordination' || path.startsWith('/cases/c1/coordination')) { resumed += 1; item = { ...item, state: 'ACTIVE', pause_reason: null, row_version: 4 }; return route.fulfill({ json: item }); }
+    if (path.endsWith('/pending-question')) return route.fulfill({ json: { pending: true, action_id: 'a1', question: '空结果：确实没有，还是范围找错了？', options: ['确实没有', '范围找错了'] } });
     if (path === '/cases/c1') return route.fulfill({ json: item });
-    if (path.includes('default-agent-workspace')) return route.fulfill({ json: { id: 'ws' } });
+    if (path.endsWith('/agent-workspaces/default')) return route.fulfill({ json: { id: 'ws', display_name: 'ws', desired_state: 'RUNNING', updated_at: '2026-01-01T00:00:00Z' } });
     return route.fulfill({ json: [] });
   });
   await page.goto('/');
@@ -30,7 +31,6 @@ test('case workspace lists every Agent action and surfaces a pending question', 
   await expect(question).toContainText('空结果：确实没有');
   await page.getByRole('button', { name: 'Agent 动作' }).click();
   const dialog = page.getByRole('dialog', { name: 'Agent 动作' });
-  await expect(dialog).toContainText('向人工提问');
   await expect(dialog).toContainText('接受节点结果');
   await expect(dialog).not.toContainText('结果可信，接受');
   await expect(dialog.getByRole('button', { name: '在会话中查看' }).first()).toBeVisible();
@@ -55,7 +55,7 @@ test('an Agent conclusion proposal needs a human decision and cannot be bypassed
     if (path === '/cases/c1/conclusion/reject') { calls.push({ path, body: req.postDataJSON() }); item = { ...item, state: 'ACTIVE', pause_reason: null, pause_note: null, row_version: 4 }; return route.fulfill({ json: item }); }
     if (path === '/cases/c1/conclusion/confirm') { calls.push({ path, body: req.postDataJSON() }); item = { ...item, state: 'COMPLETED', pause_reason: null, row_version: 4 }; return route.fulfill({ json: item }); }
     if (path === '/cases/c1') return route.fulfill({ json: item });
-    if (path.includes('default-agent-workspace')) return route.fulfill({ json: { id: 'ws' } });
+    if (path.endsWith('/agent-workspaces/default')) return route.fulfill({ json: { id: 'ws', display_name: 'ws', desired_state: 'RUNNING', updated_at: '2026-01-01T00:00:00Z' } });
     return route.fulfill({ json: [] });
   });
   await page.goto('/');

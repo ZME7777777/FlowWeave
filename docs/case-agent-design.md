@@ -162,10 +162,12 @@ Agent 通过四条渠道获知全局，信息逐层加深：
 
 Case 不再有专用的 `ASK_HUMAN` 动作。协调 Agent 与所有 Agent 会话一样使用 OpenHands SDK 的 `ask_user` 内置工具（`AskUserTool`，`include_default_tools` 开启），提问是会话本身的正式状态，而不是 Case 的私有协议：
 
-1. Agent 调用 `ask_user(question, options, recommendation)`，OpenHands 会话进入 `waiting_for_user_input`（同一批次若调用了 `finish` 则不进入）；
-2. 平台把协调会话的该状态镜像到 Case：Case 置 PAUSED，`pause_reason` 为 `WAITING_HUMAN`，暂停期间新事件 `HELD`，Agent 不会被打扰；
-3. 人在会话输入框上方的问题卡片里回复（或跳过），回复是一条普通用户消息，OpenHands 会话回到 `idle` 并继续；平台据此把 Case 恢复为运行并发出 `CASE_RESUMED`，写明“用户已在会话中回复”；
+1. Agent 调用 `ask_user(question, options, recommendation)`（可一次提出多个问题）。`ask_user` **不会让 OpenHands 会话停止**：由模型决定是带着工具输出继续执行（人的回复作为追问进入同一轮），还是给出最终回复（人的回复是一条新消息）；
+2. 平台把“最新一次 `ask_user` 之后没有用户消息”这一正式事实镜像到 Case：Case 置 PAUSED，`pause_reason` 为 `WAITING_HUMAN`，暂停期间新事件 `HELD`，Agent 不会被打扰。Case 页面的“Agent 在等你回答”直接读取协调会话的 `pending-question`，不再依赖任何 Case 控制计划；
+3. 人在会话输入框上方的问题卡片里回复（或跳过），回复是一条普通用户消息；平台据此把 Case 恢复为运行并发出 `CASE_RESUMED`，写明“用户已在会话中回复”；
 4. 若人没有回复而直接点击“恢复”，`CASE_RESUMED` 如实写明“用户未在会话中回复”，Agent 需重新判断而不是当作已获答复。
+
+历史上的 `ASK_HUMAN` 控制计划只作为旧数据保留在数据库约束中，新流程不会产生，页面也不再按它判断提问。
 
 不设置每会话提问次数上限；提示词只说明何时该问、何时不该问，若真实使用过于频繁再调整。`CONCLUDE_CASE` 仍是需要人确认的提案动作。
 
