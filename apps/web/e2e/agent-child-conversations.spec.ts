@@ -139,7 +139,7 @@ for (const host of ['workspace', 'node'] as const) {
     await chooseChild(page, children[0].id);
     await expect(page.getByRole('region', { name: `子会话 ${children[0].display_title}` })).toContainText(`${children[0].id} 的正式独立历史`);
     await expect(page).toHaveURL(`${state.root}/${parentId}`);
-    await expect(page.getByRole('button', { name: '全屏查看工作区工具' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: '全屏查看工作区工具' })).toBeEnabled();
     await chooseChild(page, children[1].id);
     await expect(page.getByRole('region', { name: `子会话 ${children[1].display_title}` })).toContainText(`${children[1].id} 的正式独立历史`);
     await expect.poll(() => state.unread.has(children[1].id)).toBe(false);
@@ -154,6 +154,8 @@ for (const host of ['workspace', 'node'] as const) {
     expect(state.unread.has(children[2].id)).toBe(true);
     const tabs = page.getByRole('navigation', { name: '工作区页签' });
     await expect(tabs.getByRole('button', { name: children[0].display_title, exact: true })).toBeVisible();
+    await tabs.getByRole('button', { name: children[0].display_title, exact: true }).dblclick();
+    await expect(page.locator('.agent-workspace-drawer.fullscreen')).toHaveCount(1);
     await tabs.getByRole('button', { name: children[0].display_title, exact: true }).dblclick();
     await expect(page.locator('.agent-workspace-drawer.fullscreen')).toHaveCount(0);
     await tabs.getByRole('button', { name: `关闭${children[0].display_title}页签` }).click();
@@ -180,35 +182,93 @@ for (const host of ['workspace', 'node'] as const) {
   });
 }
 
-test('child list pages inline and follows floating card visibility and width without scrolling', async ({ page }) => {
-  await openParent(page, 'workspace');
-  const list = page.getByRole('list', { name: '子会话列表', exact: true });
-  await expect(page.getByRole('dialog', { name: '子会话列表' })).toHaveCount(0);
-  await expect(list.locator('[data-child-binding-id]')).toHaveCount(2);
-  for (let index = 0; index < 4; index += 1) {
-    await expect(list.locator('[data-child-binding-id]').first()).toHaveAttribute('data-child-binding-id', children[index * 2].id);
-    if (index < 3) await page.getByRole('button', { name: '下一页子会话' }).click();
-  }
-  await expect(page.getByRole('button', { name: '下一页子会话' })).toBeDisabled();
-  await page.getByRole('button', { name: '上一页子会话' }).click();
-  await page.getByRole('button', { name: '上一页子会话' }).click();
-  for (const width of [1440, 1024]) {
-    await page.setViewportSize({ width, height: 1000 });
-    const dimensions = await page.locator('.agent-workspace-summary').evaluate(element => [element, element.querySelector('.agent-workspace-overview')!, element.querySelector('.agent-workspace-children')!].map(item => ({
-      width: item.clientWidth, contentWidth: item.scrollWidth,
-      height: item.clientHeight, contentHeight: item.scrollHeight,
-    })));
-    for (const item of dimensions) {
-      expect(item.contentWidth).toBeLessThanOrEqual(item.width);
-      expect(item.contentHeight).toBeLessThanOrEqual(item.height);
+for (const host of ['workspace', 'node'] as const) {
+  test(`child summary previews two entries and opens the complete list in one detail tab (${host})`, async ({ page }) => {
+    const state = await openParent(page, host);
+    const list = page.getByRole('list', { name: '子会话列表', exact: true });
+    await expect(list.locator('[data-child-binding-id]')).toHaveCount(2);
+    await expect(list.locator('.agent-child-preview-icon')).toHaveCount(2);
+    await expect(page.locator('.agent-workspace-children > .lucide-messages-square')).toHaveCount(1);
+    await expect(page.getByRole('navigation', { name: '子会话分页' })).toHaveCount(0);
+    for (const width of [1440, 1024]) {
+      await page.setViewportSize({ width, height: 1000 });
+      const dimensions = await page.locator('.agent-workspace-summary').evaluate(element => [element, element.querySelector('.agent-workspace-overview')!, element.querySelector('.agent-workspace-children')!].map(item => ({
+        width: item.clientWidth, contentWidth: item.scrollWidth,
+        height: item.clientHeight, contentHeight: item.scrollHeight,
+      })));
+      for (const item of dimensions) {
+        expect(item.contentWidth).toBeLessThanOrEqual(item.width);
+        expect(item.contentHeight).toBeLessThanOrEqual(item.height);
+      }
+      await page.screenshot({ path: test.info().outputPath(`child-preview-${width}.png`) });
     }
-    await page.screenshot({ path: test.info().outputPath(`child-card-${width}.png`) });
-  }
-  await page.getByRole('button', { name: '隐藏悬浮信息卡', exact: true }).click();
-  await expect(list).not.toBeVisible();
-  await page.getByRole('button', { name: '显示悬浮信息卡', exact: true }).click();
-  await expect(list.locator('[data-child-binding-id]').first()).toHaveAttribute('data-child-binding-id', children[2].id);
-});
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.getByRole('button', { name: '查看全部子会话', exact: true }).click();
+    const details = page.getByRole('region', { name: '全部子会话', exact: true });
+    await expect(details.locator('[data-child-binding-id]')).toHaveCount(8);
+    await expect(details).toContainText(children[2].display_title);
+    await expect(page.getByRole('dialog', { name: '子会话列表' })).toHaveCount(0);
+    await expect(page).toHaveURL(`${state.root}/${parentId}`);
+    expect(state.unread.has(children[2].id)).toBe(true);
+    const tabs = page.getByRole('navigation', { name: '工作区页签' });
+    const showCard = page.getByRole('button', { name: '显示悬浮信息卡', exact: true });
+    if (await showCard.isVisible()) await showCard.click();
+    await page.getByRole('button', { name: '查看全部子会话', exact: true }).click();
+    await expect(tabs.getByRole('button', { name: '子会话', exact: true })).toHaveCount(1);
+    await tabs.getByRole('button', { name: '子会话', exact: true }).dblclick();
+    await expect(page.locator('.agent-workspace-drawer.fullscreen')).toBeVisible();
+    await details.locator(`[data-child-binding-id="${children[2].id}"]`).click();
+    const child = page.getByRole('region', { name: `子会话 ${children[2].display_title}`, exact: true });
+    await expect(child).toContainText(`${children[2].id} 的正式独立历史`);
+    await expect(page.locator('.agent-workspace-drawer.fullscreen')).toBeVisible();
+    await expect.poll(() => state.unread.has(children[2].id)).toBe(false);
+    await tabs.getByRole('button', { name: '子会话', exact: true }).click();
+    await expect(details).toBeVisible();
+    await page.screenshot({ path: test.info().outputPath('child-detail.png') });
+    await page.getByRole('button', { name: '退出全屏', exact: true }).click();
+    await page.getByRole('button', { name: '隐藏悬浮信息卡', exact: true }).click();
+    await expect(list).not.toBeVisible();
+    await page.getByRole('button', { name: '显示悬浮信息卡', exact: true }).click();
+    await expect(list.locator('[data-child-binding-id]')).toHaveCount(2);
+  });
+
+  test(`child fullscreen keeps draft and history while configuration Escape closes only the modal (${host})`, async ({ page }) => {
+    const state = await openParent(page, host);
+    await chooseChild(page, children[0].id);
+    const input = page.getByRole('textbox', { name: '发送子会话消息' });
+    await expect(input).toBeEditable();
+    await input.fill('全屏切换保留的子会话草稿');
+    const tabs = page.getByRole('navigation', { name: '工作区页签' });
+    const tab = tabs.getByRole('button', { name: children[0].display_title, exact: true });
+    await tab.dblclick();
+    const fullscreen = page.locator('.agent-workspace-drawer.fullscreen');
+    await expect(fullscreen).toBeVisible();
+    await expect(input).toHaveValue('全屏切换保留的子会话草稿');
+    const child = page.getByRole('region', { name: `子会话 ${children[0].display_title}`, exact: true });
+    await expect(child).toContainText(`${children[0].id} 的正式独立历史`);
+    await child.getByRole('button', { name: '子会话配置', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: '子会话配置', exact: true })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog', { name: '子会话配置', exact: true })).toHaveCount(0);
+    await expect(fullscreen).toBeVisible();
+    await tabs.getByRole('button', { name: '父会话', exact: true }).click();
+    await expect(child).not.toBeVisible();
+    await tab.click();
+    await expect(child).toBeVisible();
+    await expect(input).toHaveValue('全屏切换保留的子会话草稿');
+    await page.screenshot({ path: test.info().outputPath('child-fullscreen.png') });
+    await page.keyboard.press('Escape');
+    await expect(fullscreen).toHaveCount(0);
+    await page.getByRole('button', { name: '全屏查看工作区工具', exact: true }).click();
+    await expect(fullscreen).toBeVisible();
+    await tab.dblclick();
+    await expect(fullscreen).toHaveCount(0);
+    await expect(input).toHaveValue('全屏切换保留的子会话草稿');
+    expect(state.messages).toHaveLength(0);
+    expect(state.childWrites.filter(write => write.action === 'control')).toHaveLength(0);
+    await expect(page).toHaveURL(`${state.root}/${parentId}`);
+  });
+}
 
 for (const host of ['workspace', 'node'] as const) {
   test(`child drafts retain text and attachments across sibling parent close and reload (${host})`, async ({ page }) => {

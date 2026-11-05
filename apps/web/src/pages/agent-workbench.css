@@ -620,11 +620,17 @@
 .agent-child-list-copy { display: flex !important; min-width: 0; align-items: baseline; gap: 5px; }
 .agent-child-list-copy b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-child-list-copy em { flex: 0 0 auto; color: #89958e; font-size: 8px; font-style: normal; white-space: nowrap; }
-.agent-child-pagination { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 3px; color: #89958e; font-size: 9px; }
-.agent-child-pagination button { display: grid !important; width: 20px; height: 20px; place-items: center; border: 0; border-radius: 4px; padding: 0 !important; background: transparent; color: #64766b !important; }
-.agent-child-pagination button:hover:not(:disabled) { background: #eff5f1; }
-.agent-child-pagination button:disabled { opacity: .35; }
-.agent-child-indicator { display: inline-flex; flex-shrink: 0; color: #6b7b70; position: relative; }
+.agent-child-preview-icon { display: grid !important; width: 20px; height: 20px; place-items: center; border-radius: 5px; background: #f0edf8; }
+.agent-child-preview-icon .agent-child-indicator { color: #796598; }
+.agent-child-details-panel { height: 100%; min-width: 0; min-height: 0; }
+.agent-child-details > div { min-width: 0; }
+.agent-child-details > div > button { display: grid; width: 100%; min-width: 0; grid-template-columns: 34px minmax(0, 1fr) 15px; align-items: center; gap: 12px; border: 0; border-bottom: 1px solid #e6ece8; background: #fff; padding: 19px 24px; color: #48584e; text-align: left; }
+.agent-child-details > div > button:hover:not(:disabled) { background: #f2f7f3; color: #245f3d; }
+.agent-child-details > div > button:disabled { cursor: default; opacity: .55; }
+.agent-child-details .agent-source-icon { border-color: #e6dfee; background: #f5f1fa; }
+.agent-child-details .agent-child-list-copy { display: grid !important; gap: 5px; }
+.agent-child-details .agent-child-list-copy em { font-size: 10px; }
+.agent-child-indicator { display: inline-flex; flex-shrink: 0; color: #796598; position: relative; }
 .agent-child-indicator.running { color: #2c8052; }
 .agent-child-indicator.running > svg { animation: conversation-spin 1s linear infinite; }
 .agent-child-indicator.unread::after { content: ''; width: 5px; height: 5px; position: absolute; top: -2px; right: -2px; border-radius: 50%; background: #438dc3; }
