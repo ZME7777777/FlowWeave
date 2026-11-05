@@ -25,18 +25,19 @@ test('conversation management keeps the selected workspace and pagination in fix
     });
     if (path.endsWith('/agent-workspaces/default')) return respond(route, workspace);
     if (path.endsWith('/agent-workspaces/workspace-default/work-directories')) return respond(route, { root: { id: 'root', display_name: '根工作区' }, items: [] });
+    if (path.endsWith('/conversation-management/delete')) return respond(route, { deleted_ids: [], pending_ids: ['conversation-21'], skipped: [] });
     if (path.endsWith('/agent-workspaces/workspace-default/conversation-management')) return respond(route, { items, truncated: false });
     if (path.endsWith('/node-directories') || path.endsWith('/node-assets')) return respond(route, []);
     return respond(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: 'Agent 会话' }).click();
+  await page.getByRole('button', { name: 'AI 工作台' }).click();
   await page.getByRole('button', { name: '会话管理', exact: true }).click();
 
   const layout = page.locator('.conversation-management-layout');
   await expect(layout).toBeVisible();
-  await expect(page.getByRole('complementary', { name: '工作区' })).toContainText('根工作区');
+  await expect(page.getByRole('complementary', { name: 'Agent 工作区' })).toContainText('根工作区');
   await expect(page.getByRole('button', { name: '根工作区', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '最后活动时间', exact: true })).toContainText('全部时间');
   await expect(page.locator('.conversation-management-workspace-list small')).toHaveCount(0);
@@ -61,5 +62,10 @@ test('conversation management keeps the selected workspace and pagination in fix
   await page.getByRole('button', { name: '下一页' }).click();
   await expect(page.getByText('共 21 项，第 2 / 2 页')).toBeVisible();
   await expect(page.locator('.conversation-management-table tbody tr')).toHaveCount(1);
+  await expect(page.getByText('会话 21', { exact: true })).toBeVisible();
+  await page.getByRole('checkbox', { name: '选择会话 会话 21', exact: true }).check();
+  await page.getByRole('button', { name: '删除已选会话' }).click();
+  await page.getByRole('button', { name: '确认永久删除' }).click();
+  await expect(page.getByRole('status')).toContainText('已提交 1 个父子会话清理任务');
   await expect(page.getByText('会话 21', { exact: true })).toBeVisible();
 });

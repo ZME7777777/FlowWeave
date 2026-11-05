@@ -1221,7 +1221,7 @@ test('Agent session renders a completed long Markdown reply without manual expan
   await expect(page.getByRole('button', { name: '跳转到最新回复' })).toBeVisible();
 });
 
-test('Deleting the selected conversation immediately hides it and opens its neighbour', async ({ page }) => {
+test('Deleting the selected conversation waits for 204 then opens its neighbour', async ({ page }) => {
   let authenticated = false;
   let deleteRequested = false;
   let deleted = false;
@@ -1256,7 +1256,7 @@ test('Deleting the selected conversation immediately hides it and opens its neig
       deleteRequested = true;
       await deleteGate;
       deleted = true;
-      return json(route, {});
+      return route.fulfill({ status: 204 });
     }
     if (path.endsWith('/events')) {
       const id = path.split('/').at(-2)!;
@@ -1294,15 +1294,17 @@ test('Deleting the selected conversation immediately hides it and opens its neig
   const dialog = page.getByRole('alertdialog');
   await dialog.getByRole('button', { name: '确认删除', exact: true }).click();
 
-  // The delayed API response must not keep the deleted row or route on
-  // screen. The next existing session becomes visible in the same frame.
+  // The server can return a family 202 even if a child was created after
+  // listing. Keep the current entry until the ordinary 204 confirms deletion.
   await expect.poll(() => deleteRequested).toBe(true);
+  await expect(page).toHaveURL(/\/agent\/conversations\/optimistic-delete-a$/);
+  await expect(deletingRow).toBeVisible();
+  releaseDelete?.();
   await expect(page).toHaveURL(/\/agent\/conversations\/optimistic-delete-b$/);
   await expect(page.getByRole('navigation', { name: '会话页签', exact: true })).toContainText('下一会话');
   await expect(page.getByRole('button', { name: '待删除会话', exact: true })).toHaveCount(0);
   await expect(page.getByText('开始一个新的会话', { exact: true })).toHaveCount(0);
 
-  releaseDelete?.();
   // The first refresh after DELETE can still contain the old page while the
   // server-side list projection catches up. A confirmed deletion stays hidden.
   await expect.poll(() => postDeleteListRequests).toBeGreaterThan(0);

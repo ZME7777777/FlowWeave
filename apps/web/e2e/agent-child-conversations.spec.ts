@@ -482,3 +482,74 @@ test('child history prepend and sibling return preserve the independent reading 
   await expect.poll(() => latestCalls).toBeGreaterThan(2);
   expect(historyCalls).toBe(1);
 });
+
+for (const host of ['workspace', 'node'] as const) {
+  test(`family deletion keeps parent and child entry through 202 failure retry reload and final confirmation (${host})`, async ({ page }) => {
+    const state = await openParent(page, host);
+    let deleting = false;
+    let deleted = false;
+    let deletionState = 'PENDING';
+    let phase = 'CHILDREN';
+    let completed = 0;
+    let deleteCalls = 0;
+    let release: (() => void) | undefined;
+    const deletion = () => ({ task_id: 'same-family-task', state: deletionState, phase, child_binding_ids: children.map(child => child.id), completed_children: completed, failure_code: deletionState === 'DEAD' ? 'RUNTIME_UNAVAILABLE' : null });
+    await page.route(`**/api/v1/**/${parentId}`, async route => {
+      if (new URL(route.request().url()).pathname.includes('/agent-session-children/')) return route.fallback();
+      if (route.request().method() === 'DELETE') {
+        deleteCalls += 1;
+        if (deleteCalls === 1) await new Promise<void>(resolve => { release = resolve; });
+        deleting = true;
+        deletionState = 'PENDING';
+        return json(route, { parent_binding_id: parentId, ...deletion() }, 202);
+      }
+      if (deleted) return json(route, { error: { code: 'AGENT_CONVERSATION_NOT_FOUND', message: 'not found' } }, 404);
+      if (deleting) return json(route, { ...state.parents[0], lifecycle: 'DELETE_PENDING', write_available: false, deletion: deletion() });
+      return route.fallback();
+    });
+    await chooseChild(page, children[0].id);
+    await expect(page.getByRole('textbox', { name: '发送子会话消息' })).toBeEditable();
+    await page.locator(`[data-conversation-binding-id="${parentId}"]`).hover();
+    await page.getByRole('button', { name: '删除会话 父会话', exact: true }).click();
+    const dialog = page.getByRole('alertdialog');
+    await expect(dialog).toContainText('同时清理 8 个关联子会话');
+    await expect(dialog).toContainText(children[0].id);
+    await dialog.getByRole('button', { name: '确认删除' }).click();
+    await expect.poll(() => release).toBeTruthy();
+    await expect(page.locator(`[data-conversation-binding-id="${parentId}"]`)).toBeVisible();
+    await expect(page).toHaveURL(`${state.root}/${parentId}`);
+    release!();
+    const progress = page.getByRole('status', { name: '父子会话删除进度' });
+    await expect(progress).toContainText('正在删除父子会话');
+    await expect(progress.getByRole('list', { name: '关联子会话清单' }).getByRole('listitem')).toHaveCount(8);
+    await expect(page.getByRole('textbox', { name: '发送子会话消息' })).toBeDisabled();
+    await expect(page.getByRole('textbox', { name: '发送 Agent 消息' })).toHaveCount(0);
+    await expect(page.locator(`[data-conversation-binding-id="${parentId}"]`)).toContainText('正在删除父子会话');
+    await page.getByRole('button', { name: /查看活动会话/ }).click();
+    await expect(page.getByRole('region', { name: '活动会话', exact: true })).toContainText('正在删除父子会话');
+    await page.getByRole('button', { name: '返回工作区列表' }).click();
+    const showCard = page.getByRole('button', { name: '显示悬浮信息卡' });
+    if (await showCard.isVisible()) await showCard.click();
+    await page.getByRole('button', { name: '查看子会话', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: '子会话列表' }).locator(`[data-child-binding-id="${children[0].id}"]`)).toBeDisabled();
+    await page.keyboard.press('Escape');
+    deletionState = 'DEAD';
+    await expect(progress).toContainText('RUNTIME_UNAVAILABLE');
+    await expect(progress.getByRole('button', { name: '重试原清理任务' })).toBeVisible();
+    await page.reload();
+    await expect(progress).toContainText('父子会话删除未完成');
+    await progress.getByRole('button', { name: '重试原清理任务' }).click();
+    await expect.poll(() => deleteCalls).toBe(2);
+    await expect(progress).toContainText('正在删除父子会话');
+    phase = 'FINAL';
+    completed = 2;
+    await expect(progress).toContainText('已确认清理 2 / 8 个子会话');
+    await page.screenshot({ path: test.info().outputPath('family-deletion.png') });
+    await page.locator(`[data-conversation-binding-id="${otherParentId}"] .agent-workspace-conversation-select`).click();
+    await expect(page).toHaveURL(`${state.root}/${otherParentId}`);
+    deleted = true;
+    await expect(page.locator(`[data-conversation-binding-id="${parentId}"]`)).toHaveCount(0);
+    await expect(page).toHaveURL(`${state.root}/${otherParentId}`);
+    expect(state.messages).toHaveLength(0);
+  });
+}

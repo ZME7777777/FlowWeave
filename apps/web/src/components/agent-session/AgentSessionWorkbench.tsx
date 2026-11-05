@@ -22,6 +22,7 @@ import { deploymentBasePath, withoutDeploymentBase } from '../../deploymentPath'
 import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host';
 import { SidebarConversationPane } from './SidebarConversationPane';
 import { workspaceMarkdownFileHref, workspaceMarkdownLinkPath, workspaceMarkdownImagePath, workspaceFileApiPath } from './workspace-file-links';
+import { ConversationDeletionPanel } from './ConversationDeletionPanel';
 import { ChildConversationPane } from './ChildConversationPane';
 import { ChildConversationIndicator, ChildConversationSummary } from './ChildConversationSummary';
 import { latestHistoryCursor, mergeConversationBatch, mergeConversationEvent, mergeConversationEvents, retainConversationPresentation } from './conversation-event-cache';
@@ -91,12 +92,6 @@ type ConversationOrderSync = { state: 'syncing' | 'failed'; orderedBindingIds: s
 type ConversationPagesByScope = Record<string, AgentConversationPage>;
 type TrustedHydration = { hydratedAt: number; running: boolean; needsRefresh?: boolean };
 
-interface OptimisticConversationRemoval {
-  conversations?: InfiniteData<AgentConversationPage>;
-  conversationPages?: ConversationPagesByScope;
-  conversation?: AgentConversation;
-  unreadConversationIds: Set<string>;
-}
 interface RewriteRequest {
   bindingId: string;
   eventId: string;
@@ -970,7 +965,7 @@ function WorkspaceConversationRow({
     setContextMenu({ x: Math.min(event.clientX, window.innerWidth - 180), y: Math.min(event.clientY, window.innerHeight - 52) });
   }}>
     <button type="button" draggable={Boolean(onDragStart)} className={`agent-workspace-conversation-select${selected ? ' active' : ''}`} aria-label={conversationName(item)} title={onDragStart ? '拖入发送框以引用此会话，或拖到其他会话以调整顺序' : undefined} onDragStart={onDragStart} onDragEnd={onDragEnd} onClick={onSelect} onDoubleClick={onDoubleClick}>
-      <span><b>{conversationName(item)}</b>{workspaceName && <small title={workspaceName}><Folder size={11}/><span>{workspaceName}</span></small>}{item.child_summary && Boolean(item.child_summary.running || item.child_summary.unread) && <small className="agent-conversation-child-summary"><MessageSquareText size={11}/><span>{item.child_summary.running ? `子会话 · ${item.child_summary.running} 个运行中` : `子会话 · ${item.child_summary.unread} 条未读`}</span></small>}</span>
+      <span><b>{conversationName(item)}</b>{workspaceName && <small title={workspaceName}><Folder size={11}/><span>{workspaceName}</span></small>}{item.lifecycle === 'DELETE_PENDING' && <small className="agent-conversation-deletion-status">{item.deletion?.state === 'DEAD' ? '删除失败 · 可重试' : '正在删除父子会话'}</small>}{item.lifecycle !== 'DELETE_PENDING' && item.child_summary && Boolean(item.child_summary.running || item.child_summary.unread) && <small className="agent-conversation-child-summary"><MessageSquareText size={11}/><span>{item.child_summary.running ? `子会话 · ${item.child_summary.running} 个运行中` : `子会话 · ${item.child_summary.unread} 条未读`}</span></small>}</span>
     </button>
     {orderSyncState === 'syncing' && <span className="agent-workspace-conversation-sync" role="status" aria-label="排序正在后台同步" title="排序正在后台同步"><LoaderCircle size={14}/></span>}
     {orderSyncState === 'failed' && <button type="button" className="agent-workspace-conversation-sync failed" aria-label="排序暂未保存，点击重试" title="排序暂未保存，点击重试" onClick={event => { event.stopPropagation(); onRetryOrder?.(); }}>!</button>}
@@ -3893,8 +3888,11 @@ function WorkspaceDrawer({
     queryFn: ({ signal }) => agentWorkspaceApi.agentChildConversations(bindingId!, signal),
     enabled: Boolean(bindingId), retry: false, refetchOnWindowFocus: false, refetchInterval: 15_000 });
   const [readingChildren, setReadingChildren] = useState<Set<string>>(new Set());
-  const children = useMemo(() => (childrenQuery.data ?? []).map(child => readingChildren.has(child.id)
-    ? { ...child, unread: false, unread_origin: null, final_reply_preview: null } : child), [childrenQuery.data, readingChildren]);
+  const children = useMemo(() => (childrenQuery.data ?? []).map(child => ({
+    ...child,
+    ...(conversation?.lifecycle === 'DELETE_PENDING' ? { lifecycle: 'DELETE_PENDING' as const } : {}),
+    ...(readingChildren.has(child.id) ? { unread: false, unread_origin: null, final_reply_preview: null } : {}),
+  })), [childrenQuery.data, conversation?.lifecycle, readingChildren]);
   const [childVisualCompletion, setChildVisualCompletion] = useState<{ parentId: string; childId: string }>();
   const visibleChildSelection = useRef<{ parentId?: string; childId?: string }>({});
   visibleChildSelection.current = drawerToolsOpen ? { parentId: bindingId, childId: activeChildTab?.childId } : {};
@@ -3903,7 +3901,9 @@ function WorkspaceDrawer({
     setChildVisualCompletion(complete ? { parentId: bindingId, childId } : undefined);
   }, [bindingId]);
   useEffect(() => { setChildVisualCompletion(undefined); }, [activeChildTab?.childId, bindingId, drawerToolsOpen]);
-  const visibleChildActivity = childActivity.map(item => drawerToolsOpen && item.parent_binding_id === bindingId
+  const visibleChildActivity = childActivity.map(item => conversation?.lifecycle === 'DELETE_PENDING' && item.parent_binding_id === bindingId
+    ? { ...item, execution_status: 'unknown', failed: false, possibly_stuck: false }
+    : drawerToolsOpen && item.parent_binding_id === bindingId
     && item.id === activeChildTab?.childId && item.id === childVisualCompletion?.childId
     && bindingId === childVisualCompletion.parentId ? { ...item, execution_status: 'finished' } : item);
   const activeChild = children.find(child => child.id === activeChildTab?.childId);
@@ -5639,7 +5639,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   );
   const providersQuery = useQuery({ queryKey: ['model-providers'], queryFn: api.providers, enabled: Boolean(workspace && features.modelSelection) });
   const capabilityCatalogQuery = useQuery({ queryKey: sessionQueryKey(host, 'capability-catalog'), queryFn: api.capabilities, enabled: Boolean(workspace && features.capabilities) });
-  const conversations = useMemo(() => {
+  const familyDeletionScope = JSON.stringify([sidebarUserId, host.id, workspace?.id]);
+  const [familyDeletionsByScope, setFamilyDeletionsByScope] = useState<Record<string, Record<string, AgentConversation>>>({});
+  const familyDeletions = useMemo(() => familyDeletionsByScope[familyDeletionScope] ?? {}, [familyDeletionScope, familyDeletionsByScope]);
+  const setFamilyDeletions = useCallback((change: (current: Record<string, AgentConversation>) => Record<string, AgentConversation>) => {
+    setFamilyDeletionsByScope(scopes => {
+      const prior = scopes[familyDeletionScope] ?? {};
+      const next = change(prior);
+      return next === prior ? scopes : { ...scopes, [familyDeletionScope]: next };
+    });
+  }, [familyDeletionScope]);
+  const listedConversations = useMemo(() => {
     const uniqueConversations = new Map<string, AgentConversation>();
     for (const item of Object.values(conversationPagesByScope).flatMap(page => page.items)) {
       if (!optimisticallyRemovedConversationIds.has(item.id)) uniqueConversations.set(item.id, item);
@@ -5670,6 +5680,41 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return group.map(item => locallyOrderedIds.has(item.id) ? locallyOrdered[localIndex++] : item);
     });
   }, [conversationOrder, conversationPagesByScope, optimisticallyRemovedConversationIds]);
+  useEffect(() => {
+    const deleting = [...listedConversations, ...(activitySnapshot?.conversations ?? [])].filter(item => item.lifecycle === 'DELETE_PENDING' && !optimisticallyRemovedConversationIds.has(item.id));
+    if (!deleting.length) return;
+    setFamilyDeletions(current => {
+      const next = { ...current };
+      let changed = false;
+      for (const item of deleting) if (!next[item.id]) { next[item.id] = item; changed = true; }
+      return changed ? next : current;
+    });
+  }, [activitySnapshot?.conversations, listedConversations, optimisticallyRemovedConversationIds, setFamilyDeletions]);
+  const deletingBindings = Object.values(familyDeletions);
+  const deletionReads = useQueries({ queries: deletingBindings.map(item => ({
+    queryKey: sessionQueryKey(host, 'conversation', workspace?.id, item.id),
+    queryFn: () => api.conversation(workspace!.id, item.id),
+    enabled: Boolean(workspace && pageVisible), refetchInterval: 2_000, refetchOnWindowFocus: true, retry: false,
+  })) });
+  useEffect(() => {
+    deletionReads.forEach((result, index) => {
+      const bindingId = deletingBindings[index].id;
+      if (isMissingConversationError(result.error)) {
+        setFamilyDeletions(current => { const next = { ...current }; delete next[bindingId]; return next; });
+        reconcileMissingConversationRef.current?.(bindingId);
+      } else if (result.data?.lifecycle === 'DELETE_PENDING') {
+        const value = result.data;
+        setFamilyDeletions(current => JSON.stringify(current[bindingId]) === JSON.stringify(value) ? current : { ...current, [bindingId]: value });
+      }
+    });
+  }, [deletingBindings, deletionReads, setFamilyDeletions]);
+  const conversations = useMemo(() => {
+    const values = new Map(listedConversations.map(item => [item.id, item]));
+    for (const item of Object.values(familyDeletions)) {
+      if (!optimisticallyRemovedConversationIds.has(item.id)) values.set(item.id, item);
+    }
+    return [...values.values()];
+  }, [familyDeletions, listedConversations, optimisticallyRemovedConversationIds]);
   const conversationsById = useMemo(
     () => new Map(conversations.map(item => [item.id, item])),
     [conversations],
@@ -5724,14 +5769,15 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [collapsedConversationGroups, completeSidebarReveal, conversationPagesByScope, pinnedConversationsCollapsed]);
   const pinnedConversations = useMemo(() => {
     const paged = [...conversationsById.values()].filter(item => pendingPinnedUpdates.current.get(item.id)?.pinned ?? item.pinned);
-    const items = scopeWorkDirectoryId === undefined && api.pinnedConversations ? pinnedConversationsQuery.data ?? paged : paged;
+    const items = (scopeWorkDirectoryId === undefined && api.pinnedConversations ? pinnedConversationsQuery.data ?? paged : paged)
+      .filter(item => !optimisticallyRemovedConversationIds.has(item.id)).map(item => familyDeletions[item.id] ?? item);
     const byId = new Map(items.map(item => [item.id, item]));
     const orderedIds = new Set(pinnedOrder);
     return [
       ...pinnedOrder.flatMap(id => byId.has(id) ? [byId.get(id)!] : []),
       ...items.filter(item => !orderedIds.has(item.id)),
     ];
-  }, [api.pinnedConversations, conversationsById, pinnedConversationsQuery.data, pinnedOrder, scopeWorkDirectoryId]);
+  }, [api.pinnedConversations, conversationsById, familyDeletions, optimisticallyRemovedConversationIds, pinnedConversationsQuery.data, pinnedOrder, scopeWorkDirectoryId]);
   const unpinnedConversations = conversations.filter(
     item => !(pendingPinnedUpdates.current.get(item.id)?.pinned ?? item.pinned),
   );
@@ -5739,15 +5785,17 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const byId = new Map<string, AgentConversation>();
     for (const item of conversations) byId.set(item.id, item);
     for (const item of activitySnapshot?.conversations ?? []) byId.set(item.id, item);
+    for (const item of Object.values(familyDeletions)) byId.set(item.id, item);
     return [...byId.values()]
       .filter(item => scopeWorkDirectoryId === undefined || item.work_directory_id === scopeWorkDirectoryId)
-      .filter(item => activitySnapshot?.child_activity_parent_binding_ids?.includes(item.id) || runningConversationIds.has(item.id) || condensingConversationIds.has(item.id) || conversationIsRunning(item.execution_status) || unreadConversationIds.has(item.id) || Boolean(item.unread))
+      .filter(item => !optimisticallyRemovedConversationIds.has(item.id))
+      .filter(item => item.lifecycle === 'DELETE_PENDING' || activitySnapshot?.deleting_binding_ids?.includes(item.id) || activitySnapshot?.child_activity_parent_binding_ids?.includes(item.id) || runningConversationIds.has(item.id) || condensingConversationIds.has(item.id) || conversationIsRunning(item.execution_status) || unreadConversationIds.has(item.id) || Boolean(item.unread))
       .sort((left, right) => {
         const leftUpdatedAt = Date.parse(left.updated_at) || Date.parse(left.created_at) || 0;
         const rightUpdatedAt = Date.parse(right.updated_at) || Date.parse(right.created_at) || 0;
         return rightUpdatedAt - leftUpdatedAt || right.id.localeCompare(left.id);
       });
-  }, [activitySnapshot?.conversations, activitySnapshot?.child_activity_parent_binding_ids, condensingConversationIds, conversations, runningConversationIds, scopeWorkDirectoryId, unreadConversationIds]);
+  }, [activitySnapshot?.conversations, activitySnapshot?.child_activity_parent_binding_ids, activitySnapshot?.deleting_binding_ids, condensingConversationIds, conversations, familyDeletions, optimisticallyRemovedConversationIds, runningConversationIds, scopeWorkDirectoryId, unreadConversationIds]);
   const selectedConversationQuery = useQuery({
     queryKey: sessionQueryKey(host, 'conversation', workspace?.id, selectedBindingId),
     queryFn: () => api.conversation(workspace!.id, selectedBindingId!),
@@ -5769,8 +5817,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     // remain a source for child queries while route navigation settles.
     if (isChildMainRouteError(selectedConversationQuery.error)
       || (selectedBindingId && confirmedMissingConversationIds.has(selectedBindingId))) return undefined;
-    return selectedConversationQuery.data ?? conversations.find(item => item.id === selectedBindingId);
-  }, [confirmedMissingConversationIds, conversations, selectedBindingId, selectedConversationQuery.data, selectedConversationQuery.error]);
+    return familyDeletions[selectedBindingId ?? ''] ?? selectedConversationQuery.data ?? conversations.find(item => item.id === selectedBindingId);
+  }, [confirmedMissingConversationIds, conversations, familyDeletions, selectedBindingId, selectedConversationQuery.data, selectedConversationQuery.error]);
+  const familyDeletionPending = selected?.lifecycle === 'DELETE_PENDING';
+  useEffect(() => {
+    if (selected?.lifecycle === 'DELETE_PENDING') setFamilyDeletions(current => current[selected.id] ? current : { ...current, [selected.id]: selected });
+  }, [selected, setFamilyDeletions]);
   const sidebarRevealConversation = sidebarReveal.conversation ?? selected;
   useEffect(() => {
     if (!scheduleRoute && pendingSidebarRevealBindingId && sidebarReveal.expandCollapsed && sidebarRevealConversation?.pinned && pinnedConversationsCollapsed) {
@@ -5926,7 +5978,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const activeWorkspaceDetailsQuery = useQuery({
     queryKey: sessionQueryKey(host, 'workspace-details', workspace?.id, activeWorkspaceOptions.bindingId, activeWorkspaceOptions.workDirectoryId),
     queryFn: () => api.workspaceDetails(workspace!.id, activeWorkspaceOptions),
-    enabled: Boolean(workspace && (selected || conversationDraft)),
+    enabled: Boolean(workspace && !familyDeletionPending && (selected || conversationDraft)),
     refetchOnWindowFocus: false,
     retry: (count, error) => !(error instanceof ApiError && (error.status < 500 || error.status === 503)) && count < 2,
   });
@@ -6526,7 +6578,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   useEffect(() => {
     const workspaceId = workspace?.id;
     const bindingId = selected?.id;
-    if (!workspaceId || !bindingId) {
+    if (!workspaceId || !bindingId || familyDeletionPending) {
       hydrationSelection.current = undefined;
       setHydrationPhase(undefined);
       return;
@@ -6577,7 +6629,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }, CONVERSATION_HYDRATION_SELECTION_DELAY_MS);
   // Only an actual selection change schedules hydration. Query notifications
   // must not restart an intermediate binding during rapid navigation.
-  }, [host, queryClient, selected?.id, workspace?.id]);
+  }, [familyDeletionPending, host, queryClient, selected?.id, workspace?.id]);
   useEffect(() => () => {
     hydrationSelection.current = undefined;
     hydrationExecution.current = undefined;
@@ -6668,7 +6720,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // Do not fan out fallback reads while hydration is still attempting. A
   // non-capacity failure restores the established independent paths, but they
   // remain behind the same first-screen gate until all snapshots are fresh.
-  const hydrationFallbackAllowed = selectedHydrationPhase === 'ready' || selectedHydrationPhase === 'fallback';
+  const hydrationFallbackAllowed = !familyDeletionPending && (selectedHydrationPhase === 'ready' || selectedHydrationPhase === 'fallback');
   const hydrationData = selectedHydrationPhase === 'ready'
     && hydrationExecution.current?.bindingId === selected?.id
     ? hydrationQuery.data
@@ -7285,6 +7337,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   const isGenerating = effectiveTurnState === 'running' || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming';
   const streamEnabled = Boolean(
     selected
+    && !familyDeletionPending
     && (runtime?.write_available || selected.write_available)
     && isGenerating,
   );
@@ -7735,7 +7788,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     return previous ? { ...incoming, used_tokens: previous.used_tokens, view_event_count: previous.view_event_count } : incoming;
   }, [contextQuery.data, selected?.id, storedCurrentContext]);
-  const canWrite = Boolean(selected?.write_available);
+  const canWrite = Boolean(selected?.write_available) && !familyDeletionPending;
   // Interrupting an active native turn is separate from appending a message.
   // The Runtime validates the request again, so this never grants write access
   // to a read-only conversation.
@@ -8278,100 +8331,40 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     setEditing(false);
     refresh(conversation.id);
   }, onError: error => reportOperationError(selected?.id, error) });
-  const confirmDeletion = async (kind: '会话' | '工作区', name: string): Promise<boolean> => {
+  const confirmDeletion = async (kind: '会话' | '工作区', name: string, bindingId?: string): Promise<boolean> => {
+    let children: AgentChildConversation[] = [];
+    if (bindingId) {
+      try { children = await agentWorkspaceApi.agentChildConversations(bindingId); }
+      catch (reason) { setOperationError(reason instanceof Error ? reason : new Error('子会话清理范围暂时不可读取')); return false; }
+    }
     return dialog.confirm({
       title: `删除${kind}“${name}”？`,
       message: kind === '会话'
-        ? '会永久删除该会话及其附件和事件记录，无法恢复。'
+        ? `会永久删除该会话及其附件和事件记录，无法恢复。${children.length ? `\n同时清理 ${children.length} 个关联子会话\n${children.map(child => `${child.display_title || '未命名子会话'} (${child.id})`).join('\n')}` : ''}`
         : '会永久删除该工作区、其中的会话、附件和冻结目录版本，无法恢复。',
       confirmLabel: '确认删除',
       tone: 'danger',
     });
   };
-  const remove = useMutation<void, Error, string, OptimisticConversationRemoval>({
-    mutationFn: bindingId => api.deleteConversation(workspace!.id, bindingId),
-    onMutate: async bindingId => {
-      if (!workspace) return { unreadConversationIds: new Set() };
-      const conversationsKey = sessionQueryKey(host, 'conversations', workspace.id);
-      const conversationKey = sessionQueryKey(host, 'conversation', workspace.id, bindingId);
-      await Promise.all([
-        queryClient.cancelQueries({ queryKey: conversationsKey }),
-        queryClient.cancelQueries({ queryKey: conversationKey, exact: true }),
-      ]);
-      const context = {
-        conversations: queryClient.getQueryData<InfiniteData<AgentConversationPage>>(conversationsKey),
-        conversationPages: conversationPagesByScope,
-        conversation: queryClient.getQueryData<AgentConversation>(conversationKey),
-        unreadConversationIds: new Set(unreadConversationIds),
-      };
-      // Remove the item and choose its visible neighbour before issuing the
-      // DELETE. This avoids both the stale row and the transient draft page
-      // while the server processes the irreversible operation.
-      const index = conversations.findIndex(item => item.id === bindingId);
-      const nextConversation = index >= 0
-        ? conversations[index + 1] ?? conversations[index - 1]
-        : conversations[0];
-      setOptimisticallyRemovedConversationIds(current => new Set(current).add(bindingId));
-      queryClient.setQueryData<InfiniteData<AgentConversationPage>>(conversationsKey, current => current && ({
-        ...current,
-        pages: current.pages.map(page => ({
-          ...page,
-          items: page.items.filter(item => item.id !== bindingId),
-        })),
-      }));
-      setConversationPagesByScope(current => Object.fromEntries(Object.entries(current).map(([scope, page]) => [scope, {
-        ...page,
-        items: page.items.filter(item => item.id !== bindingId),
-      }])));
-      queryClient.removeQueries({ queryKey: conversationKey, exact: true });
-      setUnreadConversationIds(current => {
-        if (!current.has(bindingId)) return current;
-        const next = new Set(current);
-        next.delete(bindingId);
-        return next;
-      });
-      if (selected?.id === bindingId) {
-        setDrawerOpen(false);
-        setActivityPreviewBindingId(undefined);
-        if (nextConversation) onNavigate(conversationPath(nextConversation.id), true);
-        else if (onReturnToSource) onReturnToSource();
-        else onNavigate(scheduleRoute ? '/agent/schedules' : host.rootPath, true);
-      }
-      return context;
-    },
-    onSuccess: (_value, bindingId) => {
-      // Keep the binding locally excluded after a successful DELETE. The
-      // per-scope cache intentionally retains earlier pages, so a stale list
-      // response must not reinsert a conversation the server deleted.
-      composerDraftsByScope.current.delete(bindingId);
-      conversationDraftsByScope.current.delete(bindingId);
-      if (workspace) clearConversationComposerDraft(host.id, workspace.id, bindingId);
-      refresh();
-    },
-    onError: (error, bindingId, context) => {
-      // A stale browser row can race another tab (or an earlier completed
-      // delete) that has already removed the binding. The API's scoped 404 is
-      // therefore the idempotent terminal state for this DELETE, not a reason
-      // to restore a Conversation that the server confirms no longer exists.
-      if (isMissingConversationError(error)) {
-        reconcileMissingConversation(bindingId);
+  const remove = useMutation({
+    mutationFn: (bindingId: string) => api.deleteConversation(workspace!.id, bindingId),
+    onSuccess: (result, bindingId) => {
+      if (result) {
+        const original = selected?.id === bindingId ? selected : conversations.find(item => item.id === bindingId);
+        if (!original) { refresh(bindingId); return; }
+        const pending: AgentConversation = { ...original, lifecycle: 'DELETE_PENDING', write_available: false, deletion: result };
+        setFamilyDeletions(current => ({ ...current, [bindingId]: pending }));
+        if (workspace) queryClient.setQueryData(sessionQueryKey(host, 'conversation', workspace.id, bindingId), pending);
+        refresh(bindingId);
         return;
       }
-      if (workspace && context) {
-        const conversationsKey = sessionQueryKey(host, 'conversations', workspace.id);
-        const conversationKey = sessionQueryKey(host, 'conversation', workspace.id, bindingId);
-        queryClient.setQueryData(conversationsKey, context.conversations);
-        if (context.conversationPages) setConversationPagesByScope(context.conversationPages);
-        if (context.conversation) queryClient.setQueryData(conversationKey, context.conversation);
-        else queryClient.removeQueries({ queryKey: conversationKey, exact: true });
-        setUnreadConversationIds(context.unreadConversationIds);
-      }
-      setOptimisticallyRemovedConversationIds(current => {
-        const next = new Set(current);
-        next.delete(bindingId);
-        return next;
-      });
-      setOperationError(error);
+      // Only an ordinary 204 confirms immediate removal. A family 202 keeps
+      // its parent entry until the authorized metadata endpoint returns 404.
+      reconcileMissingConversation(bindingId);
+    },
+    onError: (error, bindingId) => {
+      if (isMissingConversationError(error)) reconcileMissingConversation(bindingId);
+      else setOperationError(error);
     },
   });
   const synchronizeConversationOrder = useCallback((bindingId: string, orderedBindingIds: string[]) => {
@@ -9853,6 +9846,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
   }
   const conversationRow = (item: AgentConversation, group: AgentConversation[], options: { allowDrag?: boolean; workspaceName?: string; onSelect?: () => void; onDoubleClick?: () => void; onMarkRead?: () => void } = {}) => {
+    item = familyDeletions[item.id] ?? item;
     // The batched native activity snapshot is the sidebar's authority for
     // every row. A selected transcript may temporarily show its local send /
     // pause / resume transition before that snapshot catches up, but a stale
@@ -9863,7 +9857,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const selectedLocalTransition = item.id === selected?.id
       && !selectedHasFinalFormalReply
       && conversationActivity.active;
-    const running = selectedHasFinalFormalReply
+    const running = item.lifecycle === 'DELETE_PENDING' ? false : selectedHasFinalFormalReply
       ? false
       : runningConversationIds.has(item.id)
         || condensingConversationIds.has(item.id)
@@ -9878,9 +9872,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const unread = unreadConversationIds.has(item.id) || Boolean(item.unread);
     const unreadOrigin = item.unread_origin;
     const conversationWritable = Boolean(item.write_available);
-    const draggable = options.allowDrag !== false;
+    const draggable = options.allowDrag !== false && item.lifecycle !== 'DELETE_PENDING';
     const orderSync = conversationOrderSync[item.id];
-    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unread} unreadOrigin={unreadOrigin} pinned={Boolean(item.pinned)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={draggable && draggedBindingId === item.id} dropPosition={draggable && dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={orderSync?.state} onDragStart={draggable ? event => startConversationDrag(event, item, group) : undefined} onDragOver={draggable ? event => previewConversationDrop(event, item, group) : undefined} onDrop={draggable ? event => dropConversation(event, item, group) : undefined} onDragEnd={draggable ? endConversationDrag : undefined} onRetryOrder={orderSync?.state === 'failed' ? () => synchronizeConversationOrder(item.id, orderSync.orderedBindingIds) : undefined} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onExport={() => { void exportConversation(item); }} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item)).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
+    return <WorkspaceConversationRow key={item.id} item={item} selectedBindingId={selectedBindingId} workspaceName={options.workspaceName} running={running} possiblyStuck={possiblyStuck} failed={failed} unread={unread} unreadOrigin={unreadOrigin} pinned={Boolean(item.pinned)} conversationWritable={conversationWritable} removing={remove.isPending} deleteDisabled={running} dragging={draggable && draggedBindingId === item.id} dropPosition={draggable && dragTarget?.bindingId === item.id ? (dragTarget.after ? 'after' : 'before') : undefined} orderSyncState={orderSync?.state} onDragStart={draggable ? event => startConversationDrag(event, item, group) : undefined} onDragOver={draggable ? event => previewConversationDrop(event, item, group) : undefined} onDrop={draggable ? event => dropConversation(event, item, group) : undefined} onDragEnd={draggable ? endConversationDrag : undefined} onRetryOrder={orderSync?.state === 'failed' ? () => synchronizeConversationOrder(item.id, orderSync.orderedBindingIds) : undefined} onSelect={options.onSelect ?? (() => selectConversation(item.id))} onDoubleClick={options.onDoubleClick} onTogglePin={() => toggleConversationPin(item.id)} onExport={() => { void exportConversation(item); }} onMarkUnread={() => markConversationUnread(item.id)} onMarkRead={options.onMarkRead} onAcknowledgeAlert={() => markConversationRead(item.id)} onDelete={features.conversationDeletion && conversationWritable ? () => void confirmDeletion('会话', conversationName(item), item.child_summary?.total ? item.id : undefined).then(ok => { if (ok) remove.mutate(item.id); }) : undefined}/>;
   };
   const pendingBootstrapItem = pendingBootstrap
     ? <button className={pendingBootstrap.draft.id === conversationDraft?.id ? 'active' : ''} aria-current={pendingBootstrap.draft.id === conversationDraft?.id ? 'page' : undefined} aria-label={`${pendingConversationName(pendingBootstrap.message)}，正在创建会话`}><LoaderCircle className="conversation-activity-spin" size={13}/><span><b>{pendingConversationName(pendingBootstrap.message)}</b><small>正在创建会话</small></span><ChevronRight size={13}/></button>
@@ -10158,7 +10152,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       <header className="agent-workbench-header"><div><nav className="agent-conversation-tabs" aria-label="会话页签"><button type="button" className="active" aria-current="page" title={selected ? conversationName(selected) : undefined} onDoubleClick={() => { if (!selected || !canWrite) return; setTitle(conversationName(selected)); setEditing(true); }}><MessageSquareText size={14}/><span>{selected ? conversationName(selected) : conversationDraft ? '新会话' : '开始一个新的会话'}</span></button></nav>{editing && <div className="agent-title-edit"><input ref={titleInput} aria-label="会话标题" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (!rename.isPending) { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }} onKeyDown={event => { if (event.key === 'Enter' && title.trim()) { event.preventDefault(); rename.mutate(); } if (event.key === 'Escape') { setTitle(selected ? conversationName(selected) : ''); setEditing(false); } }}/></div>}</div></header>
       <div className="agent-workbench-content">
       {runtime?.state === 'RECOVERING' && <section className="agent-runtime-recover"><LoaderCircle size={18}/><div><b>运行环境正在恢复</b><span>{runtime.message || '历史会话和工作区文件仍可查看；恢复完成后可继续发送消息和使用终端。'}</span></div></section>}
-      {conversationSnapshotUnavailable ? <div className="conversation-surface-empty"><b>会话暂时无法加载</b></div> : conversationInitialLoading ? <div className="conversation-surface-empty" role="status"><LoaderCircle className="conversation-activity-spin" size={16}/><b>正在加载会话</b><span>正在读取最新消息与会话状态…</span></div> : selected || conversationDraft ? <ConversationSurface
+      {familyDeletionPending && selected ? <ConversationDeletionPanel conversation={selected} hostId={host.id} pending={remove.isPending} onRetry={() => remove.mutate(selected.id)}/> : conversationSnapshotUnavailable ? <div className="conversation-surface-empty"><b>会话暂时无法加载</b></div> : conversationInitialLoading ? <div className="conversation-surface-empty" role="status"><LoaderCircle className="conversation-activity-spin" size={16}/><b>正在加载会话</b><span>正在读取最新消息与会话状态…</span></div> : selected || conversationDraft ? <ConversationSurface
         key={selected?.id ?? conversationDraft?.id}
         events={displayedEvents}
         isGenerating={conversationVisuallyActive}

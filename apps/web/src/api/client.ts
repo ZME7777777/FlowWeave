@@ -592,7 +592,7 @@ export const api = {
   reorderAgentConversation: (workspaceId: string, bindingId: string, ordered_binding_ids: string[]) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/order`, json('POST', { ordered_binding_ids })),
   deleteAgentConversation: (workspaceId: string, bindingId: string) =>
-    request<void>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`, json('DELETE', undefined, true)),
+    request<import('../types').AgentConversationDeleteResult>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`, json('DELETE', undefined, true)),
   agentConversationEvents: (workspaceId: string, bindingId: string, cursor?: string, historyCursor?: string, diagnosticTrigger?: string, signal?: AbortSignal) => {
     const query = new URLSearchParams();
     if (cursor) query.set('cursor', cursor);
@@ -1251,7 +1251,7 @@ export const nodeSessionApi = {
   switchModel: (flowRunId: string, attemptId: string, bindingId: string, model_provider_id: string, model_name: string, reasoning_effort: string | null) =>
     request<{ model_provider_id: string; model_name?: string | null; reasoning_effort?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/model`, json('POST', { model_provider_id, model_name, reasoning_effort })),
   remove: (flowRunId: string, attemptId: string, bindingId: string) =>
-    request<void>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`, json('DELETE', undefined, true)),
+    request<import('../types').AgentConversationDeleteResult>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`, json('DELETE', undefined, true)),
   message: (flowRunId: string, attemptId: string, bindingId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], idempotencyKey = randomId(), annotations: AgentConversationAnnotation[] = []) =>
     request<{ accepted: boolean; cursor?: string | null; compacted?: boolean; queued_during_turn?: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations }, idempotencyKey)),
   pendingConfirmation: (flowRunId: string, attemptId: string, bindingId: string) =>

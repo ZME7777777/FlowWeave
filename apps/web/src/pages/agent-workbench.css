@@ -653,3 +653,10 @@
 .agent-child-annotation > button:first-child { overflow: hidden; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .agent-child-annotation textarea { grid-column: 1 / -1; width: 100%; box-sizing: border-box; min-height: 48px; resize: vertical; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px; font: inherit; }
 .agent-child-conversation-panel .agent-composer-attachments { max-height: 180px; overflow: auto; }
+
+.agent-conversation-deletion { margin: 28px auto; padding: 28px; width: min(640px, calc(100% - 32px)); box-sizing: border-box; border: 1px solid #e2e8f0; border-radius: 16px; background: #fafbfc; color: #475569; font-size: 13px; }
+.agent-conversation-deletion h2 { font-size: 17px; color: #17352a; }
+.agent-conversation-deletion ul { max-height: 260px; overflow: auto; padding-left: 20px; }
+.agent-conversation-deletion li { margin-block: 10px; overflow-wrap: anywhere; }
+.agent-conversation-deletion li small { display: block; margin-top: 3px; color: #64748b; }
+.agent-conversation-deletion-status { color: #856a31; }

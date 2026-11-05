@@ -886,6 +886,16 @@ export interface AgentConversationContext {
   condenser_max_size?: number | null; condenser_max_tokens?: number | null;
   usage_current?: boolean;
 }
+export interface AgentConversationDeletion {
+  task_id: string;
+  state: 'PENDING' | 'RUNNING' | 'RETRY' | 'SUCCEEDED' | 'DEAD';
+  phase: 'CHILDREN' | 'PARENT' | 'FINAL' | 'RECORD' | 'COMPLETE';
+  child_binding_ids: string[];
+  completed_children: number;
+  failure_code?: string | null;
+}
+export type AgentConversationDeleteResult = (AgentConversationDeletion & { parent_binding_id: string }) | void;
+
 export interface AgentConversation {
   id: string;
   display_title?: string | null;
@@ -913,6 +923,7 @@ export interface AgentConversation {
   /** Server-owned effective ordering key. Untouched conversations use creation time. */
   sort_key?: string;
   usage?: TokenUsageSummary;
+  deletion?: AgentConversationDeletion | null;
   child_summary?: AgentChildSummary;
 }
 
@@ -971,6 +982,7 @@ export interface AgentConversationManagementPage {
   truncated: boolean;
 }
 export interface AgentConversationManagementDeleteResult {
+  pending_ids?: string[];
   deleted_ids: string[];
   skipped: Array<{ id: string; code: string }>;
 }
@@ -1005,6 +1017,7 @@ export interface AgentChildActivity {
   unread_origin?: 'MANUAL' | 'SYSTEM' | null;
 }
 export interface AgentConversationActivity {
+  deleting_binding_ids?: string[];
   child_activity?: AgentChildActivity[];
   child_activity_parent_binding_ids?: string[];
   /** Complete summaries for every binding that belongs in the activity panel. */

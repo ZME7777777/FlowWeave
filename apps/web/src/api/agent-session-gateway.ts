@@ -140,7 +140,7 @@ export interface AgentSessionApi {
   readonly setConversationUnread: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, unread: boolean, unreadOrigin?: 'MANUAL' | 'SYSTEM') => Promise<AgentConversation>;
   /** Node-session hosts intentionally omit this workspace-local presentation control. */
   readonly reorderConversation?: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, orderedBindingIds: AgentSessionBindingId[]) => Promise<AgentConversation>;
-  readonly deleteConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<void>;
+  readonly deleteConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<import('../types').AgentConversationDeleteResult>;
   readonly conversationEvents: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, cursor?: string, historyCursor?: string, diagnosticTrigger?: string, signal?: AbortSignal) => Promise<OpenHandsConversationEventBatch>;
   readonly conversationHydration: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, signal?: AbortSignal, cursor?: string) => Promise<AgentConversationHydration>;
   /** Bounded native HEAD check before reusing an in-memory complete branch. */

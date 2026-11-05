@@ -167,6 +167,7 @@ export function ConversationManagementPage() {
       <h1>会话管理</h1>
       <div className="conversation-management-metrics"><span><MessageSquareText size={15}/>{conversations.data?.items.length ?? 0} 个会话</span><button className="secondary" disabled={conversations.isFetching} onClick={() => void conversations.refetch()}><RefreshCw size={14} className={conversations.isFetching ? 'spin' : ''}/>刷新</button></div>
     </header>
+    {Boolean(remove.data?.pending_ids?.length) && <p className="conversation-management-notice" role="status">已提交 {remove.data!.pending_ids!.length} 个父子会话清理任务。可从原父会话查看进度或重试。</p>}
     {conversations.data?.truncated && <div className="conversation-management-notice warning"><Clock3 size={17}/><span>当前仅显示最近 500 个会话。请先完成本次清理，再继续管理更早的会话。</span></div>}
     <section className="conversation-management-layout">
       <aside className="conversation-management-workspaces" aria-label="Agent 工作区">
