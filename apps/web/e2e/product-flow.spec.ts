@@ -3092,7 +3092,7 @@ test('each user message can be edited and replaced on its active branch', async 
       rerunPayload = JSON.parse(request.postData() ?? '{}') as Record<string, unknown>;
       await new Promise<void>(resolve => { releaseRewrite = resolve; });
       rewritten = true;
-      return route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true, cursor: 'rethink-user' }) });
+      return route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true, cursor: 'rethink-user', event_id: 'rethink-user' }) });
     }
     return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }) });
   });
@@ -3145,7 +3145,7 @@ test('each user message can be edited and replaced on its active branch', async 
   await rewriteEditor.type('问题');
   await expect(rewriteEditor).toHaveValue('修改后的\n问题');
   expect(releaseRewrite).toBeUndefined();
-  await rewriteEditor.fill('修改后的问题');
+  await rewriteEditor.fill('  修改后的问题  ');
   await rewriteEditor.press('Enter');
   await expect(page.getByText('更早的问题', { exact: true })).toBeVisible();
   await expect(page.getByText('更早的回答', { exact: true })).toBeVisible();
@@ -3158,7 +3158,7 @@ test('each user message can be edited and replaced on its active branch', async 
   await expect(page.locator('.conversation-turn-status')).toHaveText('正在重新思考');
   await expect.poll(() => Boolean(releaseRewrite)).toBe(true);
   expect(rerunPayload).toMatchObject({
-    content: '修改后的问题',
+    content: '  修改后的问题  ',
     attachments: [attachedReport],
     workspace_references: [referencedFile],
   });
