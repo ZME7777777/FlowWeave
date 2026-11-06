@@ -93,6 +93,33 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 ## 6. 任务清单
 
+### OPS-TODAY-20261106 今日提交统一发布验收 — DONE
+
+2026-11-06。用户要求将今日提交统一部署并核对显示版本遗漏。发布前 api、stream-api、
+worker、web 的实际镜像 revision 均为 441fe1d4b32d425bfa54912fc60f610adeb01f9e，
+缺少后续 Case 与侧边聊天／ask_user 修复。统一发布 commit 为
+98c32172193b9d633a42c0d102db078748931548，包含北京时间当日 14 个祖先提交。
+
+platform／web 正式预检及受管最小上下文通过。平台归档 SHA-256 为
+400f09c351985116b01c0da57090446b44c65c759e6e5a354dc1484d7025e6a2，Web 归档为
+4b7648790265ad4069c41ed5720b17caf892e68be2a293070851453f6ee088d2。linux/amd64
+平台镜像为 sha256:077293c8550b230e82e6aac045eb2e400bcf71fcca91ba9bd310ac992a768e6f，
+Web 镜像为 sha256:bea5cd238409ca67335f0485aefaca4832de8880869120173f320c979f612cf9。
+迁移退出码 0，数据库 head 为 0202_add_oh_fw_v5_protocol_profile。四个服务实际 revision
+全部一致且 healthy，api／stream-api 的 health 与 readiness 通过。今天涉及的 16 个
+平台源码文件在 api／stream-api／worker 三个容器内均逐文件 SHA-256 匹配发布提交。
+
+公开 HTML／JS／CSS 共 127 个文件 SHA-256 与 Web 镜像一致。全新浏览器首页、Agent
+深层路由、定时任务页与根登录页均返回 200，JavaScript 错误和错误根 API 请求为 0。
+实际发布静态资源配合隔离 API 夹具复测提问卡片及侧边聊天 11 项通过；原报错会话的
+pending-question 只读请求成功且 pending=false。Case 协调提示与运行端口本地 5 项通过。
+
+本次相对已部署提交的 source lock 与 Provider 代码一致。实际 Agent Runtime 四包
+1.58.2、server_info／provenance commit 805bb3fe0a57cdc3e383e26019fa216a6892e608
+及归档哈希与本次 source lock 匹配。43 个非目标容器的镜像与启动时间、服务器配置
+哈希核对通过。platform／web 均完成 remote-release-finish，保留三份成功上下文、
+24 小时内受管上下文及受管回滚镜像；收尾后再次验证服务版本、源码哈希与健康通过。
+
 ### FIX-ASK-USER-EVENTS 待回答问题事件触发与长历史分页 — DONE
 
 2026-11-06。依赖 FIX-SIDEBAR-LATEST DONE。pending-question 从正式 HEAD 开始复用
