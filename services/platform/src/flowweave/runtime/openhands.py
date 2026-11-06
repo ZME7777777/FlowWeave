@@ -4514,58 +4514,86 @@ class OpenHandsRuntime:
         return RuntimePendingConfirmation(digest, actions, cursor or leaf)
 
     def get_pending_question(self, handle: RuntimeHandle) -> RuntimePendingQuestion | None:
-        """Read the formal ask_user ActionEvent the conversation is waiting on."""
+        """Read the latest unanswered ask_user on the formal active branch."""
 
-        with self._auxiliary_read_bulkhead(handle):
+        with (
+            self._auxiliary_read_bulkhead(handle),
+            formal_read_budget(_INTERACTIVE_READ_TIMEOUT_SECONDS),
+        ):
             state = self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
-            # ask_user leaves the run in waiting_for_user_input. The question stays
-            # open until a user message follows it on the active branch.
-            if str(state.get("execution_status") or "").lower() in {"deleting"}:
+            if str(state.get("execution_status") or "").lower() == "deleting":
                 return None
             leaf = str(state.get("leaf_event_id") or "") or None
-            events, cursor = self._events(
-                handle.conversation_id,
-                None,
-                base_url=self._base_url_for_handle(handle),
-                session_api_key=self._session_key_for_handle(handle),
-            )
-            for event in reversed(self._active_branch(events, leaf)):
-                kind = str(event.get("kind") or "")
-                if kind == "MessageEvent" and event.get("source") == "user":
-                    return None
-                if kind != "ActionEvent" or str(event.get("tool_name") or "") != "ask_user":
-                    continue
-                action = event.get("action")
-                if not isinstance(action, dict):
-                    continue
-                options = action.get("options")
-                recommendation = action.get("recommendation")
-                follow_ups: list[tuple[str, tuple[str, ...], str | None]] = []
-                for item in action.get("questions") or []:
-                    if not isinstance(item, dict) or not str(item.get("question") or "").strip():
-                        continue
-                    raw_options = item.get("options")
-                    follow_ups.append(
-                        (
-                            str(item["question"]),
-                            tuple(str(o) for o in raw_options)
-                            if isinstance(raw_options, list)
-                            else (),
-                            str(item["recommendation"]) if item.get("recommendation") else None,
-                        )
+            if leaf is None:
+                return None
+            history_cursor = None
+            seen_anchors: set[str] = set()
+            for _page in range(_EVENT_HISTORY_MAX_PAGES):
+                hydration_time_left()
+                anchor = history_cursor or leaf
+                if anchor in seen_anchors:
+                    raise DomainError(
+                        "RUNTIME_PROTOCOL_ERROR",
+                        "OpenHands event tree contains an invalid active branch",
+                        502,
+                        {"event_id": anchor},
                     )
-                return RuntimePendingQuestion(
-                    follow_ups=tuple(follow_ups),
-                    action_id=str(event.get("id") or ""),
-                    tool_call_id=str(event.get("tool_call_id") or ""),
-                    question=str(action.get("question") or ""),
-                    options=tuple(str(item) for item in options)
-                    if isinstance(options, list)
-                    else (),
-                    recommendation=str(recommendation) if recommendation else None,
-                    cursor=cursor or leaf,
+                seen_anchors.add(anchor)
+                events, history_cursor = self._active_event_window(
+                    handle.conversation_id,
+                    leaf,
+                    history_cursor,
+                    base_url=self._base_url_for_handle(handle),
+                    session_api_key=self._session_key_for_handle(handle),
                 )
-            return None
+                # A question remains open until a newer user message on this branch.
+                # Stop as soon as either is found, without restoring older history.
+                for event in reversed(events):
+                    kind = str(event.get("kind") or "")
+                    if kind == "MessageEvent" and event.get("source") == "user":
+                        return None
+                    if kind != "ActionEvent" or str(event.get("tool_name") or "") != "ask_user":
+                        continue
+                    action = event.get("action")
+                    if not isinstance(action, dict):
+                        continue
+                    options = action.get("options")
+                    recommendation = action.get("recommendation")
+                    follow_ups: list[tuple[str, tuple[str, ...], str | None]] = []
+                    for item in action.get("questions") or []:
+                        if not isinstance(item, dict) or not str(
+                            item.get("question") or ""
+                        ).strip():
+                            continue
+                        raw_options = item.get("options")
+                        follow_ups.append(
+                            (
+                                str(item["question"]),
+                                tuple(str(o) for o in raw_options)
+                                if isinstance(raw_options, list)
+                                else (),
+                                str(item["recommendation"]) if item.get("recommendation") else None,
+                            )
+                        )
+                    return RuntimePendingQuestion(
+                        follow_ups=tuple(follow_ups),
+                        action_id=str(event.get("id") or ""),
+                        tool_call_id=str(event.get("tool_call_id") or ""),
+                        question=str(action.get("question") or ""),
+                        options=tuple(str(item) for item in options)
+                        if isinstance(options, list)
+                        else (),
+                        recommendation=str(recommendation) if recommendation else None,
+                        cursor=leaf,
+                    )
+                if history_cursor is None:
+                    return None
+            raise DomainError(
+                "RUNTIME_EVENT_HISTORY_BUDGET_EXHAUSTED",
+                "OpenHands pending question exceeds the bounded interactive read budget",
+                503,
+                {"max_pages": _EVENT_HISTORY_MAX_PAGES, "page_size": _EVENT_HISTORY_PAGE_SIZE},
+            )
 
     def respond_to_confirmation(
         self,

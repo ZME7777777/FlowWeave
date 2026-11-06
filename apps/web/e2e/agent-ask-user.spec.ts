@@ -1,4 +1,5 @@
-import { expect, test, type Route } from '@playwright/test';
+import { expect, test, type Route, type WebSocketRoute } from '@playwright/test';
+import type { OpenHandsConversationEvent } from '../src/types';
 
 const now = '2026-11-05T00:00:00Z';
 
@@ -6,13 +7,16 @@ async function json(route: Route, body: unknown, status = 200) {
   await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 }
 
-async function openAskedConversation(page: import('@playwright/test').Page, followUps: unknown[] = [], finalReply = true, answeredEvents: Array<Record<string, unknown>> = [], extraQuestions: unknown[] = []) {
+async function openAskedConversation(page: import('@playwright/test').Page, followUps: unknown[] = [], finalReply = true, answeredEvents: Array<Record<string, unknown>> = [], extraQuestions: unknown[] = [], options: { initialQuestion?: boolean; restoreWaiting?: boolean } = {}) {
   let authenticated = false;
-  const sent: string[] & { asked?: unknown[] } = [];
+  const sent: string[] & { asked?: unknown[]; questionReads?: number; pushEvent?: (event: OpenHandsConversationEvent) => void } = [];
+  sent.questionReads = 0;
+  let stream: WebSocketRoute | undefined;
+  const executionStatus = options.initialQuestion === false ? 'running' : options.restoreWaiting ? 'waiting_for_user_input' : 'finished';
   const workspace = { id: 'ask-user-workspace', display_name: '提问工作区', desired_state: 'RUNNING', updated_at: now };
   const conversation = {
     id: 'ask-user-conversation', display_title: '等待回答的会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
-    streaming_callback_ready: true, write_available: true, execution_status: 'finished', created_at: now, updated_at: now,
+    streaming_callback_ready: true, write_available: true, execution_status: executionStatus, created_at: now, updated_at: now,
   };
   const events: Array<Record<string, unknown>> = [
     { id: 'ask-user-first', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '部署到生产吗', timestamp: now } },
@@ -21,10 +25,17 @@ async function openAskedConversation(page: import('@playwright/test').Page, foll
   ];
   events.push(...answeredEvents);
   if (finalReply) events.push({ id: 'ask-user-final', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'ask-user-result', content: '请确认是否发布。', timestamp: now } });
+  if (options.initialQuestion === false) events.splice(1);
+  if (options.restoreWaiting) events.splice(0);
   const asked: unknown[] = [];
   sent.asked = asked;
-  const batch = { events, next_cursor: events.at(-1)!.id, history_cursor: null, result: { status: 'COMPLETED' } };
-  await page.routeWebSocket('**/agent-workspaces/**/stream', () => undefined);
+  const batch = { events, next_cursor: events.at(-1)?.id ?? null, history_cursor: null, result: { status: 'COMPLETED' } };
+  sent.pushEvent = event => {
+    events.push(event as unknown as Record<string, unknown>);
+    batch.next_cursor = event.id;
+    stream!.send(JSON.stringify({ type: 'event', event }));
+  };
+  await page.routeWebSocket('**/agent-workspaces/**/stream', socket => { stream = socket; });
   await page.route('**/api/v1/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -33,12 +44,16 @@ async function openAskedConversation(page: import('@playwright/test').Page, foll
     if (path.endsWith('/agent-workspaces/default')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
     if (path.endsWith('/conversations') && request.method() === 'GET') return json(route, { items: [conversation], next_cursor: null });
-    if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: [], waiting_user_input_binding_ids: sent.length ? [] : [conversation.id], waiting_user_input_actions: sent.length ? {} : { [conversation.id]: 'ask-user-action' } });
-    if (path.endsWith('/hydration')) return json(route, { events: batch, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 100, usage_current: true }, readiness: { ready: true, execution_status: 'finished' } });
+    if (path.endsWith('/conversation-activity')) return json(route, { running_binding_ids: executionStatus === 'running' ? [conversation.id] : [], waiting_user_input_binding_ids: sent.length || options.initialQuestion === false ? [] : [conversation.id], waiting_user_input_actions: sent.length ? {} : { [conversation.id]: 'ask-user-action' } });
+    if (path.endsWith('/hydration')) return json(route, { events: batch, context: { model_name: 'test-model', window_tokens: 128_000, used_tokens: 100, usage_current: true }, readiness: { ready: true, execution_status: executionStatus } });
     if (path.endsWith('/events') && request.method() === 'GET') return json(route, batch);
-    if (path.endsWith('/input-readiness')) return json(route, { ready: true, execution_status: 'finished' });
+    if (path.endsWith('/input-readiness')) return json(route, { ready: true, execution_status: executionStatus });
     if (path.endsWith('/pending-confirmation')) return json(route, { pending: false });
-    if (path.endsWith('/pending-question')) return json(route, { pending: true, action_id: 'ask-user-action', tool_call_id: 'call-1', question: '是否把版本 2.3 发布到生产环境？', options: ['发布', '先在灰度验证'], recommendation: '建议先灰度，回滚更便宜', questions: followUps });
+    if (path.endsWith('/pending-question')) {
+      sent.questionReads! += 1;
+      const latestAsk = events.findLast(event => event.event_type === 'TOOL_CALL' && (event.payload as Record<string, unknown>).tool_name === 'ask_user');
+      return json(route, { pending: true, action_id: latestAsk?.id ?? 'ask-user-action', tool_call_id: 'call-1', question: '是否把版本 2.3 发布到生产环境？', options: ['发布', '先在灰度验证'], recommendation: '建议先灰度，回滚更便宜', questions: followUps });
+    }
     if (path.endsWith('/messages') && request.method() === 'POST') { const body = request.postDataJSON(); sent.push(body.content); asked.push(body.answered_question); return json(route, { accepted: true, cursor: 'ask-user-reply' }, 202); }
     if (path.endsWith('/context')) return json(route, { model_name: 'test-model', window_tokens: 128_000, used_tokens: 100, usage_current: true });
     if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
@@ -62,6 +77,39 @@ test('an open ask_user question shows the sidebar badge, the question card and a
   await expect(card.getByText('是否把版本 2.3 发布到生产环境？')).toBeVisible();
   await expect(page.locator('[data-conversation-binding-id="ask-user-conversation"]').getByText('需要用户输入')).toBeVisible();
   await expect(page.locator('[data-ask-user-event-id="ask-user-action"]')).toContainText('是否把版本 2.3 发布到生产环境？');
+});
+
+test('question reads follow ask_user events and stop after the formal user reply', async ({ page }) => {
+  await page.clock.install();
+  const session = await openAskedConversation(page, [], false, [], [], { initialQuestion: false });
+  await expect(page.getByPlaceholder('给 Agent 发消息…')).toBeVisible();
+  expect(session.questionReads).toBe(0);
+  session.pushEvent!({ id: 'ordinary-reply', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'ask-user-first', content: '普通事件不会查询问题', final_reply: false, timestamp: now } });
+  await expect(page.getByText('普通事件不会查询问题', { exact: true })).toBeVisible();
+  await page.clock.fastForward(35_000);
+  expect(session.questionReads).toBe(0);
+
+  const ask: OpenHandsConversationEvent = { id: 'live-question', event_type: 'TOOL_CALL', payload: { tool_name: 'ask_user', event_name: 'AskUserAction', action_id: 'live-question', tool_call_id: 'live-call', parent_id: 'ordinary-reply', timestamp: now, details: { question: '是否发布？' } } };
+  session.pushEvent!(ask);
+  await expect(page.getByTestId('agent-user-question')).toBeVisible();
+  expect(session.questionReads).toBe(1);
+  session.pushEvent!({ id: 'after-question', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: ask.id, content: '同一问题继续等待', final_reply: false, timestamp: now } });
+  await expect(page.getByText('同一问题继续等待', { exact: true })).toBeVisible();
+  expect(session.questionReads).toBe(1);
+
+  session.pushEvent!({ id: 'formal-answer', event_type: 'MESSAGE', payload: { source: 'user', parent_id: 'after-question', content: '用户正式答复', timestamp: now } });
+  await expect(page.getByText('用户正式答复', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('agent-user-question')).toHaveCount(0);
+  expect(session.questionReads).toBe(1);
+  session.pushEvent!({ ...ask, id: 'next-question', payload: { ...ask.payload, action_id: 'next-question', parent_id: 'formal-answer' } });
+  await expect(page.getByTestId('agent-user-question')).toBeVisible();
+  expect(session.questionReads).toBe(2);
+});
+
+test('restoring a waiting conversation recovers a question outside the latest event window', async ({ page }) => {
+  const session = await openAskedConversation(page, [], false, [], [], { restoreWaiting: true });
+  await expect(page.getByTestId('agent-user-question')).toBeVisible();
+  expect(session.questionReads).toBe(1);
 });
 
 test('Escape closes the card and a typed reply is sent as an ordinary user message', async ({ page }) => {

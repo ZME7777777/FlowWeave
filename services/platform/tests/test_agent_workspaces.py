@@ -3014,6 +3014,31 @@ def test_agent_workspace_bootstrap_starts_native_goal_without_plain_first_messag
         assert title_task.payload_json["first_message"] == objective
 
 
+def test_workspace_activity_reads_questions_only_for_native_waiting_status(monkeypatch):
+    statuses = ["idle", "finished", "paused", "error", "running", "waiting_for_user_input"]
+    bindings = [
+        SimpleNamespace(id=status, openhands_conversation_id=status) for status in statuses
+    ]
+    native_activity = {
+        status: RuntimeConversationActivity(status, status, datetime.now(UTC).isoformat())
+        for status in statuses
+    }
+    probes = []
+
+    def pending_question(handle):
+        probes.append(handle)
+        return SimpleNamespace(action_id="open-question")
+
+    monkeypatch.setattr(
+        conversations, "get_runtime", lambda: SimpleNamespace(get_pending_question=pending_question)
+    )
+    monkeypatch.setattr(conversations, "_handle", lambda _db, _workspace, binding: binding.id)
+    result = conversations._open_question_binding_ids(None, None, bindings, native_activity)
+
+    assert result == {"waiting_for_user_input": "open-question"}
+    assert probes == ["waiting_for_user_input"]
+
+
 @pytest.mark.parametrize("source_version_state", ["PUBLISHED", "RETIRED", "missing"])
 def test_sidebar_conversation_inherits_source_configuration_and_appends_context(
     settings, container, db_session_factory, monkeypatch, skill_capability, source_version_state

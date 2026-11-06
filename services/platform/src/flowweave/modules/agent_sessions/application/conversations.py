@@ -3731,15 +3731,14 @@ def _open_question_binding_ids(
     """Binding id -> action id of the latest ask_user with no user reply yet (bounded, best effort).
 
     ask_user parks the run in waiting_for_user_input (ready for input).
-    The fact is read from the formal events. Only recently active, non-running
-    conversations are probed to keep this poll cheap.
+    Only a formal waiting status warrants reading the question's event identity.
     """
 
     candidates = [
         item
         for item in bindings
         if (activity := native_activity.get(item.openhands_conversation_id)) is not None
-        and activity.execution_status not in _UNREADY_EXECUTION_STATUSES
+        and activity.execution_status == "waiting_for_user_input"
         and not activity_timestamp_is_stale(activity.updated_at)
     ]
     candidates.sort(

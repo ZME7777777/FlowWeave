@@ -5328,6 +5328,143 @@ def test_openhands_user_identity_read_failure_never_replays_message(
     )
 
 
+@pytest.mark.parametrize(
+    ("scenario", "expected_pages"),
+    [("latest", 1), ("older", 2), ("answered", 2), ("inactive", 3)],
+)
+def test_openhands_pending_question_reads_only_the_active_head_branch(
+    openhands_settings, monkeypatch, scenario, expected_pages
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    events = [
+        {
+            "id": f"event-{index}",
+            "parent_id": f"event-{index - 1}" if index else "__root__",
+            "kind": "ActionEvent" if index else "MessageEvent",
+            "source": "agent" if index else "user",
+            "tool_name": "terminal",
+        }
+        for index in range(241)
+    ]
+    question_index = {"latest": 240, "older": 120, "answered": 20, "inactive": 239}[scenario]
+    events[question_index].update(
+        tool_name="ask_user",
+        tool_call_id="question-call",
+        action={
+            "question": "Which environment?",
+            "options": ["Test", "Production"],
+            "recommendation": "Test",
+            "questions": [{"question": "Which branch?", "options": ["main"]}],
+        },
+    )
+    if scenario == "answered":
+        events[120].update(kind="MessageEvent", source="user")
+    if scenario == "inactive":
+        events[240]["parent_id"] = "event-238"
+        events[239]["parent_id"] = "event-0"
+    pages = []
+
+    def fake_request(method, path, **kwargs):
+        assert method == "GET"
+        if not path.endswith("/events/search"):
+            return _state(execution_status="finished", leaf_event_id="event-240")
+        params = kwargs["params"]
+        pages.append(params)
+        start = 0
+        if params.get("page_id"):
+            start = next(
+                index for index, event in enumerate(events) if event["id"] == params["page_id"]
+            )
+        if params["sort_order"] == "TIMESTAMP_DESC":
+            items = list(reversed(events[: start + 1]))[:100]
+        else:
+            items = events[start : start + 100]
+        return {"items": items}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    question = runtime.get_pending_question(_handle())
+
+    if scenario in {"answered", "inactive"}:
+        assert question is None
+    else:
+        assert question is not None
+        assert question.action_id == f"event-{question_index}"
+        assert question.tool_call_id == "question-call"
+        assert question.question == "Which environment?"
+        assert question.options == ("Test", "Production")
+        assert question.recommendation == "Test"
+        assert question.follow_ups == (("Which branch?", ("main",), None),)
+        assert question.cursor == "event-240"
+    assert len(pages) == expected_pages
+    assert all(page["sort_order"] == "TIMESTAMP_DESC" for page in pages)
+    assert pages[0]["page_id"] == "event-240"
+
+
+@pytest.mark.parametrize("status", ["finished", "deleting"])
+def test_openhands_pending_question_skips_empty_or_deleting_conversations(
+    openhands_settings, monkeypatch, status
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    calls = []
+
+    def fake_request(method, path, **kwargs):
+        calls.append(path)
+        return _state(execution_status=status, leaf_event_id=None)
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    assert runtime.get_pending_question(_handle()) is None
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("cycle", [False, True])
+def test_openhands_pending_question_bounds_history_and_rejects_cycles(
+    openhands_settings, monkeypatch, cycle
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    pages = []
+
+    def fake_request(method, path, **kwargs):
+        if not path.endswith("/events/search"):
+            return _state(execution_status="finished", leaf_event_id="event-1000")
+        anchor = kwargs["params"]["page_id"]
+        pages.append(anchor)
+        parent = "event-1000" if cycle else f"event-{1000 - len(pages)}"
+        return {"items": [{"id": anchor, "parent_id": parent, "kind": "ActionEvent"}]}
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    with pytest.raises(DomainError) as caught:
+        runtime.get_pending_question(_handle())
+    if cycle:
+        assert caught.value.code == "RUNTIME_EVENT_IDENTITY_INVALID"
+        assert len(pages) == 1
+    else:
+        assert caught.value.code == "RUNTIME_EVENT_HISTORY_BUDGET_EXHAUSTED"
+        assert caught.value.status == 503
+        assert len(pages) == 8
+
+
+def test_openhands_pending_question_shares_one_deadline_across_reads(
+    openhands_settings, monkeypatch
+):
+    from flowweave.runtime import read_budget
+
+    runtime = OpenHandsRuntime(openhands_settings)
+    clock = [0.0]
+    monkeypatch.setattr(read_budget, "monotonic", lambda: clock[0])
+    calls = []
+
+    def fake_request(method, path, **kwargs):
+        calls.append(path)
+        clock[0] = 9.0
+        return _state(execution_status="finished", leaf_event_id="event-1")
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    with pytest.raises(DomainError) as caught:
+        runtime.get_pending_question(_handle())
+    assert caught.value.code == "RUNTIME_BUSINESS_READ_TIMEOUT"
+    assert len(calls) == 1
+
+
 def test_openhands_projects_and_decides_native_confirmation_batch(openhands_settings, monkeypatch):
     runtime = OpenHandsRuntime(openhands_settings)
     action = {

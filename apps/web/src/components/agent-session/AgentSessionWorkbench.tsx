@@ -8195,8 +8195,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     retry: false,
   });
   const pendingConfirmation = confirmationQuery.data?.pending ? confirmationQuery.data : undefined;
+  const questionTrigger = useMemo(() => {
+    for (let index = currentFormalEvents.length - 1; index >= 0; index -= 1) {
+      const event = currentFormalEvents[index];
+      if (event.event_type === 'MESSAGE' && event.payload.source === 'user') return undefined;
+      if (event.event_type === 'TOOL_CALL' && event.payload.tool_name === 'ask_user') return event.id;
+    }
+    return nativeExecutionStatus?.toLowerCase() === 'waiting_for_user_input' ? 'waiting-for-user-input' : undefined;
+  }, [currentFormalEvents, nativeExecutionStatus]);
   const questionQuery = useQuery({
-    queryKey: [...sessionQueryKey(host, 'conversation-question', workspace?.id, selected?.id), eventsQuery.data?.events.at(-1)?.id ?? null],
+    queryKey: [...sessionQueryKey(host, 'conversation-question', workspace?.id, selected?.id), questionTrigger],
     queryFn: () => api.pendingQuestion!(workspace!.id, selected!.id),
     enabled: Boolean(
       workspace
@@ -8205,26 +8213,25 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       && hydrationFallbackAllowed
       && canWrite
       && api.pendingQuestion
-      && Boolean(eventsQuery.data),
+      && questionTrigger,
     ),
-    // ask_user does not pause the run: the question is open until a user message follows it,
-    // so re-read it whenever the formal event window advances.
-    staleTime: 0,
-    // The key advances with every event; keep showing the previous read for the same conversation
-    // until the new one lands so the card never unmounts/flashes (which lost the user's choices).
-    placeholderData: (previous, previousQuery) => (previousQuery?.queryKey[previousQuery.queryKey.length - 2] === selected?.id ? previous : undefined),
+    // Ordinary event updates keep the same immutable question identity. A restored
+    // waiting state can recover a question outside the browser's latest window.
+    staleTime: Infinity,
     refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     retry: false,
   });
+  const openQuestion = questionTrigger && questionQuery.data?.pending ? questionQuery.data : undefined;
   // Closing the card is remembered per ask_user action (device-local), so a refresh does not bring it back.
   const dismissedQuestionIds = useDismissedQuestionIds();
   const dismissQuestionAction = dismissQuestionActionId;
-  const pendingQuestion = questionQuery.data?.pending && !dismissedQuestionIds.includes(questionQuery.data.action_id ?? '')
-    ? questionQuery.data
+  const pendingQuestion = openQuestion && !dismissedQuestionIds.includes(openQuestion.action_id ?? '')
+    ? openQuestion
     : undefined;
   const openQuestionValue = useMemo(
-    () => ({ actionId: questionQuery.data?.pending ? questionQuery.data.action_id : undefined, reopen: reopenQuestionActionId }),
-    [questionQuery.data],
+    () => ({ actionId: openQuestion?.action_id, reopen: reopenQuestionActionId }),
+    [openQuestion],
   );
   const dismissPendingQuestion = useCallback(() => {
     if (pendingQuestion?.action_id) dismissQuestionAction(pendingQuestion.action_id);
