@@ -157,6 +157,196 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
   return writes;
 }
 
+for (const running of [false, true]) {
+  test(`unconfirmed ${running ? 'running guidance' : 'idle message'} restores after refresh and reuses its submission identity`, async ({ page }) => {
+    await openWorkspace(page);
+    if (running) {
+      const events = [{ id: 'active-user', event_type: 'MESSAGE', payload: { source: 'user', content: '正在处理的任务', timestamp: now } }];
+      await page.route('**/hydration', route => json(route, { events: { events, next_cursor: null, history_cursor: null }, context: {}, readiness: { ready: false, execution_status: 'running' } }));
+      await page.route('**/input-readiness', route => json(route, { ready: false, execution_status: 'running' }));
+      await page.route('**/events*', route => json(route, { events, next_cursor: null, history_cursor: null }));
+    }
+    await page.goto('/agent/conversations/scheduled-conversation');
+    const input = page.getByRole('textbox', { name: '发送 Agent 消息', exact: true });
+    await expect(input).toBeEnabled();
+    const identities: string[] = [];
+    let release: (() => void) | undefined;
+    await page.route('**/conversations/scheduled-conversation/messages', async route => {
+      identities.push(route.request().headers()['idempotency-key']);
+      if (identities.length === 1) {
+        await new Promise<void>(resolve => { release = resolve; });
+        return route.abort().catch(() => undefined);
+      }
+      return json(route, { error: { code: 'AGENT_MESSAGE_SUBMISSION_EXISTS', message: '此消息已提交，请勿重复发送' } }, 409);
+    });
+    await input.fill('网络波动时保留这条消息');
+    await input.press(running ? 'Alt+Enter' : 'Enter');
+    await expect.poll(() => identities.length).toBe(1);
+    await expect(input).toHaveValue('');
+    // New editing belongs to the next draft and must survive the recovery.
+    await input.fill('后续草稿');
+    await input.blur();
+    await page.reload();
+    release?.();
+    await expect(input).toHaveValue('网络波动时保留这条消息\n\n后续草稿');
+    await expect(page.getByRole('alert')).toContainText('已恢复上次未确认发送的消息');
+    await page.reload();
+    await expect(input).toHaveValue('网络波动时保留这条消息\n\n后续草稿');
+    await input.fill('网络波动时保留这条消息');
+    await input.press(running ? 'Alt+Enter' : 'Enter');
+    await expect.poll(() => identities.length).toBe(2);
+    expect(identities[1]).toBeTruthy();
+    expect(identities[1]).toBe(identities[0]);
+    await expect(input).toHaveValue('网络波动时保留这条消息');
+    await expect(page.getByRole('alert')).toContainText('此消息已提交');
+  });
+}
+
+test('submission recovery restores complete context and isolates another conversation', async ({ page }) => {
+  await openWorkspace(page, [], true);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const key = 'flowweave:agent-conversation-composer-draft:v2:agent-workspace:schedule-workspace:scheduled-conversation';
+  // Seed the same durable snapshot written synchronously before a POST, with
+  // server-authorized file metadata instead of a browser File object.
+  await page.evaluate(({ key }) => localStorage.setItem(key, JSON.stringify({
+    content: '', attachments: [], references: [], workspaceReferences: [], annotations: [],
+    submissions: [{ restored: false, message: {
+      id: 'lost-response', scope: 'scheduled-conversation', content: '带附件和引用的消息', answeredQuestion: '此前的问题',
+      items: [{ filename: 'note.txt', mime_type: 'text/plain', byte_size: 4, path: 'uploads/scheduled-conversation/note.txt' }],
+      references: [{ eventId: 'source-event', sourceBindingId: 'source-binding', content: '引用内容', title: '来源会话' }],
+      workspaceReferences: [{ kind: 'file', path: 'src/main.ts', display_name: 'main.ts' }],
+      annotations: [{ id: 'comment-1', anchor_kind: 'WORKSPACE_FILE_RANGE', anchor: { path: 'src/main.ts' }, comment: '保留评论' }],
+    } }],
+  })), { key });
+  await page.goto('/agent/conversations/scheduled-conversation-2');
+  const input = page.getByRole('textbox', { name: '发送 Agent 消息', exact: true });
+  await expect(input).toHaveValue('');
+  await page.reload();
+  await expect(input).toHaveValue('');
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await expect(input).toHaveValue('带附件和引用的消息');
+  const snapshot = await page.evaluate(key => JSON.parse(localStorage.getItem(key)!), key);
+  expect(snapshot.attachments[0].filename).toBe('note.txt');
+  expect(snapshot.references[0].eventId).toBe('source-event');
+  expect(snapshot.workspaceReferences[0].path).toBe('src/main.ts');
+  expect(snapshot.annotations[0].comment).toBe('保留评论');
+  await page.reload();
+  await expect(input).toHaveValue('带附件和引用的消息');
+  const retried: { id: string; body: Record<string, unknown> }[] = [];
+  await page.route('**/conversations/scheduled-conversation/messages', route => {
+    retried.push({ id: route.request().headers()['idempotency-key'], body: route.request().postDataJSON() });
+    return json(route, { accepted: true, event_id: 'recovered-context-user' }, 202);
+  });
+  await input.press('Enter');
+  await expect.poll(() => retried.length).toBe(1);
+  expect(retried[0].id).toBe('lost-response');
+  expect(retried[0].body.answered_question).toBe('此前的问题');
+  expect(retried[0].body.attachments).toHaveLength(1);
+  expect(retried[0].body.references).toHaveLength(1);
+  expect(retried[0].body.workspace_references).toHaveLength(1);
+  expect(retried[0].body.annotations).toHaveLength(1);
+});
+
+for (const running of [false, true]) {
+  test(`confirmed ${running ? 'running guidance' : 'idle'} submissions clear only their recovery and preserve the next draft`, async ({ page }) => {
+    await openWorkspace(page);
+    if (running) {
+      await page.route('**/hydration', route => json(route, { events: { events: [], next_cursor: null, history_cursor: null }, context: {}, readiness: { ready: false, execution_status: 'running' } }));
+      await page.route('**/input-readiness', route => json(route, { ready: false, execution_status: 'running' }));
+    }
+    await page.goto('/agent/conversations/scheduled-conversation');
+    const input = page.getByRole('textbox', { name: '发送 Agent 消息', exact: true });
+    await expect(input).toBeEnabled();
+    let confirm: (() => void) | undefined;
+    await page.route('**/conversations/scheduled-conversation/messages', async route => {
+      await new Promise<void>(resolve => { confirm = resolve; });
+      return json(route, { accepted: true, cursor: 'confirmed-user', event_id: 'confirmed-user' }, 202);
+    });
+    await input.fill('已正式提交的消息');
+    await input.press(running ? 'Alt+Enter' : 'Enter');
+    await expect.poll(() => Boolean(confirm)).toBe(true);
+    await expect(input).toHaveValue('');
+    await input.fill('下一条消息的草稿');
+    await input.blur();
+    confirm?.();
+    await expect.poll(() => page.evaluate(() => Object.entries(localStorage)
+      .filter(([key]) => key.startsWith('flowweave:agent-conversation-composer-draft:'))
+      .flatMap(([, value]) => JSON.parse(value).submissions ?? []).length)).toBe(0);
+    await page.reload();
+    await expect(input).toHaveValue('下一条消息的草稿');
+  });
+}
+
+test('failed submissions return to the composer immediately and survive refresh', async ({ page }) => {
+  await openWorkspace(page);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const input = page.getByRole('textbox', { name: '发送 Agent 消息', exact: true });
+  await expect(input).toBeEnabled();
+  await page.route('**/conversations/scheduled-conversation/messages', route => route.abort('internetdisconnected'));
+  await input.fill('发送失败也可以恢复');
+  await input.press('Enter');
+  await expect(input).toHaveValue('发送失败也可以恢复');
+  await page.reload();
+  await expect(input).toHaveValue('发送失败也可以恢复');
+});
+
+test('submission recovery storage failure leaves the input intact and prevents dispatch', async ({ page }) => {
+  await openWorkspace(page);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const input = page.getByRole('textbox', { name: '发送 Agent 消息', exact: true });
+  await expect(input).toBeEnabled();
+  let posts = 0;
+  await page.route('**/conversations/scheduled-conversation/messages', route => { posts += 1; return json(route, { accepted: true, event_id: 'unexpected' }); });
+  await page.evaluate(() => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function(key, value) {
+      if (key.startsWith('flowweave:agent-conversation-composer-draft:') && JSON.parse(value).submissions?.length) {
+        throw new DOMException('Quota exceeded', 'QuotaExceededError');
+      }
+      return original.call(this, key, value);
+    };
+  });
+  await input.fill('本地保存失败时保留输入');
+  await input.press('Enter');
+  await expect(page.getByRole('alert')).toContainText('浏览器暂时无法保存消息');
+  await expect(input).toHaveValue('本地保存失败时保留输入');
+  expect(posts).toBe(0);
+});
+
+test('first submission persists its bootstrap identity before a refresh interrupts the request', async ({ page }) => {
+  await openWorkspace(page);
+  const input = page.getByRole('textbox', { name: '发送 Agent 消息', exact: true });
+  await expect(input).toBeEnabled();
+  const identities: string[] = [];
+  let release: (() => void) | undefined;
+  await page.route('**/agent-workspaces/schedule-workspace/conversations', async route => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    const body = route.request().postDataJSON();
+    identities.push(body.conversation_id);
+    if (identities.length === 1) {
+      await new Promise<void>(resolve => { release = resolve; });
+      return route.abort().catch(() => undefined);
+    }
+    return json(route, { conversation: {
+      id: body.conversation_id, display_title: '恢复的首条消息', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+      streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
+    }, accepted: true, event_id: 'bootstrap-recovered-user', cursor: 'bootstrap-recovered-user' }, 201);
+  });
+  await input.fill('首条消息提交中刷新');
+  await input.press('Enter');
+  await expect.poll(() => identities.length).toBe(1);
+  await expect(input).toHaveValue('');
+  expect(await page.evaluate(() => sessionStorage.getItem('flowweave.agent.bootstrap-recovery.v1'))).not.toBeNull();
+  await page.reload();
+  release?.();
+  await expect.poll(() => identities.length).toBe(2);
+  expect(identities[1]).toBeTruthy();
+  expect(identities[1]).toBe(identities[0]);
+  await expect(page).toHaveURL(new RegExp(`/agent/conversations/${identities[0]}$`));
+  await expect(input).toHaveValue('');
+  expect(await page.evaluate(() => sessionStorage.getItem('flowweave.agent.bootstrap-recovery.v1'))).toBeNull();
+});
+
 
 test('a reconnecting conversation can be paused manually', async ({ page }) => {
   const transientFailure = {

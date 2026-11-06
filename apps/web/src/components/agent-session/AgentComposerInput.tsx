@@ -102,6 +102,15 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
     const timer = window.setTimeout(() => persistDraftRef.current(scopeForPersist), COMPOSER_DRAFT_PERSIST_DELAY_MS);
     return () => window.clearTimeout(timer);
   }, [draft, scope]);
+  useEffect(() => {
+    const persist = () => persistDraftRef.current(scope);
+    window.addEventListener('pagehide', persist);
+    window.addEventListener('beforeunload', persist);
+    return () => {
+      window.removeEventListener('pagehide', persist);
+      window.removeEventListener('beforeunload', persist);
+    };
+  }, [scope]);
   const resizeInput = useCallback(() => {
     const textarea = input.current;
     if (!textarea || textarea.getBoundingClientRect().width <= 0) return;

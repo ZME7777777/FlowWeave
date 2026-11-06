@@ -332,6 +332,10 @@ interface ComposerDraftRecovery {
   workspaceReferences: AgentWorkspaceReference[];
   annotations: AgentConversationAnnotation[];
 }
+interface ComposerSubmissionRecovery {
+  message: QueuedMessage;
+  restored: boolean;
+}
 interface ConversationDraftPersistence {
   draft: ConversationDraft;
   storageKey: string;
@@ -1070,9 +1074,11 @@ function writeBootstrapRecovery(storageKey: string, recovery: BootstrapRecovery 
   try {
     if (recovery) window.sessionStorage.setItem(storageKey, JSON.stringify(recovery));
     else window.sessionStorage.removeItem(storageKey);
+    return true;
   } catch {
     // Browser storage is only a recovery aid. The server-side command remains
     // the source of truth and retries still use the stable draft UUID.
+    return false;
   }
 }
 
@@ -1094,12 +1100,12 @@ function workspaceReferencesFromStorage(value: unknown): AgentWorkspaceReference
 const MAX_BROWSER_QUEUED_MESSAGES = 20;
 const MAX_BROWSER_QUEUED_MESSAGE_CHARS = 100_000;
 
-function queuedMessageFromStorage(value: unknown): QueuedMessage | undefined {
+function queuedMessageFromStorage(value: unknown, maxChars = MAX_BROWSER_QUEUED_MESSAGE_CHARS): QueuedMessage | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const candidate = value as Partial<QueuedMessage>;
   if (typeof candidate.id !== 'string' || !candidate.id
     || typeof candidate.scope !== 'string' || !candidate.scope
-    || typeof candidate.content !== 'string' || candidate.content.length > MAX_BROWSER_QUEUED_MESSAGE_CHARS
+    || typeof candidate.content !== 'string' || candidate.content.length > maxChars
     || !Array.isArray(candidate.items) || !Array.isArray(candidate.references)) return undefined;
   if (candidate.items.some(item => !item || typeof item.filename !== 'string'
     || typeof item.mime_type !== 'string' || typeof item.byte_size !== 'number'
@@ -1122,6 +1128,7 @@ function queuedMessageFromStorage(value: unknown): QueuedMessage | undefined {
     annotations: annotationsFromStorage(candidate.annotations),
     deliveryState,
     nativeGuidance: candidate.nativeGuidance === true,
+    answeredQuestion: typeof candidate.answeredQuestion === 'string' ? candidate.answeredQuestion : undefined,
     requiresRetry: candidate.requiresRetry === true,
     createdAt: typeof candidate.createdAt === 'number' ? candidate.createdAt : Date.now(),
   };
@@ -1277,11 +1284,7 @@ function conversationComposerDraftStorageKey(hostId: string, workspaceId: string
 }
 
 function clearConversationComposerDraft(hostId: string, workspaceId: string, bindingId: string): void {
-  try {
-    window.localStorage.removeItem(conversationComposerDraftStorageKey(hostId, workspaceId, bindingId));
-  } catch {
-    // Browser storage is only a recovery aid; cleanup must not block sending.
-  }
+  writeConversationComposerDraft(conversationComposerDraftStorageKey(hostId, workspaceId, bindingId), undefined);
 }
 
 function conversationDraftStorageKey(hostId: string, workspaceId: string, workDirectoryId?: string): string {
@@ -1321,10 +1324,12 @@ function readConversationComposerDraft(storageKey: string): ComposerDraftRecover
 function writeConversationComposerDraft(storageKey: string | undefined, value: ComposerDraftRecovery | undefined) {
   if (!storageKey) return;
   try {
-    if (value && (value.content || value.attachments.length || value.references.length || value.workspaceReferences.length || value.annotations.length)) {
+    const submissions = readComposerSubmissions(storageKey);
+    if (submissions.length || value && (value.content || value.attachments.length || value.references.length || value.workspaceReferences.length || value.annotations.length)) {
       window.localStorage.setItem(storageKey, JSON.stringify({
-        ...value,
-        attachments: value.attachments.slice(0, 20).map(item => ({ filename: item.filename, mime_type: item.mime_type, byte_size: item.byte_size, path: item.path })),
+        content: '', references: [], workspaceReferences: [], annotations: [], ...value,
+        attachments: (value?.attachments ?? []).slice(0, 20).map(item => ({ filename: item.filename, mime_type: item.mime_type, byte_size: item.byte_size, path: item.path })),
+        submissions,
       }));
     } else window.localStorage.removeItem(storageKey);
   } catch {
@@ -1332,7 +1337,82 @@ function writeConversationComposerDraft(storageKey: string | undefined, value: C
   }
 }
 
+function readComposerSubmissions(storageKey: string): ComposerSubmissionRecovery[] {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(storageKey) ?? '{}');
+    if (!Array.isArray(value.submissions)) return [];
+    return value.submissions.flatMap((item: Partial<ComposerSubmissionRecovery>) => {
+      const message = queuedMessageFromStorage(item?.message, 200_000);
+      return message ? [{ message, restored: item.restored === true }] : [];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function submissionContent(message: QueuedMessage): string {
+  return JSON.stringify([
+    message.content.trim(),
+    message.items.map(({ filename, mime_type, byte_size, path }) => ({ filename, mime_type, byte_size, path })),
+    message.references, message.workspaceReferences ?? [], message.annotations,
+  ]);
+}
+
+function retainComposerSubmission(storageKey: string, message: QueuedMessage): QueuedMessage {
+  const submissions = readComposerSubmissions(storageKey);
+  const previous = submissions.find(item => item.restored
+    && (!message.answeredQuestion || item.message.answeredQuestion === message.answeredQuestion)
+    && submissionContent(item.message) === submissionContent(message));
+  const retained = {
+    ...message, id: previous?.message.id ?? message.id,
+    answeredQuestion: message.answeredQuestion ?? previous?.message.answeredQuestion,
+  };
+  const snapshot = readConversationComposerDraft(storageKey);
+  // Write before clearing the editor or starting HTTP. A failed durable write
+  // must leave the user's input intact instead of opening another loss window.
+  window.localStorage.setItem(storageKey, JSON.stringify({
+    ...snapshot,
+    submissions: [...submissions.filter(item => item.message.id !== retained.id), {
+      message: { ...retained, items: retained.items.map(({ filename, mime_type, byte_size, path }) => ({ filename, mime_type, byte_size, path })) },
+      restored: false,
+    }],
+  }));
+  return retained;
+}
+
+function acknowledgeComposerSubmission(storageKey: string, submissionId: string) {
+  try {
+    const snapshot = readConversationComposerDraft(storageKey);
+    const submissions = readComposerSubmissions(storageKey).filter(item => item.message.id !== submissionId);
+    window.localStorage.setItem(storageKey, JSON.stringify({ ...snapshot, submissions }));
+    writeConversationComposerDraft(storageKey, snapshot);
+  } catch { /* Keep the recovery copy if browser storage is temporarily unavailable. */ }
+}
+
+function recoverComposerSubmissions(storageKey: string, submissionId?: string): { snapshot: ComposerDraftRecovery; recovered: boolean } {
+  const snapshot = readConversationComposerDraft(storageKey);
+  const submissions = readComposerSubmissions(storageKey);
+  const pending = submissions.filter(item => !item.restored && (!submissionId || item.message.id === submissionId));
+  if (!pending.length) return { snapshot, recovered: false };
+  const recovered: ComposerDraftRecovery = {
+    content: [...pending.map(item => item.message.content), snapshot.content].filter(Boolean).join('\n\n'),
+    attachments: [...pending.flatMap(item => item.message.items), ...snapshot.attachments].filter((item, index, all) => all.findIndex(other => other.path === item.path) === index),
+    references: [...pending.flatMap(item => item.message.references), ...snapshot.references],
+    workspaceReferences: [...pending.flatMap(item => item.message.workspaceReferences ?? []), ...snapshot.workspaceReferences],
+    annotations: [...pending.flatMap(item => item.message.annotations), ...snapshot.annotations],
+  };
+  // Content and restoration markers share one atomic storage write, so another
+  // refresh cannot append the same recovery a second time.
+  try {
+    window.localStorage.setItem(storageKey, JSON.stringify({
+      ...recovered, submissions: submissions.map(item => pending.includes(item) ? { ...item, restored: true } : item),
+    }));
+  } catch { /* The recovered input remains usable even when durable storage is full. */ }
+  return { snapshot: recovered, recovered: true };
+}
+
 function isBootstrapAmbiguous(error: Error): boolean {
+  if (error instanceof ApiError && (error.status === 0 || error.status >= 500 || error.code === 'REQUEST_TIMEOUT')) return true;
   return [
     'AGENT_BOOTSTRAP_CREATION_AMBIGUOUS',
     'AGENT_BOOTSTRAP_DELIVERY_AMBIGUOUS',
@@ -4905,7 +4985,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   // New-conversation recovery is loaded only after the authorized workspace
   // identity is known. The former host-wide key had no workspace boundary.
   const initialConversationDraft = useRef<ConversationDraftRecovery | undefined>(undefined);
-  const initialComposerDraft = initialBootstrapRecovery.current?.message.content ?? initialConversationDraft.current?.content ?? '';
+  const initialComposerDraft = initialConversationDraft.current?.content ?? '';
   const composerDraftRef = useRef(initialComposerDraft);
   const composerDraftsByScope = useRef(new Map<string, ComposerDraftRecovery>());
   const conversationDraftsByScope = useRef(new Map<string, ConversationDraftPersistence>());
@@ -5014,6 +5094,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     return clampConversationRailWidth(Number.isFinite(stored) ? stored : 240);
   });
   const [operationError, setOperationError] = useState<Error>();
+  const [submissionRecoveryNotice, setSubmissionRecoveryNotice] = useState<{ scope: string; error: Error }>();
   const [historyLoadingBindingId, setHistoryLoadingBindingId] = useState<string>();
   const [historyPrepend, setHistoryPrepend] = useState<ConversationHistoryPrepend>();
   const [condensationStatus, setCondensationStatus] = useState<{
@@ -6376,6 +6457,20 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     writeConversationDraft(draftPersistence.storageKey, recovery);
     setRecoverableConversationDrafts(current => ({ ...current, [draftKey]: recovery }));
   }, [bootstrapRecovery, clearConversationDraft, host.id, pendingBootstrap, workspace]);
+  const retainSubmission = useCallback((message: QueuedMessage): QueuedMessage | undefined => {
+    if (!workspace) return undefined;
+    try {
+      return retainComposerSubmission(conversationComposerDraftStorageKey(host.id, workspace.id, message.scope), message);
+    } catch {
+      reportOperationError(message.scope, new Error('浏览器暂时无法保存消息，请释放本地存储空间后重试。'));
+      return undefined;
+    }
+  }, [host.id, reportOperationError, workspace]);
+  const acknowledgeSubmission = useCallback((message: QueuedMessage) => {
+    persistComposerDraft(message.scope);
+    if (workspace) acknowledgeComposerSubmission(conversationComposerDraftStorageKey(host.id, workspace.id, message.scope), message.id);
+    setSubmissionRecoveryNotice(current => current?.scope === message.scope ? undefined : current);
+  }, [host.id, persistComposerDraft, workspace]);
   const connectedProviders = (providersQuery.data ?? []).filter(item => item.connection_state === 'CONNECTED' && item.models.some(model => model.enabled && model.is_default)).sort((left, right) => Number(right.is_primary) - Number(left.is_primary));
   useLayoutEffect(() => {
     // During a scope change, activeComposerScope already points at the incoming
@@ -7933,7 +8028,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     trustedHydrations.current.delete(bindingId);
     composerDraftsByScope.current.delete(bindingId);
     conversationDraftsByScope.current.delete(bindingId);
-    clearConversationComposerDraft(host.id, workspace.id, bindingId);
+    try {
+      window.localStorage.removeItem(conversationComposerDraftStorageKey(host.id, workspace.id, bindingId));
+    } catch { /* Explicit conversation deletion also discards its browser recovery. */ }
     clearConversationSnapshots(host.id, workspace.id, bindingId);
     deferredFormalUserEvents.current.forEach((event, eventId) => {
       if (event.scope === bindingId) deferredFormalUserEvents.current.delete(eventId);
@@ -8393,9 +8490,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const previousScope = previousComposerScope.current;
     if (previousScope) persistComposerDraft(previousScope);
     previousComposerScope.current = composerScope;
+    const recovery = workspace && selected && !composerDraftsByScope.current.has(composerScope)
+      ? recoverComposerSubmissions(conversationComposerDraftStorageKey(host.id, workspace.id, composerScope))
+      : undefined;
     const recoveredComposer = workspace && composerScope
       ? composerDraftsByScope.current.get(composerScope)
-        ?? (selected ? readConversationComposerDraft(conversationComposerDraftStorageKey(host.id, workspace.id, composerScope)) : undefined)
+        ?? recovery?.snapshot
       : undefined;
     if (bootstrapTransitionScope.current === composerScope) {
       bootstrapTransitionScope.current = undefined;
@@ -8412,6 +8512,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     } else if (!conversationDraft) {
       if (composerScope) composerDraftsByScope.current.set(composerScope, { content: '', attachments: [], references: [], workspaceReferences: [], annotations: [] });
       replaceComposerDraft('', composerScope); setAttachments([]); setReferences([]); setWorkspaceReferences([]); setComposerAnnotations([]);
+    }
+    if (recovery && workspace && readComposerSubmissions(conversationComposerDraftStorageKey(host.id, workspace.id, composerScope)).some(item => item.restored)) {
+      setSubmissionRecoveryNotice({ scope: composerScope, error: new Error('已恢复上次未确认发送的消息，请核对会话记录后再发送。') });
     }
     setOperationError(undefined);
   }, [composerScope, conversationDraft, host.id, persistComposerDraft, replaceComposerDraft, selected, workspace]);
@@ -8704,6 +8807,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         replaceComposerDraft(message.content);
         setAttachments(message.items);
         setReferences(message.references);
+        setWorkspaceReferences(message.workspaceReferences ?? []);
+        setComposerAnnotations(message.annotations);
       }
       clearBootstrapRecovery();
       reportOperationError(message.scope, new ApiError(
@@ -8723,6 +8828,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       replaceComposerDraft(message.content);
       setAttachments(message.items);
       setReferences(message.references);
+      setWorkspaceReferences(message.workspaceReferences ?? []);
+      setComposerAnnotations(message.annotations);
     }
     clearBootstrapRecovery();
     if (error instanceof ApiError && error.code === 'AGENT_MESSAGE_CANCELLED') {
@@ -8986,7 +9093,19 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       });
     }
     persistComposerDraft(message.bindingId);
-  }, [persistComposerDraft, removeLocalMessageProjection, replaceComposerDraft]);
+    acknowledgeSubmission(message);
+  }, [acknowledgeSubmission, persistComposerDraft, removeLocalMessageProjection, replaceComposerDraft]);
+  const restoreUnconfirmedSubmission = useCallback((message: BoundQueuedMessage) => {
+    if (!workspace) return;
+    const key = conversationComposerDraftStorageKey(host.id, workspace.id, message.bindingId);
+    persistComposerDraft(message.bindingId);
+    const { snapshot } = recoverComposerSubmissions(key, message.id);
+    composerDraftsByScope.current.set(message.bindingId, snapshot);
+    if (activeComposerScope.current !== message.bindingId) return;
+    replaceComposerDraft(snapshot.content, message.bindingId);
+    setAttachments(snapshot.attachments); setReferences(snapshot.references);
+    setWorkspaceReferences(snapshot.workspaceReferences); setComposerAnnotations(snapshot.annotations);
+  }, [host.id, persistComposerDraft, replaceComposerDraft, workspace]);
   const send = useMutation({
     mutationFn: (message: BoundQueuedMessage) => {
       if (restoredSubmissionIds.current.has(message.id)) throw new ApiError('消息已取消', 'AGENT_MESSAGE_CANCELLED', {}, 409);
@@ -9014,6 +9133,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       sendingMessageIds.current.delete(message.id);
       if (restoredSubmissionIds.current.has(message.id)) return;
       const eventId = value.event_id ?? undefined;
+      if (eventId) acknowledgeSubmission(message);
       if (!context?.nativeGuidance && activeComposerScope.current === message.bindingId) {
         setForegroundTurn(current => current?.submissionId === message.id
           ? { ...current, cursor: eventId }
@@ -9047,10 +9167,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
           exact: true,
         });
       }
-      if (!context?.nativeGuidance && activeComposerScope.current === message.bindingId) {
-        setAttachments([]);
-        setComposerAnnotations([]);
-      }
       refresh(message.bindingId);
     },
     onError: (error, message, context) => {
@@ -9067,6 +9183,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         // which formal event it created. Never render that uncertain local
         // projection beside the authoritative event branch.
         removeLocalMessageProjection(message.id, message.bindingId);
+        restoreUnconfirmedSubmission(message);
         reportOperationError(message.bindingId, error);
         return;
       }
@@ -9077,6 +9194,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         ? error.details.cursor
         : undefined;
       if (persistedCursor) {
+        acknowledgeSubmission(message);
         updateLocalMessageProjections(current => {
           const projection = current.get(message.id);
           if (!projection || projection.scope !== message.bindingId) return;
@@ -9105,6 +9223,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         return;
       }
       if (error instanceof ApiError && error.code.startsWith('AGENT_HISTORY_')) {
+        acknowledgeSubmission(message);
         removeLocalMessageProjection(message.id, message.bindingId);
         const snapshot = composerDraftsByScope.current.get(message.bindingId);
         if (!snapshot?.content.trim() && !snapshot?.attachments.length && !snapshot?.references.length && !snapshot?.workspaceReferences.length && !snapshot?.annotations.length) {
@@ -9137,6 +9256,9 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         reportOperationError(message.bindingId, error);
         return;
       }
+      restoreUnconfirmedSubmission(message);
+      if (error instanceof ApiError && error.status >= 400 && error.status < 500
+        && !['REQUEST_TIMEOUT', 'AGENT_MESSAGE_SUBMISSION_EXISTS'].includes(error.code)) acknowledgeSubmission(message);
       if (context?.nativeGuidance) {
         removeLocalMessageProjection(message.id, message.bindingId);
         reportOperationError(message.bindingId, error);
@@ -9162,6 +9284,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   });
   const dispatchMessage = useCallback((message: BoundQueuedMessage, immediate = false) => {
     if (sendingMessageIds.current.has(message.id)) return;
+    const retained = retainSubmission(message);
+    if (!retained) return;
+    message = { ...retained, bindingId: message.bindingId };
+    if (sendingMessageIds.current.has(message.id)) return;
     sendingMessageIds.current.add(message.id);
     outgoingSubmissions.current.set(message.id, message);
     const showLocalMessage = () => {
@@ -9186,7 +9312,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     }
     if (immediate) window.setTimeout(() => send.mutate(message), 0);
     else send.mutate(message);
-  }, [commitQueuedMessages, send, showOptimisticUserBubble]);
+  }, [commitQueuedMessages, retainSubmission, send, showOptimisticUserBubble]);
   const dispatchBackgroundQueuedMessage = useCallback(async (bindingId: string) => {
     if (!workspace || bindingId === activeComposerScope.current) return;
     const storageKey = host.queuedMessagesStorageKey(workspace.id, bindingId);
@@ -9200,9 +9326,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       if (!readiness.ready || !conversationHasReachedTerminalState(readiness.execution_status)) return;
       const currentQueue = readQueuedMessages(storageKey);
       if (currentQueue[0]?.id !== queueHead.id) return;
+      if (!retainSubmission(queueHead)) return;
       writeQueuedMessages(storageKey, currentQueue.filter(message => message.id !== queueHead.id));
       sendingMessageIds.current.add(queueHead.id);
-      await api.sendMessage(
+      const receipt = await api.sendMessage(
         workspace.id, bindingId, queueHead.content, queueHead.items,
         queueHead.references.map(item => ({
           event_id: item.eventId, content: item.content, source_binding_id: item.sourceBindingId,
@@ -9212,11 +9339,14 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         })),
         queueHead.workspaceReferences ?? [], messageAnnotations(queueHead.annotations, queueHead.references), queueHead.id, queueHead.answeredQuestion,
       );
+      if (receipt.event_id) acknowledgeSubmission(queueHead);
       accepted = true;
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversation-activity', workspace.id) });
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
     } catch (error) {
-      accepted = error instanceof ApiError && error.code === 'AGENT_MESSAGE_DELIVERY_AMBIGUOUS';
+      // The durable recovery copy owns failures after dispatch. Never silently
+      // auto-retry a POST whose acknowledgement may have been lost.
+      accepted = true;
       reportOperationError(bindingId, error instanceof Error ? error : new Error('后台队列消息发送失败'));
     } finally {
       if (!accepted) {
@@ -9226,7 +9356,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       sendingMessageIds.current.delete(queueHead.id);
       backgroundQueueDispatches.current.delete(queueHead.id);
     }
-  }, [api, host, queryClient, reportOperationError, workspace]);
+  }, [acknowledgeSubmission, api, host, queryClient, reportOperationError, retainSubmission, workspace]);
   const onBackgroundQueueStreamEvent = useCallback((bindingId: string, event: AgentStreamEvent) => {
     if (event.type !== 'event' || !event.event) return;
     const formalEvent = event.event;
@@ -9265,9 +9395,12 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         deliveryState: 'queued',
         nativeGuidance: false,
       };
+      const retained = retainSubmission(nextScopeMessage);
+      if (!retained) return;
+      acknowledgeSubmission(message);
       commitQueuedMessages(current => current.filter(item => item.id !== message.id));
       setPendingCreatedId(value.id);
-      setPendingMigratedSend({ ...nextScopeMessage, bindingId: value.id });
+      setPendingMigratedSend({ ...retained, bindingId: value.id });
       void queryClient.invalidateQueries({ queryKey: sessionQueryKey(host, 'conversations', workspace.id) });
       onNavigate(conversationPath(value.id));
     },
@@ -9276,6 +9409,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       // intent in its original scope so the user can select a provider, edit,
       // or explicitly retry it; only a successful migration moves it to a
       // new binding.
+      restoreUnconfirmedSubmission({ ...message, bindingId: message.scope });
       reportOperationError(message.scope, error);
     },
   });
@@ -9828,12 +9962,27 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     const content = draftContent.trim();
     if ((!content && !attachments.length && !references.length && !workspaceReferences.length && !composerAnnotations.length) || migrateStreaming.isPending || pendingMigratedSend || effectiveTurnState === 'pausing' || effectiveTurnState === 'resuming' || effectiveTurnState === 'reconnecting'
       || (!queueModeEnabled && effectiveTurnState === 'running')) return;
+    if (!composerScope || (conversationDraft ? !canBootstrap || bootstrap.isPending : !canWrite || !selected)) return;
+    const shouldQueue = selectedCondensing || effectiveTurnState === 'running';
+    let message: QueuedMessage = { id: randomId(), scope: composerScope, content, items: attachments, references, workspaceReferences, annotations: composerAnnotations };
+    if (selected && !shouldQueue) {
+      const retained = retainSubmission(message);
+      if (!retained) return;
+      message = retained;
+    } else if (conversationDraft && canBootstrap && !bootstrap.isPending) {
+      const saved = writeBootstrapRecovery(host.bootstrapRecoveryStorageKey, {
+        draft: conversationDraft, message, providerId: newConversationProviderId,
+        modelName: newConversationModelName, reasoningEffort: newConversationReasoningEffort, attempts: 0,
+      });
+      if (!saved) {
+        reportOperationError(message.scope, new Error('浏览器暂时无法保存消息，请释放本地存储空间后重试。'));
+        return;
+      }
+    }
     replaceComposerDraft('');
     setOperationError(undefined);
-    if (!composerScope) return;
     composerDraftsByScope.current.set(composerScope, { content: '', attachments: [], references: [], workspaceReferences: [], annotations: [] });
     if (workspace) clearConversationComposerDraft(host.id, workspace.id, composerScope);
-    const message = { id: randomId(), scope: composerScope, content, items: attachments, references, workspaceReferences, annotations: composerAnnotations };
     setAttachments([]);
     setReferences([]); setWorkspaceReferences([]); setComposerAnnotations([]);
     if (conversationDraft) {
@@ -9851,7 +10000,6 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     if (!selected) return;
     // Only a live turn or context condensation may defer Enter into the
     // editable browser queue. Idle and paused conversations continue directly.
-    const shouldQueue = selectedCondensing || effectiveTurnState === 'running';
     const queuedMessage: QueuedMessage = {
       ...message,
       nativeGuidance: false,
@@ -9867,7 +10015,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       return;
     }
     dispatchMessage({ ...queuedMessage, bindingId: selected.id }, true);
-  }, [attachments, bootstrap, canBootstrap, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, dispatchMessage, effectiveTurnState, host.id, migrateStreaming, pendingAttachments, pendingMigratedSend, queueModeEnabled, references, replaceComposerDraft, selected, selectedCondensing, showOptimisticUserBubble, workspace, workspaceReferences]);
+  }, [attachments, bootstrap, canBootstrap, canWrite, commitQueuedMessages, composerAnnotations, composerScope, conversationDraft, dispatchMessage, effectiveTurnState, host, migrateStreaming, newConversationModelName, newConversationProviderId, newConversationReasoningEffort, pendingAttachments, pendingMigratedSend, queueModeEnabled, references, replaceComposerDraft, reportOperationError, retainSubmission, selected, selectedCondensing, showOptimisticUserBubble, workspace, workspaceReferences]);
   const sendDraftDirectly = useCallback((draftContent = composerDraftRef.current) => {
     if (selectedCondensing) {
       enqueueDraft(draftContent);
@@ -9906,11 +10054,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       enqueueDraft(draftContent);
       return;
     }
-    replaceComposerDraft('');
-    setOperationError(undefined);
-    if (composerScope) composerDraftsByScope.current.set(composerScope, { content: '', attachments: [], references: [], workspaceReferences: [], annotations: [] });
-    if (workspace && composerScope) clearConversationComposerDraft(host.id, workspace.id, composerScope);
-    const message: QueuedMessage = {
+    const message = retainSubmission({
       id: randomId(),
       scope: selected.id,
       content,
@@ -9921,11 +10065,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       nativeGuidance: effectiveTurnState === 'running',
       deliveryState: 'queued',
       createdAt: Date.now(),
-    };
+    });
+    if (!message) return;
+    replaceComposerDraft('');
+    setOperationError(undefined);
+    if (composerScope) composerDraftsByScope.current.set(composerScope, { content: '', attachments: [], references: [], workspaceReferences: [], annotations: [] });
+    if (workspace && composerScope) clearConversationComposerDraft(host.id, workspace.id, composerScope);
     setAttachments([]);
     setReferences([]); setWorkspaceReferences([]); setComposerAnnotations([]);
     dispatchMessage({ ...message, bindingId: selected.id }, true);
-  }, [attachments, canWrite, composerAnnotations, composerScope, conversationDraft, dispatchMessage, effectiveTurnState, enqueueDraft, host.id, migrateStreaming, pendingAttachments, pendingMigratedSend, queueModeEnabled, queuedMessages, references, replaceComposerDraft, selected, selectedCondensing, workspace, workspaceReferences]);
+  }, [attachments, canWrite, composerAnnotations, composerScope, conversationDraft, dispatchMessage, effectiveTurnState, enqueueDraft, host.id, migrateStreaming, pendingAttachments, pendingMigratedSend, queueModeEnabled, queuedMessages, references, replaceComposerDraft, retainSubmission, selected, selectedCondensing, workspace, workspaceReferences]);
   const answerPendingQuestion = useCallback((content: string, answeredQuestion?: string) => {
     if (!canWrite || conversationDraft || !selected || !pendingQuestion) return;
     setOperationError(undefined);
@@ -10935,6 +11084,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         connectionState={inputReadinessQuery.isError ? 'unavailable' : streamStatus === 'recovering' ? 'recovering' : streamStatus === 'connecting' ? 'checking' : inputReadinessQuery.isFetching && !inputReadinessQuery.data ? 'checking' : 'connected'}
       /></OpenQuestionContext.Provider> : <div className="agent-workbench-empty"><Bot size={32}/><b>新建会话开始协作</b><span>{features.workDirectories ? '每个会话共享同一工作区，但保留独立的对话与事件记录。' : '会话固定在当前节点 Attempt 的隔离工作目录。'}</span><button className="primary" disabled={!canOpenConversation} onClick={() => openConversationDraft({ displayName: features.workDirectories ? '根工作区' : '节点工作目录' }, { selectStandaloneRoot: features.workDirectories })}><Plus size={15}/>新建会话</button></div>}
       {visibleError && <ConversationErrorNotice key={`error:${composerScope}`} error={visibleError} onDismiss={dismissOperationError} transient={visibleError === operationError} onRetry={visibleError === hydrationError ? retryConversationHydration : undefined}/>}
+      {!visibleError && submissionRecoveryNotice && submissionRecoveryNotice.scope === composerScope && <ConversationErrorNotice key={`recovery:${composerScope}`} error={submissionRecoveryNotice.error} onDismiss={() => setSubmissionRecoveryNotice(undefined)}/>}
       </div>
       {(selected || conversationDraft) && runtime?.state !== 'RECOVERING' && !conversationInitialLoading && !conversationSnapshotUnavailable && <div className="agent-composer-dock">
         {pendingQuestion && !pendingConfirmation && <UserQuestionCard question={pendingQuestion} busy={!canWrite} onAnswer={answerPendingQuestion} onClose={dismissPendingQuestion}/>}
