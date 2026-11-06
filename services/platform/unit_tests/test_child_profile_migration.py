@@ -1,0 +1,91 @@
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+import pytest
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import DBAPIError
+from testcontainers.postgres import PostgresContainer
+
+
+@pytest.mark.parametrize(
+    "revision,previous,added",
+    [
+        ("0175_add_oh_fw_v3_protocol_profile", ("OH_FW_V1", "OH_FW_V2"), "OH_FW_V3"),
+        ("0178_add_oh_fw_v4_protocol_profile", ("OH_FW_V1", "OH_FW_V2", "OH_FW_V3"), "OH_FW_V4"),
+        (
+            "0202_add_oh_fw_v5_protocol_profile",
+            ("OH_FW_V1", "OH_FW_V2", "OH_FW_V3", "OH_FW_V4"),
+            "OH_FW_V5",
+        ),
+    ],
+)
+def test_child_profile_migration_preserves_old_profiles_and_refuses_lossy_downgrade(
+    monkeypatch, revision, previous, added
+):
+    path = Path(__file__).parents[1] / f"migrations/versions/{revision}.py"
+    quoted = ", ".join(f"'{profile}'" for profile in previous)
+    initial = ", ".join(f"('{profile}')" for profile in previous)
+    spec = importlib.util.spec_from_file_location("child_profile_migration", path)
+    assert spec and spec.loader
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    columns = (
+        (
+            "environment_versions",
+            "runtime_protocol_profile",
+            "ck_environment_version_runtime_protocol_profile",
+        ),
+        ("flow_run_runtimes", "protocol_profile", "ck_flow_run_runtime_protocol_profile"),
+        ("runtime_generations", "protocol_profile", "ck_runtime_generation_protocol_profile"),
+    )
+    with PostgresContainer(
+        "postgres:16.9-alpine3.21"
+        "@sha256:36e8aabaa6fa6037537cff64011fa45a200fe2ba202141b9aca48cff3df7ad42",
+        driver="psycopg",
+    ) as postgres:
+        engine = create_engine(postgres.get_connection_url())
+        try:
+            with engine.begin() as conn:
+                for table, column, constraint in columns:
+                    conn.execute(
+                        text(
+                            f"CREATE TABLE {table} ({column} TEXT NOT NULL CONSTRAINT {constraint} "
+                            f"CHECK ({column} IN ({quoted})))"
+                        )
+                    )
+                    conn.execute(text(f"INSERT INTO {table} VALUES {initial}"))
+                monkeypatch.setattr(migration, "op", Operations(MigrationContext.configure(conn)))
+                migration.upgrade()
+            # Each table independently prevents downgrade. The exception rolls
+            # back the DDL as well; no historical row is rewritten.
+            for target, target_column, _ in columns:
+                with engine.begin() as conn:
+                    conn.execute(text(f"INSERT INTO {target} VALUES ('{added}')"))
+                with pytest.raises(DBAPIError, match="Cannot downgrade"):
+                    with engine.begin() as conn:
+                        monkeypatch.setattr(
+                            migration, "op", Operations(MigrationContext.configure(conn))
+                        )
+                        migration.downgrade()
+                with engine.begin() as conn:
+                    assert (
+                        conn.execute(text(f"SELECT COUNT(*) FROM {target}")).scalar_one()
+                        == len(previous) + 1
+                    )
+                    conn.execute(text(f"DELETE FROM {target} WHERE {target_column} = '{added}'"))
+            with engine.begin() as conn:
+                monkeypatch.setattr(migration, "op", Operations(MigrationContext.configure(conn)))
+                migration.downgrade()
+                for table, column, _ in columns:
+                    assert conn.execute(
+                        text(f"SELECT {column} FROM {table} ORDER BY 1")
+                    ).scalars().all() == list(previous)
+            with pytest.raises(DBAPIError):
+                with engine.begin() as conn:
+                    conn.execute(text(f"INSERT INTO flow_run_runtimes VALUES ('{added}')"))
+        finally:
+            engine.dispose()

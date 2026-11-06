@@ -8,6 +8,7 @@ from flowweave.modules.catalog.application.capability_imports import (
 )
 from flowweave.modules.catalog.application.capability_repository import (
     PublishedCapability,
+    resolve_latest_version,
     resolve_version,
 )
 from flowweave.modules.catalog.application.mcp_oauth_authorizations import (
@@ -150,6 +151,7 @@ __all__ = (
     "ensure_platform_mcp",
     "validated_url",
     "resolve_plugin_source",
+    "resolve_latest_version",
     "resolve_version",
     "resolve_snapshot_memory",
 )

@@ -2919,7 +2919,10 @@ def test_model_provider_preview_discovery_uses_unsaved_connection_without_persis
     )
 
     assert response.status_code == 200, response.text
-    assert response.json() == {"models": ["gpt-alpha", "gpt-beta"]}
+    assert response.json() == {
+        "models": ["gpt-alpha", "gpt-beta"],
+        "protocols": {"gpt-alpha": "CHAT_COMPLETIONS", "gpt-beta": "CHAT_COMPLETIONS"},
+    }
     snapshot = captured["snapshot"]
     assert snapshot.base_url == "https://preview.example.test/v1"
     assert snapshot.headers["Authorization"] == "Bearer preview-secret"
@@ -4007,3 +4010,164 @@ def test_manual_runtime_output_projection_failure_becomes_visible_block(
     assert attempt["runtime_phase"] == "FAILED"
     assert attempt["error_code"] == "RUNTIME_OUTPUT_PROJECTION_FAILED"
     assert attempt["error_detail"].startswith("ARTIFACT_FILE_TOO_LARGE:")
+
+
+def test_one_api_key_provider_serves_each_model_with_its_own_protocol(
+    client, db_session_factory, settings
+):
+    provider = client.post(
+        "/api/v1/model-providers",
+        json={
+            "name": "单配置多协议",
+            "base_url": "https://gateway.example.test",
+            "api_key": "shared-key",
+            "models": [
+                {"model_name": "claude-sonnet-5-5", "enabled": True, "is_default": True},
+                {"model_name": "gpt-5.5", "enabled": True, "is_default": False},
+                {"model_name": "deepseek-chat", "enabled": True, "is_default": False},
+                {
+                    "model_name": "gpt-5-mini",
+                    "enabled": True,
+                    "is_default": False,
+                    "protocol": "CHAT_COMPLETIONS",
+                },
+            ],
+        },
+    )
+    assert provider.status_code == 201, provider.text
+    body = provider.json()
+    effective = {item["model_name"]: item["effective_protocol"] for item in body["models"]}
+    assert effective == {
+        "claude-sonnet-5-5": "ANTHROPIC",
+        "gpt-5.5": "RESPONSES",
+        "deepseek-chat": "CHAT_COMPLETIONS",
+        "gpt-5-mini": "CHAT_COMPLETIONS",
+    }
+    assert body["protocols"] == ["ANTHROPIC", "CHAT_COMPLETIONS", "RESPONSES"]
+
+    from flowweave.modules.model_providers.application import service
+    from flowweave.runtime.request import runtime_provider
+    from flowweave.shared.settings import settings_context
+
+    node = {"asset": {"executor": {"model_provider_id": body["id"]}}}
+    with settings_context(settings), db_session_factory() as db:
+        service.mark_provider_connection_state(db, body["id"], "CONNECTED")
+        claude = runtime_provider(db, node, "claude-sonnet-5-5")
+        gpt = runtime_provider(db, node, "gpt-5.5")
+        chat = runtime_provider(db, node, "deepseek-chat")
+        with pytest.raises(ValueError, match="Anthropic"):
+            service.prompt_provider_snapshot(db, body["id"], "claude-sonnet-5-5")
+        with pytest.raises(ValueError, match="Anthropic"):
+            service.title_provider_snapshot(db, body["id"], "claude-sonnet-5-5")
+        gate = service.prompt_provider_snapshot(db, body["id"], "gpt-5.5")
+
+    assert (claude.api_protocol, claude.base_url) == ("ANTHROPIC", "https://gateway.example.test")
+    assert (gpt.api_protocol, gpt.base_url) == ("RESPONSES", "https://gateway.example.test/v1")
+    assert (chat.api_protocol, chat.base_url) == (
+        "CHAT_COMPLETIONS",
+        "https://gateway.example.test/v1",
+    )
+    assert gate.protocol == "RESPONSES"
+    assert gate.base_url == "https://gateway.example.test/v1"
+
+
+def test_legacy_anthropic_provider_payload_maps_to_per_model_protocol(client):
+    created = client.post(
+        "/api/v1/model-providers",
+        json={
+            "name": "旧版 Anthropic 载荷",
+            "auth_type": "ANTHROPIC_API_KEY",
+            "base_url": "https://models.example.test",
+            "api_key": "legacy-key",
+            "models": [{"model_name": "custom-model", "enabled": True, "is_default": True}],
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["auth_type"] == "API_KEY"
+    assert created.json()["models"][0]["effective_protocol"] == "ANTHROPIC"
+
+
+def test_primary_provider_is_exclusive_and_orders_first(client, db_session_factory):
+    from flowweave.modules.model_providers.application import service
+
+    ids = []
+    for name in ("乙供应商", "甲供应商"):
+        created = client.post(
+            "/api/v1/model-providers",
+            json={
+                "name": name,
+                "base_url": "https://gateway.example.test",
+                "api_key": "k",
+                "models": [{"model_name": "gpt-5.5", "enabled": True, "is_default": True}],
+            },
+        )
+        assert created.status_code == 201, created.text
+        ids.append(created.json()["id"])
+    first, second = ids
+    # An unconnected provider cannot become the default.
+    assert client.post(f"/api/v1/model-providers/{first}/primary").status_code == 409
+    with db_session_factory() as db:
+        for provider_id in ids:
+            service.mark_provider_connection_state(db, provider_id, "CONNECTED")
+
+    assert client.post(f"/api/v1/model-providers/{first}/primary").json()["is_primary"] is True
+    listing = client.get("/api/v1/model-providers").json()
+    assert [item["id"] for item in listing][0] == first
+    # Choosing another provider moves the mark instead of keeping two.
+    assert client.post(f"/api/v1/model-providers/{second}/primary").json()["is_primary"] is True
+    listing = client.get("/api/v1/model-providers").json()
+    assert {item["id"]: item["is_primary"] for item in listing} == {first: False, second: True}
+    assert client.delete(f"/api/v1/model-providers/{second}/primary").json()["is_primary"] is False
+    assert not any(item["is_primary"] for item in client.get("/api/v1/model-providers").json())
+
+
+def test_model_change_divider_is_recorded_only_when_the_sent_model_differs(db_session_factory):
+    from sqlalchemy import select
+
+    from flowweave.modules.agent_sessions.application import conversations
+    from flowweave.modules.agent_sessions.infrastructure.models import (
+        AgentConversationBinding,
+        AgentMessageModelChange,
+    )
+
+    with db_session_factory() as db:
+        binding = AgentConversationBinding(
+            workspace_id=None,
+            runtime_session_id="runtime-1",
+            host_id="host-1",
+            conversation_scope_id="scope-1",
+            openhands_conversation_id="22222222-2222-4222-8222-222222222222",
+            create_idempotency_key="model-change-divider",
+            lifecycle="ACTIVE",
+            model_provider_id="provider-a",
+            model_name="alpha-1",
+        )
+        db.add(binding)
+        db.flush()
+
+        # The first send only seeds the baseline.
+        conversations.record_model_change(db, binding, "event-1")
+        assert db.scalars(select(AgentMessageModelChange)).all() == []
+        assert binding.last_sent_model_name == "alpha-1"
+
+        # Same model: still no divider.
+        conversations.record_model_change(db, binding, "event-2")
+        assert db.scalars(select(AgentMessageModelChange)).all() == []
+
+        # A different model produces exactly one divider on that user event.
+        binding.model_provider_id, binding.model_name = "provider-b", "beta-1"
+        conversations.record_model_change(db, binding, "event-3")
+        conversations.record_model_change(db, binding, "event-4")
+        rows = db.scalars(select(AgentMessageModelChange)).all()
+        assert [(row.event_id, row.from_model_name, row.to_model_name) for row in rows] == [
+            ("event-3", "alpha-1", "beta-1")
+        ]
+        assert isinstance(rows[0].to_label, str) and "beta-1" in rows[0].to_label
+
+        # Switching only the model inside the same provider also produces a divider.
+        binding.model_name = "beta-2"
+        conversations.record_model_change(db, binding, "event-5")
+        rows = db.scalars(select(AgentMessageModelChange).order_by(AgentMessageModelChange.event_id)).all()
+        assert [(row.event_id, row.from_model_name, row.to_model_name) for row in rows][-1] == (
+            "event-5", "beta-1", "beta-2"
+        )

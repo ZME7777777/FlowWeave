@@ -11,12 +11,21 @@ export function isFlowWeaveInternalProtocolMessage(value: string): boolean {
   return INTERNAL_PROTOCOL_MARKER.test(value.trimStart());
 }
 
+const APPENDED_PROTOCOL_MARKER = /\n\s*\[FLOWWEAVE_[A-Z0-9_]+\](?:\r?\n|$)/;
+
 export function projectFlowWeaveMessageContext(event: OpenHandsConversationEvent): OpenHandsConversationEvent {
   const content = event.payload.content;
   if (event.event_type !== 'MESSAGE' || typeof content !== 'string') return event;
+  // Startup requests append platform gate/result contracts after the real prompt;
+  // show only the prompt and keep the raw event untouched.
+  const source = String(event.payload.source ?? '').toLowerCase();
+  const appended = APPENDED_PROTOCOL_MARKER.exec(content);
+  if ((source === 'user' || source === 'human') && appended && appended.index > 0 && typeof event.payload.display_content !== 'string') {
+    const visible = content.slice(0, appended.index).trim();
+    if (visible) return { ...event, payload: { ...event.payload, display_content: visible } };
+  }
   const marker = MESSAGE_CONTEXT_MARKER.exec(content);
   if (!marker) return event;
-  const source = String(event.payload.source ?? '').toLowerCase();
   const displayContent = event.payload.display_content;
   if (
     (source !== 'user' && source !== 'human')
@@ -45,6 +54,23 @@ export function projectFlowWeaveMessageContext(event: OpenHandsConversationEvent
   } catch {
     return event;
   }
+}
+
+/**
+ * Visible text of a person-typed MESSAGE event, or undefined when the event is
+ * not a user turn (loop control, internal protocol, non-user source). Mirrors
+ * the user branch of the transcript projection without building render items.
+ */
+export function userMessagePreviewContent(event: OpenHandsConversationEvent): string | undefined {
+  if (event.event_type !== 'MESSAGE') return undefined;
+  const source = String(event.payload.source ?? '').toLowerCase();
+  if (source !== 'user' && source !== 'human') return undefined;
+  const projected = projectFlowWeaveMessageContext(event);
+  const content = typeof projected.payload.content === 'string' ? projected.payload.content : '';
+  if (isFlowWeaveInternalProtocolMessage(content)) return undefined;
+  if (projected.payload.goal_followup) return undefined;
+  if (typeof projected.payload.display_content === 'string') return projected.payload.display_content;
+  return isFlowWeaveMessageContext(content) ? '' : content;
 }
 
 export function isFlowWeaveMessageContext(value: string): boolean {
@@ -76,11 +102,16 @@ export function orderOpenHandsConversationEvents(events: OpenHandsConversationEv
   }
   const output: OpenHandsConversationEvent[] = [];
   const seen = new Set<string>();
-  const visit = (event: OpenHandsConversationEvent) => {
-    if (seen.has(event.id)) return;
-    seen.add(event.id);
-    output.push(event);
-    for (const child of children.get(event.id) ?? []) visit(child);
+  const visit = (root: OpenHandsConversationEvent) => {
+    const pending = [root];
+    while (pending.length) {
+      const event = pending.pop()!;
+      if (seen.has(event.id)) continue;
+      seen.add(event.id);
+      output.push(event);
+      const descendants = children.get(event.id) ?? [];
+      for (let index = descendants.length - 1; index >= 0; index -= 1) pending.push(descendants[index]);
+    }
   };
   for (const event of roots) visit(event);
   for (const event of events) visit(event);

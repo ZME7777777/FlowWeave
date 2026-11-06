@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import exists, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -137,12 +137,23 @@ def cleanup_terminal(
     """
 
     cutoff = (now or datetime.now(UTC)) - timedelta(days=retention_days)
+    from flowweave.modules.agent_sessions.infrastructure.models import AgentConversationBinding
+
+    retained_deletion = exists().where(
+        AgentConversationBinding.id == BackgroundTask.payload_json["parent_binding_id"].as_string(),
+        AgentConversationBinding.owner_user_id == BackgroundTask.owner_user_id,
+        AgentConversationBinding.lifecycle == "DELETE_PENDING",
+    )
     terminal_tasks = list(
         db.scalars(
             select(BackgroundTask)
             .where(
                 BackgroundTask.state.in_([TaskState.SUCCEEDED, TaskState.DEAD]),
                 BackgroundTask.updated_at < cutoff,
+                ~(
+                    (BackgroundTask.task_type == "DELETE_AGENT_CONVERSATION_FAMILY")
+                    & retained_deletion
+                ),
             )
             .order_by(BackgroundTask.updated_at, BackgroundTask.id)
             .limit(batch_size)

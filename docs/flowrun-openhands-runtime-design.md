@@ -3,8 +3,8 @@
 > 状态：`FR-00 FROZEN`
 > 日期：2026-08-21
 > OpenHands 事实基线：`software-agent-sdk`
-> upstream anchor `f0206428306db687ac9c8d833ece4fb82b015eba`；FlowWeave `baseline` 在合并
-> upstream `main` 后可追加受审计扩展，实际 commit 由 Runtime source lock 固定；四个发布包版本为 `1.54.0`
+> upstream anchor `ce5716a3c0a955a85bb0cc4dcfaa94d5fefcda50`；FlowWeave `baseline` 在合并
+> upstream `main` 后可追加受审计扩展，实际 commit 由 Runtime source lock 固定；四个发布包版本为 `1.58.2`
 > 本文冻结目标架构和后续迁移边界，不表示后续运行时代码已经落地。
 
 ## 1. 决策摘要
@@ -499,3 +499,25 @@ HTTP 服务重建使用同一测试进程内的新服务 owner；它不替代跨
 受控原生 HTTP 请求，不能外推为生产模型延迟、API／PostgreSQL／浏览器全链路性能，
 也不能据此声称原线上锁等待原因已查明或页面已恢复。正式发布必须使用已提交版本，
 同步更新 api／stream-api，并先核实 Provider 重启和既有 Runtime replacement 的活跃会话影响。
+
+## 18. 原生子会话接入边界（FR-702）
+
+用户已确认的子会话产品契约见 [原生子会话接入设计](agent-child-conversations-design.md)。
+本轮完整合入固定上游后，只新增子会话产品能力，不接入 Git Worktree、仓库初始化或会话目录切换。
+子 Conversation 显式使用 `isolation="shared"`，复用父会话的 Runtime Session 和已验证工作目录；
+FlowRun 子会话不创建 NodeRun／Attempt，也不取得节点接受、重跑或流程推进权限。
+
+子会话使用正式 OpenHands 创建、事件和控制生命周期；FlowWeave 只持有用户隔离的父子 locator、
+冻结配置、授权和审计。需要补齐的创建幂等、首轮运行前治理、可信 invocation 与父 Agent 管理工具
+在 SDK baseline 中以正式类型／Tool／服务实现，不用平台执行器、私有 MCP 或提示词协议模拟。
+新能力通过新增 V3 契约及固定源码归档治理，既有 V1／V2 Run 不自动获得工具或更新镜像。
+
+前端入口为父会话悬浮卡；每个子 binding 有自己的右侧标题标签和完整续聊能力，不出现在普通
+会话列表、主标签或独立会话路由。关闭视图不删除／暂停，不沿用临时侧边聊天的一小时 TTL。
+父与子状态独立，子完成不自动唤醒父；未读、引用授权、附件和异步回调按真实 binding 隔离。
+多标签共享既有读取预算和正式 hydration 门禁，不能以 UI 复用复制临时聊天的生命周期。
+
+FR-702 冻结了本节边界。FR-703–FR-728 的子会话实现已完成，FR-717 于 2026-11-05 通过固定
+镜像、真实模型、隔离数据库与两宿主浏览器验收。详细证据与物理 Provider 测试边界见任务进度。
+固定上游普通会话启动／重载会原生 git init，shared 子准备沿用正式门禁与相同工作目录。
+新能力仍服从显式 V4、冻结来源与可信网关配置，既有 Run 的镜像和协议按原记录解析。

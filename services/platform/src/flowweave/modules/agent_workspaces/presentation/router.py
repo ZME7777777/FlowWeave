@@ -78,7 +78,12 @@ from flowweave.shared.infrastructure.docker_controller import (
     DockerControllerClient,
     DockerControllerError,
 )
-from flowweave.shared.schemas import ConversationGoalWrite, MCPWorkspaceProbeWrite
+from flowweave.shared.runtime_stream import forward_runtime_stream
+from flowweave.shared.schemas import (
+    ConversationGoalWrite,
+    MCPWorkspaceProbeWrite,
+    WorkspaceGitSwitchWrite,
+)
 from flowweave.shared.settings import bind_settings, reset_settings
 
 router = APIRouter()
@@ -298,6 +303,8 @@ class AgentMessageWrite(_Write):
     )
     workspace_references: list[AgentWorkspaceReference] = Field(default_factory=list, max_length=20)
     annotations: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
+    # The ask_user question this message answers; carried in the message envelope.
+    answered_question: str | None = Field(default=None, max_length=2000)
 
 
 class AgentConversationModelWrite(_Write):
@@ -366,6 +373,9 @@ def _project_stream_event(
     projected_payload = {**payload, "content": content}
     if str(payload.get("source") or "").lower() in {"user", "human"}:
         projected_payload["display_content"] = display_content
+    answered = conversations.project_answered_question(content)
+    if answered and str(payload.get("source") or "").lower() in {"user", "human"}:
+        projected_payload["answered_question"] = answered
     if references:
         projected_payload["conversation_references"] = list(references)
     if workspace_references:
@@ -392,50 +402,17 @@ async def _forward_runtime_events(
     WebSocket also closes the upstream async generator and its Provider relay.
     """
 
-    stream = runtime.stream_events(handle, after_seq=after_seq)
-    event_task: asyncio.Task[Any] | None = None
-    receive_task: asyncio.Task[Any] | None = None
-
-    async def next_event() -> dict[str, Any]:
-        return await anext(stream)
-
-    try:
-        event_task = asyncio.create_task(next_event())
-        receive_task = asyncio.create_task(websocket.receive())
-        while True:
-            done, _ = await asyncio.wait(
-                (event_task, receive_task), return_when=asyncio.FIRST_COMPLETED
-            )
-            if receive_task in done:
-                message = receive_task.result()
-                if message.get("type") == "websocket.disconnect":
-                    return
-                receive_task = asyncio.create_task(websocket.receive())
-            if event_task in done:
-                try:
-                    event = event_task.result()
-                except StopAsyncIteration:
-                    return
-                await websocket.send_json(
-                    _project_stream_event(
-                        event,
-                        workspace_id=workspace_id,
-                        binding_id=binding_id,
-                        working_directory=working_directory,
-                    )
-                )
-                event_task = asyncio.create_task(next_event())
-    finally:
-        for task in (event_task, receive_task):
-            if task is not None:
-                task.cancel()
-        await asyncio.gather(
-            *(task for task in (event_task, receive_task) if task is not None),
-            return_exceptions=True,
+    async def project(event: dict[str, Any]) -> dict[str, Any]:
+        return _project_stream_event(
+            event,
+            workspace_id=workspace_id,
+            binding_id=binding_id,
+            working_directory=working_directory,
         )
-        close = getattr(stream, "aclose", None)
-        if close is not None:
-            await close()
+
+    await forward_runtime_stream(
+        websocket, runtime.stream_events(handle, after_seq=after_seq), project
+    )
 
 
 @router.get("/agent-workspaces/default")
@@ -837,6 +814,50 @@ async def download_agent_workspace_file(
         content=item.content,
         media_type=item.content_type,
         headers=headers,
+    )
+
+
+@router.get("/agent-workspaces/{workspace_id}/workspace/git/branches")
+async def workspace_git_branches(
+    workspace_id: str,
+    container: ContainerDep,
+    repository_path: str = Query(...),
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_blocking_auxiliary(
+        container,
+        lambda session: workspace.list_git_branches(
+            session,
+            workspace_id=workspace_id,
+            repository_path=repository_path,
+            binding_id=binding_id,
+            work_directory_id=work_directory_id,
+        ),
+    )
+
+
+@router.post("/agent-workspaces/{workspace_id}/workspace/git/switch")
+async def switch_workspace_git_branch(
+    workspace_id: str,
+    body: WorkspaceGitSwitchWrite,
+    container: ContainerDep,
+    repository_path: str = Query(...),
+    binding_id: str | None = Query(default=None),
+    work_directory_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return await run_blocking_mutation(
+        container,
+        lambda session: workspace.switch_git_branch(
+            session,
+            workspace_id=workspace_id,
+            repository_path=repository_path,
+            ref=body.ref,
+            expected_head=body.expected_head,
+            expected_ref=body.expected_ref,
+            binding_id=binding_id,
+            work_directory_id=work_directory_id,
+        ),
     )
 
 
@@ -1359,6 +1380,7 @@ async def agent_conversation_activity(
     workspace_id: str,
     container: ContainerDep,
     active_binding_id: str | None = Query(default=None, min_length=1, max_length=36),
+    active_child_id: str | None = Query(default=None, min_length=1, max_length=36),
 ) -> dict[str, Any]:
     # The activity projection includes `condensation_tasks`, a list of
     # structured task records. Keep its response contract open to that
@@ -1366,7 +1388,10 @@ async def agent_conversation_activity(
     return await run_blocking_history(
         container,
         lambda session: conversations.conversation_activity(
-            session, workspace_id, active_binding_id=active_binding_id
+            session,
+            workspace_id,
+            active_binding_id=active_binding_id,
+            active_child_id=active_child_id,
         ),
     )
 
@@ -1441,6 +1466,28 @@ async def create_agent_sidebar_conversation(
             references=tuple(item.model_dump(exclude_none=True) for item in payload.references),
             idempotency_key=idempotency_key,
         ),
+    )
+
+
+@router.get("/agent-workspaces/{workspace_id}/conversations/{source_binding_id}/sidebar")
+async def get_agent_sidebar_conversation_for_source(
+    workspace_id: str, source_binding_id: str, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: sidebar_conversations.sidebar_conversation_for_source(
+            session, workspace_id, source_binding_id
+        ),
+    )
+
+
+@router.post("/agent-workspaces/{workspace_id}/conversation-bootstraps/{submission_id}/cancel")
+async def cancel_agent_conversation_bootstrap(
+    workspace_id: str, submission_id: str, db: Db
+) -> dict[str, bool]:
+    return await run_sync(
+        db,
+        lambda session: conversations.cancel_bootstrap(session, workspace_id, submission_id),
     )
 
 
@@ -1625,7 +1672,7 @@ async def delete_agent_conversation(
     container: ContainerDep,
     idempotency_key: IdempotencyKey = None,
 ) -> Response:
-    await run_blocking_lifecycle(
+    deletion = await run_blocking_lifecycle(
         container,
         lambda session: conversations.delete_conversation(
             session,
@@ -1634,7 +1681,7 @@ async def delete_agent_conversation(
             _key(idempotency_key, "delete-agent-conversation", binding_id),
         ),
     )
-    return Response(status_code=204)
+    return JSONResponse(deletion, status_code=202) if deletion else Response(status_code=204)
 
 
 @router.post("/agent-workspaces/{workspace_id}/conversations/{binding_id}/archive")
@@ -1943,6 +1990,16 @@ async def agent_pending_confirmation(
     )
 
 
+@router.get("/agent-workspaces/{workspace_id}/conversations/{binding_id}/pending-question")
+async def agent_pending_question(
+    workspace_id: str, binding_id: str, container: ContainerDep
+) -> dict[str, Any]:
+    return await run_blocking(
+        container,
+        lambda session: conversations.pending_question(session, workspace_id, binding_id),
+    )
+
+
 @router.post(
     "/agent-workspaces/{workspace_id}/conversations/{binding_id}/pending-confirmation/decision",
     status_code=202,
@@ -2006,6 +2063,7 @@ async def agent_message(
             item.model_dump() for item in payload.workspace_references
         ),
         "annotations": tuple(payload.annotations),
+        "answered_question": payload.answered_question,
     }
     try:
         with message_submissions.fenced(fence):
@@ -2308,6 +2366,20 @@ async def agent_context(
     return await run_blocking(
         container,
         lambda session: conversations.conversation_context(session, workspace_id, binding_id),
+    )
+
+
+@router.post(
+    "/agent-workspaces/{workspace_id}/conversations/{binding_id}/condenser-credentials/restore"
+)
+async def agent_restore_condenser_credentials(
+    workspace_id: str, binding_id: str, container: ContainerDep
+) -> dict[str, bool]:
+    return await run_blocking_lifecycle(
+        container,
+        lambda session: conversations.restore_condenser_credentials(
+            session, workspace_id, binding_id
+        ),
     )
 
 

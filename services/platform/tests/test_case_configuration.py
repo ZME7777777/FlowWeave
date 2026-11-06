@@ -763,3 +763,281 @@ def test_case_agent_revalidates_start_conditions_before_any_runtime_write(
     assert error.value.code == expected
     assert writes == []
     assert service.get_case(db, item["id"])["control_conversation_binding_id"] is None
+
+
+def _fake_template_copy(copies):
+    def copy(db, source_id, payload):
+        number = 100 + len(copies)
+        clone = FlowRun(
+            id=f"copy-of-{source_id}",
+            flow_definition_id="flow",
+            run_no=number,
+            state="DRAFT",
+            name=payload.name,
+            run_mode="AUTOMATIC",
+            automation_plan_json={"start_node_key": "start", "readiness": {"ready": True}},
+        )
+        db.add(clone)
+        db.flush()
+        copies.append(source_id)
+        return {"id": clone.id}
+
+    return copy
+
+
+@pytest.fixture
+def copy_source(case_db, monkeypatch):
+    """A fully configured source Case. ``_case_dict`` reads a PostgreSQL-only table, so the
+    projection is stubbed before the Case is created; copy semantics are asserted on rows."""
+
+    db, root = case_db
+    monkeypatch.setattr(service, "_case_dict", lambda db, item, **_: {"id": item.id})
+    monkeypatch.setattr(
+        service,
+        "list_providers",
+        lambda db: [
+            {
+                "id": "provider",
+                "available_for_nodes": True,
+                "models": [{"model_name": "model", "enabled": True}],
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        service, "validate_template_configuration", lambda db, caps, creds: (caps, creds)
+    )
+    source_id = service.create_case(
+        db, CaseCreateWrite(name="客户迁移", description="背景说明", objective="完成迁移")
+    )["id"]
+    source = db.get(Case, source_id)
+    source.session_config_json = CaseControlConversationWrite(
+        model_provider_id="provider",
+        model_name="model",
+        capability_version_ids=["skill-version"],
+        credential_ids=["credential-reference"],
+    ).model_dump()
+    source.materials_json = [{"kind": "LINK", "name": "验收资料", "value": "https://example.test/spec"}]
+    for position in (0, 1):
+        db.add(
+            FlowRun(
+                id=f"template-{position}",
+                flow_definition_id="flow",
+                run_no=position + 1,
+                state="DRAFT",
+                name=f"template {position}",
+                run_mode="AUTOMATIC",
+                automation_plan_json={"start_node_key": "start", "readiness": {"ready": True}},
+            )
+        )
+        db.add(
+            CaseStage(
+                case_id=source_id,
+                stage_key=f"stage-{position}",
+                name=f"阶段 {position}",
+                position=position,
+                execution_mode="CONTINUOUS",
+                flow_run_id=f"template-{position}",
+                state="ACTIVE" if position == 0 else "PENDING",
+            )
+        )
+    db.commit()
+    # A FILE material (real bytes in the source Case's own directory).
+    service.upload_case_material(db, source_id, db.get(Case, source_id).row_version, "资料.txt", b"input data")
+    return db, source_id
+
+
+def test_copy_case_carries_configuration_but_no_runtime(copy_source, monkeypatch):
+    db, source_id = copy_source
+    copies: list[str] = []
+    monkeypatch.setattr(service.orchestration, "copy_automatic_run_draft", _fake_template_copy(copies))
+    source = db.get(Case, source_id)
+    source_file = next(m for m in source.materials_json if m["kind"] == "FILE")["value"]
+    # Runtime state that must never be inherited.
+    source.control_conversation_binding_id = "old-binding"
+    source.current_control_round_id = "old-round"
+    source.state = "PAUSED"
+    source.pause_reason = "MANUAL"
+    source.pause_note = "old pause"
+    first = db.scalar(select(CaseStage).where(CaseStage.case_id == source_id, CaseStage.position == 0))
+    first.current_execution_flow_run_id = "old-execution"
+    db.commit()
+
+    new = db.get(Case, service.copy_case(db, source_id)["id"])
+
+    assert new.id != source_id and new.name == "客户迁移 副本"
+    assert (new.description, new.objective) == ("背景说明", "完成迁移")
+    assert new.session_config_json["capability_version_ids"] == ["skill-version"]
+    assert new.session_config_json["credential_ids"] == ["credential-reference"]
+    assert new.control_conversation_binding_id is None
+    assert new.current_control_round_id is None
+    assert new.pause_reason is None and new.pause_note is None and new.resume_note is None
+    assert new.state == "ACTIVE"
+    assert new.control_work_directory_id != db.get(Case, source_id).control_work_directory_id
+    stages = list(
+        db.scalars(select(CaseStage).where(CaseStage.case_id == new.id).order_by(CaseStage.position))
+    )
+    assert [stage.stage_key for stage in stages] == ["stage-0", "stage-1"]
+    assert [stage.state for stage in stages] == ["ACTIVE", "PENDING"]
+    assert all(stage.current_execution_flow_run_id is None for stage in stages)
+    # Each stage owns an independent template copy; the source keeps its own (flow_run_id is unique).
+    assert sorted(copies) == ["template-0", "template-1"]
+    assert {stage.flow_run_id for stage in stages} == {"copy-of-template-0", "copy-of-template-1"}
+    assert {
+        stage.flow_run_id
+        for stage in db.scalars(select(CaseStage).where(CaseStage.case_id == source_id))
+    } == {"template-0", "template-1"}
+    kinds = {entry["kind"]: entry for entry in new.materials_json}
+    assert kinds["LINK"]["value"] == "https://example.test/spec"
+    assert kinds["FILE"]["value"].startswith(f".flowweave/cases/{new.id}/materials/")
+    assert kinds["FILE"]["value"] != source_file
+    assert service.read_case_material(db, new.id, kinds["FILE"]["value"])[0] == b"input data"
+
+
+def test_copy_case_reports_what_it_could_not_carry_over(copy_source, monkeypatch):
+    db, source_id = copy_source
+
+    def refuse(_db, source, payload):
+        raise DomainError("RUN_STATE_INVALID", "terminal", 409)
+
+    monkeypatch.setattr(service.orchestration, "copy_automatic_run_draft", refuse)
+    monkeypatch.setattr(service, "list_providers", lambda db: [])  # saved model is gone
+    report = service.copy_case(db, source_id)["copy_report"]
+    skipped = {entry["item"]: entry["reason"] for entry in report["skipped"]}
+    assert skipped["「阶段 0」的流程模板"] == "RUN_STATE_INVALID"
+    assert skipped["「阶段 1」的流程模板"] == "RUN_STATE_INVALID"
+    assert skipped["Case Agent 会话配置"] == "CASE_MODEL_UNAVAILABLE"
+    new = db.scalar(select(Case).where(Case.name == "客户迁移 副本"))
+    assert new is not None and new.session_config_json == {}
+    assert all(
+        stage.flow_run_id is None
+        for stage in db.scalars(select(CaseStage).where(CaseStage.case_id == new.id))
+    )
+
+
+@pytest.mark.parametrize("state", ["COMPLETED", "CANCELLED"])
+def test_stepwise_template_clone_ignores_terminal_parent_but_execution_copy_does_not(
+    case_db, monkeypatch, state
+):
+    """A template is only a configuration source: its parent being finished must not block
+    reuse, while copying an *execution* record under a finished parent stays forbidden."""
+
+    from flowweave.modules.orchestration.application import service as orchestration_service
+    from flowweave.shared.schemas import StepwiseRunRecordCopyWrite
+
+    db, _ = case_db
+    parent = FlowRun(
+        id="parent",
+        flow_definition_id="flow",
+        run_no=1,
+        state=state,
+        name="parent",
+        run_mode="MANUAL",
+    )
+    source = FlowRun(
+        id="source",
+        flow_definition_id="flow",
+        run_no=2,
+        state="DRAFT",
+        name="template",
+        run_mode="MANUAL",
+        parent_flow_run_id="parent",
+    )
+    db.add_all([parent, source])
+    db.commit()
+
+    created: list[bool] = []
+
+    def reached_creation(_db, _parent_id, _payload, *, allow_terminal_parent=False):
+        created.append(allow_terminal_parent)
+        raise DomainError("STOP_AFTER_PARENT_CHECK", "reached record creation", 418)
+
+    monkeypatch.setattr(orchestration_service, "_stepwise_initial_node", lambda db, record: ("start", None))
+    monkeypatch.setattr(orchestration_service, "_create_nested_stepwise_run_record", reached_creation)
+
+    with pytest.raises(DomainError) as template:
+        orchestration_service.copy_nested_stepwise_run_record(
+            db, "parent", "source", StepwiseRunRecordCopyWrite(name="x"), as_template=True
+        )
+    assert template.value.code == "STOP_AFTER_PARENT_CHECK" and created == [True]
+
+    with pytest.raises(DomainError) as execution:
+        orchestration_service.copy_nested_stepwise_run_record(
+            db, "parent", "source", StepwiseRunRecordCopyWrite(name="x")
+        )
+    assert execution.value.code != "STOP_AFTER_PARENT_CHECK"
+    assert created == [True]
+
+
+def test_export_import_round_trip_matches_copy_and_never_carries_runtime(copy_source, monkeypatch):
+    import json
+
+    from flowweave.shared.schemas import CaseBundleImportWrite, CaseExportWrite
+
+    db, source_id = copy_source
+    copies: list[str] = []
+    monkeypatch.setattr(service.orchestration, "copy_automatic_run_draft", _fake_template_copy(copies))
+    source = db.get(Case, source_id)
+    source.control_conversation_binding_id = "old-binding"
+    source.state = "PAUSED"
+    source.pause_reason = "MANUAL"
+    db.commit()
+
+    bundle = service.export_cases(db, CaseExportWrite(case_ids=[source_id]).case_ids)
+    encoded = json.dumps(bundle)  # must be plain JSON
+    # Exports carry ids and content, never runtime state or secrets.
+    for forbidden in ("old-binding", "pause_reason", "control_conversation_binding_id", "token"):
+        assert forbidden not in encoded
+    entry = bundle["cases"][0]
+    assert [stage["template_flow_run_id"] for stage in entry["stages"]] == ["template-0", "template-1"]
+    assert entry["file_materials"][0]["content_base64"] == "aW5wdXQgZGF0YQ=="  # b"input data"
+
+    imported = service.import_cases(db, CaseBundleImportWrite.model_validate(json.loads(encoded)))
+    new = db.get(Case, imported[0]["id"])
+    assert new.id != source_id and new.name == "客户迁移"
+    assert new.session_config_json["capability_version_ids"] == ["skill-version"]
+    assert new.control_conversation_binding_id is None and new.pause_reason is None
+    assert new.state == "ACTIVE"
+    stages = list(
+        db.scalars(select(CaseStage).where(CaseStage.case_id == new.id).order_by(CaseStage.position))
+    )
+    assert {stage.flow_run_id for stage in stages} == {"copy-of-template-0", "copy-of-template-1"}
+    assert sorted(copies) == ["template-0", "template-1"]
+    kinds = {material["kind"]: material for material in new.materials_json}
+    assert service.read_case_material(db, new.id, kinds["FILE"]["value"])[0] == b"input data"
+    assert imported[0]["copy_report"]["skipped"] == []
+
+
+def test_import_reports_unavailable_template_and_corrupt_file_without_failing(copy_source):
+    from flowweave.shared.schemas import CaseBundleImportWrite
+
+    db, _ = copy_source
+    result = service.import_cases(
+        db,
+        CaseBundleImportWrite.model_validate(
+            {
+                "format": "flowweave.case-bundle",
+                "version": 1,
+                "cases": [
+                    {
+                        "name": "迁入场景",
+                        "stages": [
+                            {
+                                "stage_key": "a",
+                                "name": "阶段 A",
+                                "template_flow_run_id": "does-not-exist",
+                            }
+                        ],
+                        "file_materials": [
+                            {"name": "坏文件.txt", "content_base64": "***not-base64***"},
+                            {"name": "缺失.txt", "content_base64": None},
+                        ],
+                    }
+                ],
+            }
+        ),
+    )
+    skipped = {entry["item"]: entry["reason"] for entry in result[0]["copy_report"]["skipped"]}
+    assert skipped["「阶段 A」的流程模板"] == "TEMPLATE_UNAVAILABLE"
+    assert skipped["资料 坏文件.txt"] == "FILE_UNAVAILABLE"
+    assert skipped["资料 缺失.txt"] == "FILE_UNAVAILABLE"
+    assert db.scalar(select(Case).where(Case.name == "迁入场景")) is not None

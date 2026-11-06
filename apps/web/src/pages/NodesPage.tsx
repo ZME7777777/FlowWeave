@@ -6,6 +6,7 @@ import { NodeEditor, type NodeDraftState } from '../components/NodeEditor';
 import { useProductDialog } from '../components/ProductDialogContext';
 import { useWorkbenchStore } from '../store/workbench';
 import type { BlockedNodeDelete, NodeAsset, NodeDirectory } from '../types';
+import { Toast } from '../components/Toast';
 
 type BlockedAsset = BlockedNodeDelete;
 
@@ -146,7 +147,7 @@ export function NodesPage({ onRegisterLeaveGuard, onDraftStateChange: onPageDraf
   const isCreating = creatingInDirectory !== undefined;
 
   return <section className="page node-assets-page">
-    {error && <div className="notice error" role="alert">{error}</div>}{notice && <div className="notice success" role="status">{notice}</div>}
+    <Toast kind="error" message={error} onDismiss={() => setError('')}/><Toast message={notice} onDismiss={() => setNotice('')}/>
     <div className="node-center-layout">
       <aside className="node-center-rail" aria-label="节点目录">
         <header className="node-center-list-head"><div><span className="eyebrow">NODE CENTER</span><b>节点目录</b><small>{nodes.length} 个节点</small></div><button type="button" className="secondary" onClick={() => void createDirectory(null)}><Plus size={14}/>新建目录</button></header>

@@ -5,6 +5,7 @@ import os
 import re
 import secrets
 import stat
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 
@@ -22,6 +23,7 @@ from flowweave.modules.environments.public import resolve_setup_image
 from flowweave.modules.sandboxes.public import DockerSandboxProvider, ManagedSandbox, backend_name
 from flowweave.modules.tasks.public import enqueue
 from flowweave.modules.users.application.security import FLOWWEAVE_USER_ID
+from flowweave.runtime.base import RuntimeConversationIdentity
 from flowweave.shared.credentials_crypto import decrypt_secret, encrypt_secret
 from flowweave.shared.database import uid
 from flowweave.shared.errors import DomainError
@@ -404,6 +406,8 @@ def resolve_agent_workspace_runtime_secret(db: Session, allocation_id: str) -> s
 
 
 def ensure_default_agent_workspace(db: Session) -> AgentWorkspace:
+    from flowweave.modules.agent_sessions.application.child_recovery import frozen_workspace_image
+
     workspace = db.scalar(
         select(AgentWorkspace).where(AgentWorkspace.scope_key == _SCOPE_KEY).with_for_update()
     )
@@ -417,7 +421,10 @@ def ensure_default_agent_workspace(db: Session) -> AgentWorkspace:
         .where(AgentWorkspaceRuntime.workspace_id == workspace.id)
         .with_for_update()
     )
-    if get_settings().runtime_adapter == "mock":
+    pinned_image = frozen_workspace_image(db, runtime.id) if runtime is not None else None
+    if pinned_image is not None:
+        digest = pinned_image
+    elif get_settings().runtime_adapter == "mock":
         digest = "sha256:" + "0" * 64
     else:
         _reference, digest = resolve_setup_image(get_settings().agent_workspace_runtime_image)
@@ -484,6 +491,8 @@ def agent_workspace_owner_is_active(db: Session, workspace_id: str) -> bool:
 
 
 def process_agent_workspace_runtime(db: Session, workspace_id: str) -> None:
+    from flowweave.modules.agent_sessions.application import child_recovery
+
     workspace = db.scalar(
         select(AgentWorkspace).where(AgentWorkspace.id == workspace_id).with_for_update()
     )
@@ -500,6 +509,10 @@ def process_agent_workspace_runtime(db: Session, workspace_id: str) -> None:
         raise DomainError(
             "AGENT_WORKSPACE_RUNTIME_MISSING", "The Agent Workspace Runtime is missing", 409
         )
+    pinned_image = child_recovery.frozen_workspace_image(db, runtime.id)
+    if pinned_image is not None and runtime.runtime_image_digest != pinned_image:
+        raise child_recovery.mismatch()
+    expected_children: dict[str, RuntimeConversationIdentity] = {}
     resources = list(
         db.scalars(
             select(ManagedSandbox)
@@ -536,6 +549,24 @@ def process_agent_workspace_runtime(db: Session, workspace_id: str) -> None:
         deleted_resource.desired_state = "DELETED"
         deleted_resource.next_reconcile_at = datetime.now(UTC)
     if deleted_resource is not None:
+        families = child_recovery.collect(db, runtime.id)
+        graceful = True
+        if families:
+            runtime.status = "RECONNECTING"
+            db.commit()
+            try:
+                expected_children = child_recovery.probe(
+                    families, deleted_resource.backend_resource_name
+                )
+            except DomainError as exc:
+                if exc.status not in {503, 504}:
+                    raise
+            drained = DockerSandboxProvider(get_settings()).drain(deleted_resource)
+            if not drained.stopped:
+                raise DomainError(
+                    "AGENT_RUNTIME_DRAIN_PENDING", "原 Runtime 尚未停止，数据已保留", 503
+                )
+            graceful = drained.graceful
         historical_generation = db.scalar(
             select(AgentWorkspaceRuntimeGeneration)
             .where(
@@ -548,6 +579,8 @@ def process_agent_workspace_runtime(db: Session, workspace_id: str) -> None:
             historical_generation.managed_runtime_id = None
             historical_generation.state = "DELETED"
             historical_generation.stopped_at = datetime.now(UTC)
+            if families and not graceful:
+                historical_generation.failure_code = "CHILD_RECOVERY_LEASE_TAKEOVER"
             historical_generation.row_version += 1
         DockerSandboxProvider(get_settings()).delete(deleted_resource)
         db.delete(deleted_resource)
@@ -560,7 +593,7 @@ def process_agent_workspace_runtime(db: Session, workspace_id: str) -> None:
         # digest pinned by the failed generation. With no provider-confirmed
         # writable resource, freeze the current platform image for N+1. The
         # persistent workspace, conversation state and secret remain external.
-        if get_settings().runtime_adapter != "mock":
+        if pinned_image is None and get_settings().runtime_adapter != "mock":
             _reference, current_digest = resolve_setup_image(
                 get_settings().agent_workspace_runtime_image
             )
@@ -683,6 +716,61 @@ def process_agent_workspace_runtime(db: Session, workspace_id: str) -> None:
     resource.idle_expires_at = None
     resource.last_error_code = None
     resource.last_error_detail = None
+    families = child_recovery.collect(db, runtime.id)
+    if families and (
+        runtime.active_generation != resource.generation or runtime.status != "ACTIVE"
+    ):
+        source_generation = runtime.active_generation
+        runtime.status = "RECONNECTING"
+        takeover = db.scalar(
+            select(AgentWorkspaceRuntimeGeneration)
+            .where(
+                AgentWorkspaceRuntimeGeneration.runtime_session_id == runtime.id,
+                AgentWorkspaceRuntimeGeneration.failure_code == "CHILD_RECOVERY_LEASE_TAKEOVER",
+            )
+            .order_by(AgentWorkspaceRuntimeGeneration.generation.desc())
+            .limit(1)
+        )
+        not_before = (
+            takeover.stopped_at + timedelta(seconds=45)
+            if takeover is not None and takeover.stopped_at is not None
+            else None
+        )
+        db.commit()
+        while not_before is not None and datetime.now(UTC) < not_before:
+            time.sleep(min(1.0, max((not_before - datetime.now(UTC)).total_seconds(), 0.0)))
+        try:
+            child_recovery.probe(families, resource.backend_resource_name, expected_children)
+            db.refresh(runtime, with_for_update=True)
+            db.refresh(resource)
+            db.refresh(generation, with_for_update=True)
+            db.refresh(workspace)
+            if (
+                runtime.active_generation != source_generation
+                or resource.desired_state != "RUNNING"
+                or resource.image_reference != runtime.runtime_image_digest
+                or generation.runtime_image_digest != runtime.runtime_image_digest
+                or generation.managed_runtime_id != resource.id
+                or workspace.desired_state != "RUNNING"
+                or child_recovery.collect(db, runtime.id) != families
+                or child_recovery.frozen_workspace_image(db, runtime.id)
+                != runtime.runtime_image_digest
+            ):
+                raise DomainError(
+                    "AGENT_CHILD_RECOVERY_SET_CHANGED", "恢复范围变化，数据已保留", 503
+                )
+        except DomainError as exc:
+            db.refresh(runtime)
+            if runtime.active_generation == source_generation:
+                runtime.status = "DEGRADED"
+                runtime.failure_code = exc.code
+                runtime.failure_summary = (
+                    "Native parent/child recovery failed; original state retained"
+                )
+                generation.failure_code = exc.code
+                generation.failure_summary = runtime.failure_summary
+                db.commit()
+            raise
     generation.state = "READY"
     generation.ready_at = datetime.now(UTC)
     generation.failure_code = None

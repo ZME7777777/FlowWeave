@@ -2,6 +2,7 @@
 
 COMPOSE = docker compose --env-file .env -f infra/compose.yaml
 REMOTE_DEPLOY_CONFIG ?= .local/remote-deploy.env
+RETAIN_SUCCESSFUL_CONTEXTS ?= 3
 
 install:
 	pnpm install --frozen-lockfile
@@ -97,7 +98,7 @@ remote-release-prepare:
 	python3 scripts/remote-release.py --config "$(REMOTE_DEPLOY_CONFIG)" --commit "$(COMMIT)" --scope "$(SCOPE)" --action prepare
 
 remote-release-finish:
-	python3 scripts/remote-release.py --config "$(REMOTE_DEPLOY_CONFIG)" --commit "$(COMMIT)" --scope "$(SCOPE)" --action finish --apply --confirm DELETE_FLOWWEAVE_RELEASE_CONTEXTS
+	python3 scripts/remote-release.py --config "$(REMOTE_DEPLOY_CONFIG)" --commit "$(COMMIT)" --scope "$(SCOPE)" --action finish --apply --retain-successful-contexts "$(RETAIN_SUCCESSFUL_CONTEXTS)" --confirm DELETE_FLOWWEAVE_RELEASE_CONTEXTS
 
 remote-release-audit:
 	python3 scripts/remote-release.py --config "$(REMOTE_DEPLOY_CONFIG)" --commit "$(COMMIT)" --scope "$(SCOPE)" --action audit

@@ -612,6 +612,7 @@ def _bootstrap_run(
         credential_ids=_schedule_credential_ids(db, schedule),
         conversation_id=occurrence.binding_id,
         idempotency_key=_run_binding_id(schedule, occurrence),
+        interactive=False,
     )
 
 

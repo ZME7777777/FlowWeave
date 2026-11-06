@@ -130,8 +130,25 @@ def process_manual_condensation(
 
     if not lease_is_current(db, lease):
         raise RuntimeError("task lease was lost before manual condensation")
-    handle = resolve_handle(db, binding_id)
+    from flowweave.modules.agent_sessions.application import child_sessions
+    from flowweave.modules.agent_sessions.infrastructure.models import (
+        AgentChildConversation,
+    )
+
+    relation = db.scalar(
+        select(AgentChildConversation).where(
+            AgentChildConversation.child_binding_id == binding_id
+        )
+    )
+    child_locator = (
+        child_sessions.resolve(db, relation.parent_binding_id, binding_id, write=True)
+        if relation
+        else None
+    )
+    handle = child_locator.handle if child_locator else resolve_handle(db, binding_id)
     db.rollback()
+    if child_locator is not None:
+        child_sessions.verify_native(child_locator)
     runtime = get_runtime()
     if not runtime.can_accept_input(handle):
         raise DomainError(

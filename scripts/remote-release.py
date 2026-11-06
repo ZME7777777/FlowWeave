@@ -113,10 +113,29 @@ def write_marker(directory: Path, data: dict) -> None:
     temporary.replace(directory / MARKER)
 
 
-def select_cleanup(build: Path, used_paths: list[Path], *, now: float) -> list[Path]:
+def select_cleanup(
+    build: Path, used_paths: list[Path], *, now: float, retain_successful: int = 0
+) -> list[Path]:
     """Source contexts expire independently of runnable/rollback image retention."""
     result = []
+    protected = set()
+    if retain_successful:
+        for scope in ("platform", "web"):
+            successful = []
+            for path in build.iterdir():
+                marker = read_marker(path)
+                if (
+                    marker
+                    and marker["scope"] == scope
+                    and marker["state"] == "succeeded"
+                ):
+                    successful.append((marker["finished_at"], path))
+            protected.update(
+                path for _, path in sorted(successful, reverse=True)[:retain_successful]
+            )
     for path in build.iterdir():
+        if path in protected:
+            continue
         marker = read_marker(path)
         if marker is None:
             continue
@@ -420,7 +439,7 @@ def remote_main(payload: dict) -> None:
     directory = build / release_id(payload["commit"], payload["scope"])
     if payload["action"] == "audit":
         _, used = docker_protection(build)
-        candidates = select_cleanup(build, used, now=time.time())
+        candidates = select_cleanup(build, used, now=time.time(), retain_successful=payload.get("retain_successful", 0))
         print(
             json.dumps(
                 {
@@ -493,7 +512,7 @@ def remote_main(payload: dict) -> None:
             data.update(state="succeeded", finished_at=time.time())
             write_marker(directory, data)
         _, used = docker_protection(build)
-        candidates = select_cleanup(build, used, now=time.time())
+        candidates = select_cleanup(build, used, now=time.time(), retain_successful=payload.get("retain_successful", 0))
         reviewed = {p: p.stat() for p in candidates}
         print(
             json.dumps(
@@ -511,7 +530,7 @@ def remote_main(payload: dict) -> None:
             # Re-read every reference before each destructive operation.
             for path in candidates:
                 _, used = docker_protection(build)
-                current = select_cleanup(build, used, now=time.time())
+                current = select_cleanup(build, used, now=time.time(), retain_successful=payload.get("retain_successful", 0))
                 st = path.stat()
                 before = reviewed[path]
                 if path not in current or (st.st_dev, st.st_ino, st.st_mtime_ns) != (
@@ -548,6 +567,7 @@ def main() -> None:
     parser.add_argument(
         "--action", choices=("prepare", "finish", "audit", "cleanup"), default="audit"
     )
+    parser.add_argument("--retain-successful-contexts", type=int, choices=range(0, 11), default=0)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--confirm", default="")
     args = parser.parse_args()
@@ -580,6 +600,7 @@ def main() -> None:
         "scope": args.scope,
         "action": args.action,
         "apply": args.apply,
+        "retain_successful": args.retain_successful_contexts,
     }
     encoded_source = base64.b64encode(Path(__file__).read_bytes()).decode()
     encoded_payload = base64.b64encode(json.dumps(payload).encode()).decode()

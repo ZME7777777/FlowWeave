@@ -128,6 +128,7 @@ class AgentConversationBinding(Base):
             name="ck_agent_conversation_title_state",
         ),
         CheckConstraint("title_generation >= 1", name="ck_agent_conversation_title_generation"),
+        CheckConstraint("stored_event_count >= 0", name="ck_agent_conversation_event_count"),
         CheckConstraint(
             "unread_origin IS NULL OR unread_origin IN ('MANUAL', 'SYSTEM')",
             name="ck_agent_conversation_unread_origin",
@@ -152,8 +153,17 @@ class AgentConversationBinding(Base):
     model_provider_id: Mapped[str | None] = mapped_column(String(36), index=True)
     model_name: Mapped[str | None] = mapped_column(String(240))
     reasoning_effort: Mapped[str | None] = mapped_column(String(30))
+    # The model of the most recent user event actually sent; NULL until the
+    # first send. Used only to project a "model changed" divider.
+    last_sent_provider_id: Mapped[str | None] = mapped_column(String(36))
+    last_sent_model_name: Mapped[str | None] = mapped_column(String(240))
     fallback_models_json: Mapped[list[dict[str, str | None]]] = mapped_column(JSON, default=list)
     streaming_callback_ready: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Immutable creation-time native parent authority. NULL means no opt-in;
+    # never infer it from current deployment settings or a copied conversation.
+    child_parent_manifest_json: Mapped[dict[str, object] | None] = mapped_column(
+        JSON(none_as_null=True)
+    )
     # OpenHands identifiers are UUIDs today, but the formal Runtime contract
     # permits opaque identifiers. Keep the shared locator compatible with the
     # existing FlowRun locator rather than silently truncating a future host.
@@ -174,6 +184,9 @@ class AgentConversationBinding(Base):
     manual_sort_rank: Mapped[Decimal | None] = mapped_column(Numeric(30, 12))
     activity_was_running: Mapped[bool] = mapped_column(Boolean, default=False)
     terminal_reconciliation_pending: Mapped[bool] = mapped_column(Boolean, default=False)
+    # A read scheduling watermark only. Native timestamps never identify a
+    # message or authorize unread, which is deduplicated by formal event ID.
+    child_completion_checked_activity_at: Mapped[str | None] = mapped_column(String(100))
     last_notified_completion_event_id: Mapped[str | None] = mapped_column(String(200))
     final_reply_preview_event_id: Mapped[str | None] = mapped_column(String(200))
     final_reply_preview_content: Mapped[str | None] = mapped_column(Text)
@@ -190,6 +203,7 @@ class AgentConversationBinding(Base):
     # unread, title and Runtime lifecycle changes.
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     last_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    stored_event_count: Mapped[int | None] = mapped_column(BigInteger)
     # A Worker-owned scheduling projection. It is intentionally separate from
     # the authoritative OpenHands usage counters and is only used to throttle
     # best-effort, read-only reconciliation.
@@ -197,6 +211,68 @@ class AgentConversationBinding(Base):
     usage_reconcile_after: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), index=True
     )
+
+
+class AgentChildConversation(Base):
+    """Governed native lineage and creation audit; never conversation state."""
+
+    __tablename__ = "agent_child_conversations"
+    __table_args__ = (
+        UniqueConstraint("child_binding_id", name="uq_agent_child_binding"),
+        UniqueConstraint(
+            "runtime_session_id", "child_conversation_id", name="uq_agent_child_native"
+        ),
+        UniqueConstraint("parent_binding_id", "creation_id", name="uq_agent_child_creation"),
+        UniqueConstraint(
+            "parent_binding_id", "action_id", "tool_call_id", name="uq_agent_child_invocation"
+        ),
+        CheckConstraint(
+            "parent_binding_id <> child_binding_id", name="ck_agent_child_distinct_binding"
+        ),
+        CheckConstraint(
+            "parent_conversation_id <> child_conversation_id", name="ck_agent_child_distinct_native"
+        ),
+        CheckConstraint(
+            "host_kind IN ('AGENT_WORKSPACE', 'FLOW_NODE')", name="ck_agent_child_host"
+        ),
+        CheckConstraint("accepted_generation >= 1", name="ck_agent_child_generation"),
+        CheckConstraint(
+            "length(action_id) > 0 AND length(tool_call_id) > 0 "
+            "AND manifest_digest ~ '^[0-9a-f]{64}$'",
+            name="ck_agent_child_audit",
+        ),
+        CheckConstraint(
+            "(creation_policy_version IS NULL AND request_digest IS NULL "
+            "AND expected_agent_digest IS NULL AND expected_persistence_dir IS NULL) OR "
+            "(creation_policy_version IS NOT NULL "
+            "AND creation_policy_version = 'binding-isolated-v1' "
+            "AND request_digest IS NOT NULL "
+            "AND request_digest ~ '^[0-9a-f]{64}$' AND expected_agent_digest IS NOT NULL "
+            "AND expected_agent_digest ~ '^[0-9a-f]{64}$' AND expected_persistence_dir IS NOT NULL "
+            "AND length(expected_persistence_dir) > 0)",
+            name="ck_agent_child_creation_audit",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    host_kind: Mapped[str] = mapped_column(String(30))
+    host_id: Mapped[str] = mapped_column(String(36), index=True)
+    conversation_scope_id: Mapped[str] = mapped_column(String(36))
+    runtime_session_id: Mapped[str] = mapped_column(String(36), index=True)
+    parent_binding_id: Mapped[str] = mapped_column(String(36), index=True)
+    child_binding_id: Mapped[str] = mapped_column(String(36))
+    parent_conversation_id: Mapped[str] = mapped_column(String(100))
+    child_conversation_id: Mapped[str] = mapped_column(String(100))
+    creation_id: Mapped[str] = mapped_column(String(36))
+    action_id: Mapped[str] = mapped_column(String(200))
+    tool_call_id: Mapped[str] = mapped_column(String(200))
+    accepted_generation: Mapped[int] = mapped_column(Integer)
+    manifest_digest: Mapped[str] = mapped_column(String(64))
+    creation_policy_version: Mapped[str | None] = mapped_column(String(50))
+    request_digest: Mapped[str | None] = mapped_column(String(64))
+    expected_agent_digest: Mapped[str | None] = mapped_column(String(64))
+    expected_persistence_dir: Mapped[str | None] = mapped_column(String(1000))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
 class AgentConversationSchedule(Base):
@@ -294,6 +370,26 @@ class AgentConversationMessageAttachment(Base):
     mime_type: Mapped[str] = mapped_column(String(200))
     byte_size: Mapped[int] = mapped_column(Integer)
     path: Mapped[str] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class AgentMessageModelChange(Base):
+    """Display projection: the model differed from the previous user event."""
+
+    __tablename__ = "agent_message_model_changes"
+    __table_args__ = (
+        UniqueConstraint("binding_id", "event_id", name="uq_agent_message_model_change"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    binding_id: Mapped[str] = mapped_column(String(36), index=True)
+    event_id: Mapped[str] = mapped_column(String(200))
+    from_provider_id: Mapped[str | None] = mapped_column(String(36))
+    from_model_name: Mapped[str | None] = mapped_column(String(240))
+    from_label: Mapped[str] = mapped_column(String(300))
+    to_provider_id: Mapped[str | None] = mapped_column(String(36))
+    to_model_name: Mapped[str | None] = mapped_column(String(240))
+    to_label: Mapped[str] = mapped_column(String(300))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -572,6 +668,7 @@ event.listen(AgentConversationCommand, "before_insert", _normalize_default_host)
 
 
 __all__ = (
+    "AgentChildConversation",
     "AgentConversationBinding",
     "AgentConversationHistoryGrant",
     "AgentSidebarConversation",

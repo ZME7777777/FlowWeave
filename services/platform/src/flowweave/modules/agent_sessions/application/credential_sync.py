@@ -174,3 +174,5 @@ __all__ = (
     "record_initial_credential_sync",
     "synchronize_credentials",
 )
+
+record_credential_versions = _record_versions

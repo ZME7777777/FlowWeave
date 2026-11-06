@@ -23,6 +23,7 @@ import type {
   AgentConversationInputReadiness,
   AgentConversationReference,
   AgentPendingConfirmation,
+  AgentPendingQuestion,
   AgentSessionCapability,
   AgentSessionHostDetails,
   AgentSessionMcpReadiness,
@@ -107,7 +108,7 @@ export interface AgentSessionApi {
   readonly conversations: (hostId: AgentSessionHostId, cursor?: string, limit?: number, workDirectoryId?: string) => Promise<AgentConversationPage>;
   /** Workspace-wide pinned summaries independent of each group's cursor pages. */
   readonly pinnedConversations?: (hostId: AgentSessionHostId) => Promise<AgentConversation[]>;
-  readonly conversationActivity: (hostId: AgentSessionHostId, activeBindingId?: AgentSessionBindingId) => Promise<AgentConversationActivity>;
+  readonly conversationActivity: (hostId: AgentSessionHostId, activeBindingId?: AgentSessionBindingId, activeChildId?: AgentSessionBindingId) => Promise<AgentConversationActivity>;
   readonly startConversationSearch?: (hostId: AgentSessionHostId, query: string, workDirectoryIds?: string[], includeRoot?: boolean) => Promise<AgentConversationSearch>;
   readonly conversationSearch?: (hostId: AgentSessionHostId, searchId: string, cursor?: string) => Promise<AgentConversationSearch>;
   readonly conversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversation>;
@@ -124,6 +125,8 @@ export interface AgentSessionApi {
   readonly workspaceDirectory: (hostId: AgentSessionHostId, options?: AgentSessionDirectoryOptions) => Promise<AgentSessionWorkspaceDirectory>;
   readonly gitRepositories: (hostId: AgentSessionHostId, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<AgentSessionWorkspaceGitRepositories>;
   readonly syncGitRepository: (hostId: AgentSessionHostId, repositoryPath: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<void>;
+  readonly gitBranches: (hostId: AgentSessionHostId, repositoryPath: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<import('../types').WorkspaceGitBranches>;
+  readonly switchGitBranch: (hostId: AgentSessionHostId, repositoryPath: string, body: import('../types').WorkspaceGitSwitchWrite, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<import('../types').WorkspaceGitRepository>;
   readonly gitLog: (hostId: AgentSessionHostId, repositoryPath: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<WorkspaceGitLog>;
   readonly gitChanges: (hostId: AgentSessionHostId, repositoryPath: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<WorkspaceGitChanges>;
   readonly gitWorkingDiff: (hostId: AgentSessionHostId, repositoryPath: string, kind: WorkspaceGitChangeKind, path: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<WorkspaceGitFileDiff>;
@@ -137,14 +140,15 @@ export interface AgentSessionApi {
   readonly deleteFile?: (hostId: AgentSessionHostId, path: string, options?: Omit<AgentSessionFileOptions, 'download'> & { recursive?: boolean }) => Promise<void>;
   readonly createFile?: (hostId: AgentSessionHostId, parentPath: string, name: string, kind: 'FILE' | 'DIRECTORY', options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<void>;
   readonly closeTerminal: (hostId: AgentSessionHostId, terminalInstanceId: string, options?: Omit<AgentSessionFileOptions, 'download'>) => Promise<void>;
-  readonly bootstrapConversation: (hostId: AgentSessionHostId, conversationId: string, modelProviderId: string, modelName: string, reasoningEffort: string | null, content: string, attachments?: AgentAttachment[], references?: AgentConversationReference[], workspaceReferences?: AgentWorkspaceReference[], workDirectoryId?: AgentSessionWorkDirectoryId, capabilityVersionIds?: string[], credentialIds?: string[], idempotencyKey?: string, annotations?: AgentConversationAnnotation[], goalObjective?: string) => Promise<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>;
+  readonly bootstrapConversation: (hostId: AgentSessionHostId, conversationId: string, modelProviderId: string, modelName: string, reasoningEffort: string | null, content: string, attachments?: AgentAttachment[], references?: AgentConversationReference[], workspaceReferences?: AgentWorkspaceReference[], workDirectoryId?: AgentSessionWorkDirectoryId, capabilityVersionIds?: string[], credentialIds?: string[], idempotencyKey?: string, annotations?: AgentConversationAnnotation[], goalObjective?: string) => Promise<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null; event_id?: string | null }>;
+  readonly cancelConversationBootstrap?: (hostId: AgentSessionHostId, submissionId: string) => Promise<{ cancelled: boolean }>;
   readonly updateConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, title: string) => Promise<AgentConversation>;
   readonly setConversationPinned: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, pinned: boolean) => Promise<AgentConversation>;
   readonly setConversationUnread: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, unread: boolean, unreadOrigin?: 'MANUAL' | 'SYSTEM') => Promise<AgentConversation>;
   /** Node-session hosts intentionally omit this workspace-local presentation control. */
   readonly reorderConversation?: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, orderedBindingIds: AgentSessionBindingId[]) => Promise<AgentConversation>;
   readonly archiveConversation?: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversation>;
-  readonly deleteConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<void>;
+  readonly deleteConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<import('../types').AgentConversationDeleteResult>;
   readonly conversationEvents: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, cursor?: string, historyCursor?: string, diagnosticTrigger?: string, signal?: AbortSignal) => Promise<OpenHandsConversationEventBatch>;
   readonly conversationHydration: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, signal?: AbortSignal, cursor?: string) => Promise<AgentConversationHydration>;
   /** Bounded native HEAD check before reusing an in-memory complete branch. */
@@ -154,13 +158,15 @@ export interface AgentSessionApi {
   readonly credentialSync: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentConversationCredentialSyncState>;
   readonly synchronizeCredentials: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, credentialIds: string[]) => Promise<AgentConversationCredentialSyncState>;
   readonly pendingConfirmation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentPendingConfirmation>;
+  /** Formal ask_user question; hosts without the capability omit it. */
+  readonly pendingQuestion?: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<AgentPendingQuestion>;
   /**
    * `clientMessageId` keeps one browser dispatch attempt stable at the HTTP
    * edge. It is not an exactly-once promise: OpenHands 1.47 has no formal
    * event idempotency field, so callers must not retry ambiguous delivery.
    */
   readonly cancelMessageSubmission: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, submissionId: string) => Promise<{ cancelled: boolean }>;
-  readonly sendMessage: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, content: string, attachments?: AgentAttachment[], references?: AgentConversationReference[], workspaceReferences?: AgentWorkspaceReference[], annotations?: AgentConversationAnnotation[], clientMessageId?: string) => Promise<{ accepted: boolean; cursor?: string | null; compacted?: boolean; queued_during_turn?: boolean }>;
+  readonly sendMessage: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, content: string, attachments?: AgentAttachment[], references?: AgentConversationReference[], workspaceReferences?: AgentWorkspaceReference[], annotations?: AgentConversationAnnotation[], clientMessageId?: string, answeredQuestion?: string) => Promise<{ accepted: boolean; cursor?: string | null; event_id?: string | null; compacted?: boolean; queued_during_turn?: boolean }>;
   readonly migrateStreamingConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, modelProviderId: string, modelName?: string | null, reasoningEffort?: string | null) => Promise<AgentConversation>;
   readonly uploadConversationAttachment: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, file: File, onProgress?: UploadProgressHandler) => Promise<AgentAttachment>;
   readonly uploadDraftAttachment: (hostId: AgentSessionHostId, file: File, workDirectoryId?: AgentSessionWorkDirectoryId, conversationId?: string, onProgress?: UploadProgressHandler) => Promise<AgentAttachment>;
@@ -176,7 +182,7 @@ export interface AgentSessionApi {
   readonly resumeConversation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId) => Promise<{ accepted: boolean; cursor?: string | null }>;
   readonly decideConfirmation: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, expectedPendingDigest: string, accept: boolean, reason: string) => Promise<{ accepted: boolean; cursor?: string | null }>;
   /** Replays the edited user turn with its authorized non-text context intact. */
-  readonly rerunMessage: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, eventId: string, content: string, attachments?: AgentAttachment[], references?: AgentConversationReference[], workspaceReferences?: AgentWorkspaceReference[], annotations?: AgentConversationAnnotation[]) => Promise<{ accepted: boolean; cursor?: string | null }>;
+  readonly rerunMessage: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, eventId: string, content: string, attachments?: AgentAttachment[], references?: AgentConversationReference[], workspaceReferences?: AgentWorkspaceReference[], annotations?: AgentConversationAnnotation[]) => Promise<{ accepted: boolean; cursor?: string | null; event_id?: string | null }>;
   readonly switchConversationModel: (hostId: AgentSessionHostId, bindingId: AgentSessionBindingId, modelProviderId: string, modelName: string, reasoningEffort: string | null) => Promise<{ model_provider_id: string; model_name?: string | null; reasoning_effort?: string | null }>;
 }
 
@@ -226,6 +232,8 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     workspaceDirectory: api.agentWorkspaceDirectory,
     gitRepositories: api.agentWorkspaceGitRepositories,
     syncGitRepository: api.syncAgentWorkspaceGitRepository,
+    gitBranches: api.agentWorkspaceGitBranches,
+    switchGitBranch: api.switchAgentWorkspaceGitBranch,
     gitLog: api.agentWorkspaceGitLog,
     gitChanges: api.agentWorkspaceGitChanges,
     gitWorkingDiff: api.agentWorkspaceGitWorkingDiff,
@@ -240,6 +248,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     createFile: api.createAgentWorkspaceEntry,
     closeTerminal: api.closeAgentWorkspaceTerminal,
     bootstrapConversation: api.bootstrapAgentConversation,
+    cancelConversationBootstrap: api.cancelAgentConversationBootstrap,
     updateConversation: api.updateAgentConversation,
     reorderConversation: api.reorderAgentConversation,
     archiveConversation: api.archiveAgentConversation,
@@ -253,6 +262,7 @@ export const agentWorkspaceSessionGateway: AgentSessionGateway = {
     credentialSync: api.agentConversationCredentialSync,
     synchronizeCredentials: api.synchronizeAgentConversationCredentials,
     pendingConfirmation: api.agentPendingConfirmation,
+    pendingQuestion: api.agentPendingQuestion,
     sendMessage: api.sendAgentMessage,
     cancelMessageSubmission: api.cancelAgentMessageSubmission,
     migrateStreamingConversation: api.migrateAgentStreamingConversation,
@@ -294,7 +304,7 @@ export function flowNodeSessionGateway(
       defaultHost: signal => nodeSessionApi.host(flowRunId, attemptId, signal),
       runtime: () => nodeSessionApi.runtime(flowRunId, attemptId),
       conversations: (_hostId, cursor, limit, workDirectoryId) => nodeSessionApi.conversations(flowRunId, attemptId, cursor, limit, workDirectoryId),
-      conversationActivity: (_hostId, activeBindingId) => nodeSessionApi.activity(flowRunId, attemptId, activeBindingId),
+      conversationActivity: (_hostId, activeBindingId, activeChildId) => nodeSessionApi.activity(flowRunId, attemptId, activeBindingId, activeChildId),
       conversation: (_hostId, bindingId) => nodeSessionApi.get(flowRunId, attemptId, bindingId),
       workDirectories: () => nodeSessionApi.workDirectories(flowRunId, attemptId),
       providers: api.providers,
@@ -327,6 +337,10 @@ export function flowNodeSessionGateway(
           flowRunId, attemptId, repositoryPath, options?.bindingId, options?.workDirectoryId,
         );
       },
+      gitBranches: (_hostId, repositoryPath, options) =>
+        nodeSessionApi.gitBranches(flowRunId, attemptId, repositoryPath, options?.bindingId, options?.workDirectoryId),
+      switchGitBranch: (_hostId, repositoryPath, body, options) =>
+        nodeSessionApi.switchGitBranch(flowRunId, attemptId, repositoryPath, body, options?.bindingId, options?.workDirectoryId),
       gitLog: (_hostId, repositoryPath, options) =>
         nodeSessionApi.gitLog(flowRunId, attemptId, repositoryPath, options?.bindingId, options?.workDirectoryId),
       gitChanges: (_hostId, repositoryPath, options) =>
@@ -395,8 +409,8 @@ export function flowNodeSessionGateway(
       pendingConfirmation: (_hostId, bindingId) => nodeSessionApi.pendingConfirmation(flowRunId, attemptId, bindingId),
       cancelMessageSubmission: (_hostId, bindingId, submissionId) =>
         nodeSessionApi.cancelMessageSubmission(flowRunId, attemptId, bindingId, submissionId),
-      sendMessage: (_hostId, bindingId, content, attachments = [], references = [], workspaceReferences = [], annotations = [], clientMessageId) =>
-        nodeSessionApi.message(flowRunId, attemptId, bindingId, content, attachments, references, workspaceReferences, clientMessageId, annotations),
+      sendMessage: (_hostId, bindingId, content, attachments = [], references = [], workspaceReferences = [], annotations = [], clientMessageId, answeredQuestion) =>
+        nodeSessionApi.message(flowRunId, attemptId, bindingId, content, attachments, references, workspaceReferences, clientMessageId, annotations, answeredQuestion),
       migrateStreamingConversation: (_hostId, bindingId, providerId, modelName, reasoningEffort) =>
         nodeSessionApi.migrate(flowRunId, attemptId, bindingId, providerId, modelName, reasoningEffort),
       uploadConversationAttachment: (_hostId, bindingId, file, onProgress) =>

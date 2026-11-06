@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
+from collections.abc import Sequence
 from pathlib import PurePosixPath
 from typing import Any
 from uuid import uuid4
@@ -40,6 +41,7 @@ from flowweave.shared.schemas import (
     AttemptVersionWrite,
     AutomaticRunCopyWrite,
     AutomaticRunStartWrite,
+    CaseBundleImportWrite,
     CaseControlConversationWrite,
     CaseControlPlanWrite,
     CaseControlSuggestionWrite,
@@ -93,6 +95,23 @@ def require_case_action(item: Case, action: str) -> None:
             409,
             {"case_id": item.id, "action": action},
         )
+
+
+def _pause_case(item: Case, reason: str, note: str | None = None) -> None:
+    """Single place that parks a Case, so the UI and coordinator never infer why."""
+
+    item.state = "PAUSED"
+    item.pause_reason = reason
+    item.pause_note = note
+    item.row_version += 1
+
+
+def _resume_case(item: Case, note: str | None) -> None:
+    item.state = "ACTIVE"
+    item.pause_reason = None
+    item.pause_note = None
+    item.resume_note = note
+    item.row_version += 1
 
 
 def _stage_start_result(proposal: CaseDecisionProposal) -> dict[str, Any]:
@@ -190,7 +209,9 @@ def _stage_execution_summary(db: Session, stage: CaseStage) -> dict[str, Any] | 
                 "state": (
                     latest_attempt["state"]
                     if latest_attempt is not None
-                    else node_run["state"] if node_run is not None else "PENDING"
+                    else node_run["state"]
+                    if node_run is not None
+                    else "PENDING"
                 ),
                 "active": bool(active and active["node_key"] == key),
             }
@@ -218,7 +239,7 @@ def _stage_execution_summary(db: Session, stage: CaseStage) -> dict[str, Any] | 
     }
 
 
-def _stage_dict(db: Session, item: CaseStage) -> dict[str, Any]:
+def _stage_dict(db: Session, item: CaseStage, *, summary: bool = False) -> dict[str, Any]:
     return {
         "id": item.id,
         "case_id": item.case_id,
@@ -230,7 +251,7 @@ def _stage_dict(db: Session, item: CaseStage) -> dict[str, Any]:
         "current_execution_flow_run_id": item.current_execution_flow_run_id,
         "execution_mode": item.execution_mode,
         "state": item.state,
-        "execution": _stage_execution_summary(db, item),
+        "execution": None if summary else _stage_execution_summary(db, item),
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
     }
@@ -430,7 +451,9 @@ def _write_case_files(db: Session, item: Case) -> None:
     )
 
 
-def _case_dict(db: Session, item: Case) -> dict[str, Any]:
+def _case_dict(db: Session, item: Case, *, summary: bool = False) -> dict[str, Any]:
+    """Project a Case; ``summary`` omits the heavy per-case history for list views."""
+
     from flowweave.modules.cases.application.feedback import delivery_status
 
     current_round = (
@@ -441,21 +464,25 @@ def _case_dict(db: Session, item: Case) -> dict[str, Any]:
     stages = db.scalars(
         select(CaseStage).where(CaseStage.case_id == item.id).order_by(CaseStage.position)
     ).all()
-    tasks = db.scalars(
-        select(CaseAgentTask)
-        .where(CaseAgentTask.case_id == item.id)
-        .order_by(CaseAgentTask.created_at.desc())
-    ).all()
-    proposals = db.scalars(
-        select(CaseDecisionProposal)
-        .where(CaseDecisionProposal.case_id == item.id)
-        .order_by(CaseDecisionProposal.created_at.desc())
-    ).all()
-    control_plans = db.scalars(
-        select(CaseControlPlan)
-        .where(CaseControlPlan.case_id == item.id)
-        .order_by(CaseControlPlan.created_at.desc())
-    ).all()
+    tasks: Sequence[CaseAgentTask] = ()
+    proposals: Sequence[CaseDecisionProposal] = ()
+    control_plans: Sequence[CaseControlPlan] = ()
+    if not summary:
+        tasks = db.scalars(
+            select(CaseAgentTask)
+            .where(CaseAgentTask.case_id == item.id)
+            .order_by(CaseAgentTask.created_at.desc())
+        ).all()
+        proposals = db.scalars(
+            select(CaseDecisionProposal)
+            .where(CaseDecisionProposal.case_id == item.id)
+            .order_by(CaseDecisionProposal.created_at.desc())
+        ).all()
+        control_plans = db.scalars(
+            select(CaseControlPlan)
+            .where(CaseControlPlan.case_id == item.id)
+            .order_by(CaseControlPlan.created_at.desc())
+        ).all()
     rounds = db.scalars(
         select(CaseControlRound)
         .where(CaseControlRound.case_id == item.id)
@@ -480,6 +507,8 @@ def _case_dict(db: Session, item: Case) -> dict[str, Any]:
         "work_directory_id": item.work_directory_id,
         "session_config": item.session_config_json or {},
         "state": item.state,
+        "pause_reason": (item.pause_reason or "MANUAL") if item.state == "PAUSED" else None,
+        "pause_note": item.pause_note if item.state == "PAUSED" else None,
         "control_conversation_binding_id": (
             item.control_conversation_binding_id
             if current_round is None or current_round.state == "STARTED"
@@ -501,11 +530,11 @@ def _case_dict(db: Session, item: Case) -> dict[str, Any]:
             for entry in rounds
         ],
         "row_version": item.row_version,
-        "stages": [_stage_dict(db, stage) for stage in stages],
+        "stages": [_stage_dict(db, stage, summary=summary) for stage in stages],
         "flow_run_ids": _case_flow_runs(db, item.id),
         "tasks": [_task_dict(task) for task in tasks],
         "decision_proposals": [_proposal_dict(proposal) for proposal in proposals],
-        "feedback_deliveries": delivery_status(db, item.id),
+        "feedback_deliveries": [] if summary else delivery_status(db, item.id),
         "control_plans": [_control_plan_dict(plan) for plan in control_plans],
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
@@ -513,9 +542,8 @@ def _case_dict(db: Session, item: Case) -> dict[str, Any]:
 
 
 def list_cases(db: Session) -> list[dict[str, Any]]:
-    return [
-        _case_dict(db, item) for item in db.scalars(select(Case).order_by(Case.updated_at.desc()))
-    ]
+    cases = db.scalars(select(Case).order_by(Case.updated_at.desc()))
+    return [_case_dict(db, item, summary=True) for item in cases]
 
 
 def get_case(db: Session, case_id: str) -> dict[str, Any]:
@@ -556,6 +584,250 @@ def create_case(db: Session, payload: CaseCreateWrite) -> dict[str, Any]:
     write_case_files(db, item)
     finish(db)
     return _case_dict(db, item)
+
+
+_CASE_BUNDLE_FORMAT = "flowweave.case-bundle"
+
+
+def _stage_blueprint(stage: CaseStage) -> dict[str, Any]:
+    return {
+        "stage_key": stage.stage_key,
+        "name": stage.name,
+        "objective": stage.objective,
+        "execution_mode": stage.execution_mode,
+        "template_flow_run_id": stage.flow_run_id,
+    }
+
+
+def _build_case_from_blueprint(
+    db: Session,
+    *,
+    name: str,
+    description: str,
+    objective: str,
+    work_directory_id: str | None,
+    link_materials: list[dict[str, Any]],
+    file_materials: list[tuple[str, bytes | None]],
+    stages: list[dict[str, Any]],
+    session_config: dict[str, Any],
+) -> dict[str, Any]:
+    """One creation path for both *copy* and *import*, so they can never diverge.
+
+    A blueprint is configuration only. Each stage's reusable launch template is cloned into a
+    new, independent record (``case_stages.flow_run_id`` is unique, so two Cases can never share
+    one). Runtime state - coordinator conversations, execution copies, plans, proposals, pause
+    state - has no place in a blueprint and is therefore never inherited. Whatever cannot be
+    carried over is reported in ``copy_report`` instead of failing the whole operation or being
+    silently dropped.
+    """
+
+    workspace = agent_workspaces.ensure_default_agent_workspace(db)
+    report: dict[str, list[dict[str, str]]] = {"copied": [], "skipped": []}
+    if work_directory_id:
+        work_directories.get_work_directory(db, workspace.id, work_directory_id)
+
+    item = Case(
+        name=name[:220],
+        description=description,
+        objective=objective,
+        work_directory_id=work_directory_id,
+        materials_json=[],
+    )
+    db.add(item)
+    db.flush()
+    directory = agent_workspaces.create_case_work_directory(
+        db, workspace.id, item.id, f"Case · {item.name[:120]} · {item.id[:8]}"
+    )
+    item.control_work_directory_id = str(directory["id"])
+
+    materials: list[dict[str, Any]] = [dict(material) for material in link_materials]
+    for filename, content in file_materials:
+        if content is None:
+            report["skipped"].append({"item": f"资料 {filename}", "reason": "FILE_UNAVAILABLE"})
+            continue
+        stored = agent_workspaces.write_case_material_file(db, workspace.id, item.id, content)
+        materials.append({"kind": "FILE", "name": filename, "value": stored})
+    item.materials_json = materials
+
+    for position, blueprint in enumerate(stages):
+        label = f"「{blueprint['name']}」的流程模板"
+        copied_stage = CaseStage(
+            case_id=item.id,
+            stage_key=blueprint["stage_key"],
+            name=blueprint["name"],
+            objective=blueprint["objective"],
+            position=position,
+            state="ACTIVE" if position == 0 else "PENDING",
+            execution_mode=blueprint["execution_mode"],
+        )
+        db.add(copied_stage)
+        template_id = blueprint.get("template_flow_run_id")
+        if not template_id:
+            continue
+        template = db.get(FlowRun, template_id)
+        if template is None:
+            report["skipped"].append({"item": label, "reason": "TEMPLATE_UNAVAILABLE"})
+            continue
+        clone_name = f"{item.name} · {blueprint['name']} 模板"[:220]
+        try:
+            with savepoint(db):
+                if blueprint["execution_mode"] == "STEPWISE":
+                    if template.parent_flow_run_id is None:
+                        raise conflict("source stepwise template is not a record")
+                    clone = orchestration.copy_nested_stepwise_run_record(
+                        db,
+                        template.parent_flow_run_id,
+                        template.id,
+                        StepwiseRunRecordCopyWrite(name=clone_name),
+                        as_template=True,
+                    )
+                else:
+                    clone = orchestration.copy_automatic_run_draft(
+                        db, template.id, AutomaticRunCopyWrite(name=clone_name)
+                    )
+            copied_stage.flow_run_id = str(clone["id"])
+            report["copied"].append({"item": label, "reason": "COPIED"})
+        except DomainError as exc:
+            report["skipped"].append({"item": label, "reason": exc.code or "TEMPLATE_NOT_COPIED"})
+
+    if session_config:
+        try:
+            config = CaseControlConversationWrite.model_validate(session_config)
+            item.session_config_json = validate_case_session_config(db, config)
+            report["copied"].append({"item": "Case Agent 会话配置", "reason": "COPIED"})
+        except (DomainError, ValueError) as exc:
+            report["skipped"].append(
+                {
+                    "item": "Case Agent 会话配置",
+                    "reason": getattr(exc, "code", "SESSION_CONFIG_INVALID"),
+                }
+            )
+
+    item.state = "ACTIVE" if stages else "DRAFT"
+    write_case_files(db, item)
+    finish(db)
+    return {**_case_dict(db, item), "copy_report": report}
+
+
+def _read_source_files(db: Session, source: Case) -> list[tuple[str, bytes | None]]:
+    workspace = agent_workspaces.ensure_default_agent_workspace(db)
+    files: list[tuple[str, bytes | None]] = []
+    for material in source.materials_json or []:
+        if material["kind"] != "FILE":
+            continue
+        try:
+            content: bytes | None = agent_workspaces.read_case_material_file(
+                db, workspace.id, source.id, material["value"]
+            )
+        except DomainError:
+            content = None
+        files.append((material["name"], content))
+    return files
+
+
+def copy_case(db: Session, case_id: str) -> dict[str, Any]:
+    """Create a new Case from a source Case's configuration, never its runtime."""
+
+    source = _case(db, case_id)
+    stages = list(
+        db.scalars(
+            select(CaseStage).where(CaseStage.case_id == source.id).order_by(CaseStage.position)
+        )
+    )
+    return _build_case_from_blueprint(
+        db,
+        name=f"{source.name} 副本",
+        description=source.description,
+        objective=source.objective,
+        work_directory_id=source.work_directory_id,
+        link_materials=[m for m in source.materials_json or [] if m["kind"] == "LINK"],
+        file_materials=_read_source_files(db, source),
+        stages=[_stage_blueprint(stage) for stage in stages],
+        session_config=dict(source.session_config_json or {}),
+    )
+
+
+def export_cases(db: Session, case_ids: Sequence[str]) -> dict[str, Any]:
+    """Export Cases as a self-describing bundle (references + file contents, no runtime).
+
+    The bundle refers to each stage's template record by id, which is meaningful on the same
+    platform only; it is a backup/migration document, not a portable template definition.
+    Secrets never appear: the session configuration holds capability and credential *ids*.
+    """
+
+    import base64
+
+    entries: list[dict[str, Any]] = []
+    for case_id in case_ids:
+        source = _case(db, case_id)
+        stages = list(
+            db.scalars(
+                select(CaseStage).where(CaseStage.case_id == source.id).order_by(CaseStage.position)
+            )
+        )
+        entries.append(
+            {
+                "name": source.name,
+                "description": source.description,
+                "objective": source.objective,
+                "work_directory_id": source.work_directory_id,
+                "link_materials": [m for m in source.materials_json or [] if m["kind"] == "LINK"],
+                "file_materials": [
+                    {
+                        "name": name,
+                        "content_base64": None
+                        if content is None
+                        else base64.b64encode(content).decode("ascii"),
+                    }
+                    for name, content in _read_source_files(db, source)
+                ],
+                "stages": [_stage_blueprint(stage) for stage in stages],
+                "session_config": dict(source.session_config_json or {}),
+            }
+        )
+    return {
+        "format": _CASE_BUNDLE_FORMAT,
+        "version": 1,
+        "exported_at": now().isoformat(),
+        "cases": entries,
+    }
+
+
+def import_cases(db: Session, payload: CaseBundleImportWrite) -> list[dict[str, Any]]:
+    """Recreate Cases from an export bundle through the same path as *copy*."""
+
+    import base64
+    import binascii
+
+    created: list[dict[str, Any]] = []
+    for entry in payload.cases:
+        files: list[tuple[str, bytes | None]] = []
+        for material in entry.file_materials:
+            try:
+                content = (
+                    base64.b64decode(material.content_base64, validate=True)
+                    if material.content_base64 is not None
+                    else None
+                )
+            except (binascii.Error, ValueError):
+                content = None
+            if content is not None and len(content) > 64 * 1024 * 1024:
+                content = None
+            files.append((material.name, content))
+        created.append(
+            _build_case_from_blueprint(
+                db,
+                name=entry.name,
+                description=entry.description,
+                objective=entry.objective,
+                work_directory_id=entry.work_directory_id,
+                link_materials=[m.model_dump() for m in entry.link_materials],
+                file_materials=files,
+                stages=[stage.model_dump() for stage in entry.stages],
+                session_config=entry.session_config,
+            )
+        )
+    return created
 
 
 def _editable_case(db: Session, case_id: str, expected_row_version: int) -> Case:
@@ -714,13 +986,155 @@ def set_case_coordination_state(
     if state not in {"ACTIVE", "PAUSED"} or item.state not in {"ACTIVE", "PAUSED"}:
         raise DomainError("CASE_STATE_TRANSITION_INVALID", "当前场景不可暂停或恢复", 409)
     if item.state != state:
-        item.state = state
-        item.row_version += 1
-        if state == "ACTIVE":
-            from flowweave.modules.cases.application.feedback import record_case_change
+        if state == "PAUSED":
+            _pause_case(item, "MANUAL")
+        else:
+            if item.pause_reason == "CONCLUSION_PROPOSED":
+                raise DomainError(
+                    "CASE_CONCLUSION_DECISION_REQUIRED",
+                    "Agent 提议结束场景，请选择“确认结束”或“继续”",
+                    409,
+                )
+            # A plain resume of a question the human has not answered in the conversation is
+            # still allowed (the Agent re-reads state); the note tells it what happened.
+            note = (
+                "用户未在会话中回复你的提问，而是直接恢复了场景；不要假设已获得回答，"
+                "请重新读取最新状态，并在必要时用 ask_user 再次确认（不要重复相同问题）。"
+                if item.pause_reason == "WAITING_HUMAN"
+                else None
+            )
+            _resume_case(item, note)
+        from flowweave.modules.cases.application.feedback import record_case_change
 
+        if state == "ACTIVE":
             record_case_change(db, item, "CASE_RESUMED")
         write_case_files(db, item)
+    finish(db)
+    return _case_dict(db, item)
+
+
+def note_case_control_waiting(db: Session, binding_id: str) -> bool:
+    """Mirror an open ask_user question onto the Case: it waits for the human, not the Agent.
+
+    The fact is the latest formal ask_user event with no later user message; there is no
+    Case-level action the Agent must remember to call.
+    """
+
+    item = db.scalar(
+        select(Case).where(Case.control_conversation_binding_id == binding_id).with_for_update()
+    )
+    if item is None or item.state != "ACTIVE":
+        return False
+    _pause_case(item, "WAITING_HUMAN", "Agent 正在等待你在会话中的回复")
+    write_case_files(db, item)
+    return True
+
+
+def note_case_control_reply(db: Session, binding_id: str, reply_event_id: str | None) -> bool:
+    """Resume a Case waiting on an open ask_user question once the human replied in the control conversation.
+
+    The reply is the formal user MessageEvent that resumes the native ask_user wait; this only
+    mirrors that fact onto the Case. Returns True when a Case was resumed.
+    """
+
+    item = db.scalar(
+        select(Case).where(Case.control_conversation_binding_id == binding_id).with_for_update()
+    )
+    if item is None or item.state != "PAUSED" or item.pause_reason != "WAITING_HUMAN":
+        return False
+    reference = f"（回复事件 {reply_event_id}）" if reply_event_id else ""
+    _resume_case(
+        item,
+        f"用户已在会话中回复你的提问{reference}。请先阅读该回复；若回复是“跳过”，"
+        "则按你推荐的稳妥方案继续并说明假设；然后重新读取最新状态再行动。",
+    )
+    from flowweave.modules.cases.application.feedback import record_case_change
+
+    record_case_change(db, item, "CASE_RESUMED")
+    write_case_files(db, item)
+    return True
+
+
+def _finish_conclusion(db: Session, item: Case, plan: CaseControlPlan) -> dict[str, Any]:
+    """The irreversible tail of an early conclusion; only a human confirmation reaches it."""
+
+    stage = db.get(CaseStage, plan.stage_id)
+    if stage is None or stage.case_id != item.id:
+        raise conflict("Case stage is not part of this Case", stage_id=plan.stage_id)
+    running = stage.current_execution_flow_run_id
+    cancelled = False
+    run = db.get(FlowRun, running) if running else None
+    if run is not None and run.state not in {"COMPLETED", "FAILED", "CANCELLED"}:
+        orchestration.cancel_run(db, run.id, f"case-plan-conclude:{plan.id}")
+        cancelled = True
+    skipped: list[str] = []
+    for later in db.scalars(
+        select(CaseStage).where(CaseStage.case_id == item.id, CaseStage.position > stage.position)
+    ):
+        if later.state not in {"COMPLETED", "SKIPPED"}:
+            later.state = "SKIPPED"
+            skipped.append(later.stage_key)
+    stage.state = "COMPLETED"
+    item.state = "COMPLETED"
+    item.pause_reason = None
+    item.pause_note = None
+    item.row_version += 1
+    return {
+        "concluded_stage_key": stage.stage_key,
+        "skipped_stage_keys": skipped,
+        "execution_cancelled": cancelled,
+        "conclusion": plan.reason,
+    }
+
+
+def _pending_conclusion(db: Session, item: Case) -> CaseControlPlan:
+    if item.state != "PAUSED" or item.pause_reason != "CONCLUSION_PROPOSED":
+        raise DomainError("CASE_NO_CONCLUSION_PROPOSED", "当前没有待确认的结束提议", 409)
+    plan = db.scalar(
+        select(CaseControlPlan)
+        .where(
+            CaseControlPlan.case_id == item.id,
+            CaseControlPlan.action == "CONCLUDE_CASE",
+            CaseControlPlan.state == "SUCCEEDED",
+        )
+        .order_by(CaseControlPlan.created_at.desc())
+        .limit(1)
+    )
+    if plan is None or plan.result_json.get("resolution"):
+        raise DomainError("CASE_NO_CONCLUSION_PROPOSED", "当前没有待确认的结束提议", 409)
+    return plan
+
+
+def confirm_case_conclusion(db: Session, case_id: str, expected_row_version: int) -> dict[str, Any]:
+    """Human accepts the coordinator's proposal: the Case really ends."""
+
+    item = _editable_case(db, case_id, expected_row_version)
+    plan = _pending_conclusion(db, item)
+    outcome = _finish_conclusion(db, item, plan)
+    plan.result_json = {**plan.result_json, **outcome, "resolution": "CONFIRMED"}
+    write_case_files(db, item)
+    finish(db)
+    return _case_dict(db, item)
+
+
+def reject_case_conclusion(
+    db: Session, case_id: str, expected_row_version: int, note: str | None = None
+) -> dict[str, Any]:
+    """Human declines: the Case resumes untouched and the coordinator is told why."""
+
+    item = _editable_case(db, case_id, expected_row_version)
+    plan = _pending_conclusion(db, item)
+    plan.result_json = {**plan.result_json, "resolution": "REJECTED"}
+    detail = (note or "").strip()
+    _resume_case(
+        item,
+        "用户否决了你提出的提前结束，场景与执行保持原样，请继续推进。"
+        + (f"用户补充：{detail}" if detail else ""),
+    )
+    from flowweave.modules.cases.application.feedback import record_case_change
+
+    record_case_change(db, item, "CASE_RESUMED")
+    write_case_files(db, item)
     finish(db)
     return _case_dict(db, item)
 
@@ -1218,10 +1632,12 @@ def reconcile_case_execution_state(db: Session, flow_run_id: str) -> None:
             stage.state = "REVIEW_PENDING"
             changed = True
         elif run.state == "CANCELLED" and stage.state == "ACTIVE":
-            item.state = "PAUSED"
+            if item.state != "PAUSED":
+                _pause_case(item, "EXECUTION_CANCELLED", "当前执行已被取消")
             changed = True
         if changed:
-            item.row_version += 1
+            if item.state != "PAUSED" or item.pause_reason != "EXECUTION_CANCELLED":
+                item.row_version += 1
             write_case_files(db, item)
     db.flush()
 
@@ -1363,6 +1779,33 @@ def _create_case_control_plan(
     return _control_plan_dict(plan)
 
 
+def _plan_snapshot(plan: CaseControlPlan) -> dict[str, Any]:
+    """Plain copy of a plan row, usable after a rollback expires or removes the ORM object."""
+
+    columns = CaseControlPlan.__table__.columns.keys()
+    return {name: getattr(plan, name) for name in columns}
+
+
+def _restore_plan_after_rollback(
+    db: Session, plan: CaseControlPlan, snapshot: dict[str, Any]
+) -> CaseControlPlan:
+    """Return a live plan row, re-inserting it when the session rollback removed it."""
+
+    try:
+        db.refresh(plan)
+        return plan
+    except Exception:
+        # ObjectDeletedError / InvalidRequestError: the row did not survive the rollback.
+        try:
+            db.expunge(plan)
+        except Exception:  # noqa: BLE001 - already detached
+            pass
+        restored = CaseControlPlan(**snapshot)
+        db.add(restored)
+        db.flush()
+        return restored
+
+
 def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[str, Any]:
     """Validate and dispatch one Case plan through established orchestration services."""
 
@@ -1382,6 +1825,7 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
     if plan.state == "EXECUTING":
         raise conflict("Case control plan is already executing", plan_id=plan.id)
     require_case_action(item, plan.action)
+    plan_snapshot = _plan_snapshot(plan)
     stage = _stage(db, item, plan.stage_id)
     allowed_stage_state = (
         "REVIEW_PENDING"
@@ -1394,8 +1838,22 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
         }
         else "ACTIVE"
     )
+    if plan.action == "CONCLUDE_CASE" and stage.state in {
+        "ACTIVE",
+        "REVIEW_PENDING",
+    }:
+        allowed_stage_state = stage.state
     if stage.state != allowed_stage_state:
-        raise conflict("Case plan does not match the current stage state", state=stage.state)
+        # Versions can match here, so this is a precondition failure, not a concurrent edit.
+        # Report it as such, otherwise the coordinator keeps re-reading and waiting for a version
+        # change that can never make the stage ready.
+        raise DomainError(
+            "CASE_STAGE_STATE_NOT_READY",
+            f"{plan.action} 需要阶段处于 {allowed_stage_state}，当前为 {stage.state}；"
+            "这不是并发冲突，重新读取不会改变结果。请先让流程跑到可评审状态。",
+            409,
+            {"required_stage_state": allowed_stage_state, "stage_state": stage.state},
+        )
     db.refresh(item, with_for_update=True)
     db.refresh(stage)
     require_case_action(item, plan.action)
@@ -1597,6 +2055,16 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
                     requested.get("evidence_artifact_version_ids") or []
                 ),
             }
+        elif plan.action == "CONCLUDE_CASE":
+            # The coordinator may only PROPOSE. Nothing is cancelled or skipped until a human
+            # confirms; a rejection resumes the Case exactly as it was.
+            _pause_case(item, "CONCLUSION_PROPOSED", plan.reason)
+            result = {
+                "proposal": plan.reason,
+                "case_state": "PAUSED",
+                "next": "已提交结束提议并暂停场景，执行与阶段保持不变；由用户决定“确认结束”或"
+                "“继续”。被否决时你会收到通知，需重新读取最新状态后继续推进。",
+            }
         elif plan.action == "STOP_EXECUTION":
             if not stage.current_execution_flow_run_id:
                 raise conflict("Case stage has no execution copy", stage_id=stage.id)
@@ -1608,6 +2076,10 @@ def execute_case_control_plan(db: Session, case_id: str, plan_id: str) -> dict[s
         else:
             raise illegal("Case control plan action is not yet dispatchable", action=plan.action)
     except Exception as exc:
+        # An orchestration command may roll the session back to report a stale version. That also
+        # discards a plan row created in the same transaction, so restore it before recording the
+        # failure; otherwise the handler itself crashes (ObjectDeletedError) and hides the cause.
+        plan = _restore_plan_after_rollback(db, plan, plan_snapshot)
         plan.state = "FAILED"
         plan.error_code = str(getattr(exc, "code", "CASE_CONTROL_PLAN_FAILED"))
         plan.result_json = {"code": plan.error_code}
@@ -1757,9 +2229,7 @@ def rerun_case_stage(db: Session, case_id: str, stage_id: str) -> dict[str, Any]
             {"stage_id": stage.id, "flow_run_id": run.id, "state": run.state},
         )
     if _case_has_unresolved_control_plan(db, item.id):
-        raise DomainError(
-            "CASE_CONTROL_PLAN_UNRESOLVED", "仍有未完成的受控动作，请稍后再试", 409
-        )
+        raise DomainError("CASE_CONTROL_PLAN_UNRESOLVED", "仍有未完成的受控动作，请稍后再试", 409)
     later = [
         other
         for other in db.scalars(select(CaseStage).where(CaseStage.case_id == item.id))

@@ -5,6 +5,9 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from flowweave.modules.agent_sessions.application.child_relations import (
+    require_ordinary_binding,
+)
 from flowweave.modules.agent_sessions.public import AgentConversationBinding
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.runtime.base import RuntimeHandle
@@ -122,6 +125,7 @@ def bind_openhands_conversation(
         item.lifecycle = "ACTIVE"
         item.last_connected_at = now()
     db.flush()
+    require_ordinary_binding(db, item)
     return item
 
 
@@ -145,6 +149,7 @@ def _flow_run_binding(
                 "openhands_conversation_id": openhands_conversation_id,
             },
         )
+    require_ordinary_binding(db, item)
     return item
 
 
@@ -178,6 +183,7 @@ def binding_locator(db: Session, binding_id: str) -> FlowRunConversationLocator:
             404,
             {"binding_id": binding_id},
         )
+    require_ordinary_binding(db, item)
     return FlowRunConversationLocator(
         flow_run_id=item.flow_run_id,
         runtime_session_id=item.runtime_session_id,
@@ -202,6 +208,8 @@ def active_runtime_handle(
     binding = _flow_run_binding(
         db, flow_run_id=flow_run_id, openhands_conversation_id=openhands_conversation_id
     )
+    if binding.lifecycle == "DELETE_PENDING":
+        raise DomainError("AGENT_CONVERSATION_DELETE_PENDING", "会话正在删除，无法交互", 409)
     # A native Fork clears ``node_attempt_id`` so it cannot resume or mutate
     # its source node. Its retained conversation scope identifies the source
     # Attempt Runtime and workspace that hold the native Conversation state.

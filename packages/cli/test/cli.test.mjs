@@ -23,6 +23,57 @@ function invokeWith(config, args, options = {}) {
 
 function invoke(config, ...args) { return invokeWith(config, args); }
 
+test('原生子会话保留父范围、提交身份和正式历史游标，控制不创建消息', async () => {
+  const config = await configured();
+  invoke(config, 'config', 'init', '--base-url', 'https://example.test/flowweave');
+  const message = { submission_id: '11111111-1111-4111-8111-111111111111', content: '继续检查' };
+  const sent = invoke(config, 'child', 'send', 'parent-1', 'child-1', '--data', JSON.stringify(message), '--dry-run');
+  assert.equal(sent.status, 0, sent.stderr);
+  assert.deepEqual(JSON.parse(sent.stdout), {
+    method: 'POST', payload: message,
+    url: 'https://example.test/flowweave/api/v1/agent-session-children/parent-1/child-1/messages',
+  });
+  const events = invoke(config, 'child', 'events', 'parent-1', 'child-1', '-q', 'history_cursor=native/page+1', '--dry-run');
+  assert.equal(events.status, 0, events.stderr);
+  assert.equal(new URL(JSON.parse(events.stdout).url).searchParams.get('history_cursor'), 'native/page+1');
+  for (const operation of ['interrupt', 'resume', 'condense']) {
+    const result = invoke(config, 'child', operation, 'parent-1', 'child-1', '--dry-run');
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      method: 'POST', payload: { operation },
+      url: 'https://example.test/flowweave/api/v1/agent-session-children/parent-1/child-1/control',
+    });
+  }
+  for (const args of [['get'], ['get', 'parent-1'], ['list', 'parent-1', 'child-1'], ['create', 'parent-1', 'child-1']]) {
+    assert.equal(invoke(config, 'child', ...args, '--dry-run').status, 2);
+  }
+});
+
+test('技能批量同步在两类宿主中保留版本列表和作用域，手工未读使用普通来源', async () => {
+  const config = await configured();
+  invoke(config, 'config', 'init', '--base-url', 'https://example.test/flowweave');
+  const payload = { capability_version_ids: ['version-2', 'version-3'] };
+  const targets = [
+    { args: ['agent', 'capabilities-register', 'workspace-1', 'binding-1'], path: '/agent-workspaces/workspace-1/conversations/binding-1/capabilities/batch' },
+    { args: ['run', 'capabilities-register', 'run-1', '--attempt', 'attempt-1', '--binding', 'binding-1'], path: '/flow-runs/run-1/node-attempts/attempt-1/agent-sessions/binding-1/capabilities/batch' },
+    { args: ['child', 'capabilities-register', 'parent-1', 'child-1'], path: '/agent-session-children/parent-1/child-1/capabilities/batch' },
+  ];
+  for (const { args, path } of targets) {
+    const result = invoke(config, ...args, '--data', JSON.stringify(payload), '--dry-run');
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      method: 'POST', payload, url: `https://example.test/flowweave/api/v1${path}`,
+    });
+  }
+  const missingScope = invoke(config, 'run', 'capabilities-register', 'run-1', '--binding', 'binding-1', '--dry-run');
+  assert.equal(missingScope.status, 2);
+  for (const args of [['agent', 'unread', 'workspace-1', 'binding-1'], ['child', 'unread', 'parent-1', 'child-1']]) {
+    const result = invoke(config, ...args, '--dry-run');
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout).payload, { unread: true, unread_origin: 'MANUAL' });
+  }
+});
+
 test('会话历史查询保留部署前缀、正式游标和页内过滤参数', async () => {
   const config = await configured();
   invoke(config, 'config', 'init', '--base-url', 'https://example.test/flowweave');
@@ -305,16 +356,25 @@ test('Agent 会话定时快捷命令使用 Workspace 范围并保留并发版本
   const listed = invoke(config, 'agent', 'schedules', 'workspace-1', '--dry-run');
   assert.equal(listed.status, 0, listed.stderr);
   assert.equal(JSON.parse(listed.stdout).url, 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/conversation-schedules');
-  const created = invoke(config, 'agent', 'schedule-create', 'workspace-1', '--data', '{"name":"每日检查","binding_id":"binding-1","prompt":"检查状态","cron_expression":"0 9 * * 1-5"}', '--dry-run');
+  const automation = {
+    name: '每日检查', prompt: '检查状态', cron_expression: '0 9 * * 1-5',
+    workspace_mode: 'AUTOMATION', conversation_mode: 'NEW',
+    model_provider_id: 'provider-1', model_name: 'gpt-5',
+    capability_version_ids: ['skill-1'], credential_ids: [],
+  };
+  const created = invoke(config, 'agent', 'schedule-create', 'workspace-1', '--data', JSON.stringify(automation), '--dry-run');
   assert.equal(created.status, 0, created.stderr);
   assert.deepEqual(JSON.parse(created.stdout), {
     method: 'POST',
-    payload: { name: '每日检查', binding_id: 'binding-1', prompt: '检查状态', cron_expression: '0 9 * * 1-5' },
+    payload: automation,
     url: 'https://example.test/flowweave/api/v1/agent-workspaces/workspace-1/conversation-schedules',
   });
-  const updated = invoke(config, 'agent', 'schedule-update', 'workspace-1', 'schedule-1', '--data', '{"expected_row_version":2,"name":"每日报告","binding_id":"binding-2","prompt":"生成报告","cron_expression":"0 10 * * *"}', '--dry-run');
+  const { workspace_mode, ...update } = automation;
+  const updated = invoke(config, 'agent', 'schedule-update', 'workspace-1', 'schedule-1', '--data', JSON.stringify({ ...update, expected_row_version: 2 }), '--dry-run');
   assert.equal(updated.status, 0, updated.stderr);
   assert.equal(JSON.parse(updated.stdout).method, 'PUT');
+  assert.equal(JSON.parse(updated.stdout).payload.expected_row_version, 2);
+  assert.equal(JSON.parse(updated.stdout).payload.workspace_mode, undefined);
   const paused = invoke(config, 'agent', 'schedule-pause', 'workspace-1', 'schedule-1', '--expected-row-version', '3', '--dry-run');
   assert.equal(paused.status, 0, paused.stderr);
   assert.deepEqual(JSON.parse(paused.stdout), {

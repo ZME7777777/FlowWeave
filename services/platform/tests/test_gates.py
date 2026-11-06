@@ -927,3 +927,21 @@ def test_prompt_gate_calls_connected_codex_oauth_provider(monkeypatch, db_sessio
     assert captured["url"].endswith("/codex/responses")
     assert captured["headers"]["Authorization"] == "Bearer oauth-token"
     assert captured["payload"]["model"] == "gpt-5.4"
+
+
+def test_business_result_envelope_survives_truncated_single_object_preview():
+    from flowweave.modules.gates.application.executor import _business_result_envelope
+
+    body = {
+        "flowweave_business_result": {
+            "schema_version": 1,
+            "status": "SUCCESS",
+            "evidence": {"n": 1},
+        },
+        "detail": ["x" * 100 for _ in range(200)],
+    }
+    text = json.dumps(body, indent=2)[: 8 * 1024]
+    artifact = {"review_preview": {"kind": "TEXT", "content": text}}
+    envelope, error = _business_result_envelope(artifact)
+    assert error is None
+    assert envelope is not None and envelope["status"] == "SUCCESS"

@@ -140,6 +140,11 @@ from openhands.sdk.profiles import (
     validate_agent_profile,
 )
 from openhands.sdk.security.confirmation_policy import NeverConfirm
+from openhands.sdk.settings import (
+    AGENT_SETTINGS_SCHEMA_VERSION,
+    OpenHandsAgentSettings,
+    validate_agent_settings,
+)
 from openhands.sdk.skills import KeywordTrigger, Skill
 from openhands.sdk.subagent import SubAgentScope
 from openhands.sdk.subagent.scope import inherit_mcp_config
@@ -154,9 +159,11 @@ from openhands.sdk.tool.builtins.invoke_skill import (
 from openhands.sdk.tool.registry import list_usable_tools, resolve_tool
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.tool.tool import DeclaredResources, ToolExecutor
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.command import sanitized_env
 from openhands.sdk.utils.path import get_user_persistence_dir
 from openhands.sdk.utils.redact import redact_api_key_literals, redact_text_secrets
+from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.file_editor.editor import FileEditor
 from openhands.tools.file_editor.exceptions import FileValidationError
 from openhands.tools.preset.default import AgentDefinition
@@ -166,11 +173,11 @@ from openhands.tools.task.manager import Task, TaskManager, TaskStatus
 from openhands.tools.task_tracker import TaskTrackerTool
 from openhands.tools.terminal.terminal.tmux_terminal import _new_owned_session
 
-EXPECTED_VERSION = "1.54.0"
-EXPECTED_UPSTREAM_BASE = "f0206428306db687ac9c8d833ece4fb82b015eba"
-EXPECTED_SOURCE_COMMIT = "73e3cd8e4d74ff30c9ed794baf72d977800509d7"
+EXPECTED_VERSION = "1.58.2"
+EXPECTED_UPSTREAM_BASE = "ce5716a3c0a955a85bb0cc4dcfaa94d5fefcda50"
+EXPECTED_SOURCE_COMMIT = "805bb3fe0a57cdc3e383e26019fa216a6892e608"
 EXPECTED_SOURCE_ARCHIVE_SHA256 = (
-    "5fcd3fc5e628572a7e223c954e8fd792b78d768f1d8eba9419a4d88d6490308a"
+    "eaf4322c182d2ea80202840b43834cb72697371e479eca91aaf03dc458adb208"
 )
 PACKAGES = (
     "openhands-agent-server",
@@ -428,7 +435,7 @@ def _assert_merged_main_capability_contract() -> None:
     assert 'Message(role="user"' in condenser_source
 
     tmux_source = getsource(_new_owned_session)
-    assert "_socket_creation_lock()" in tmux_source
+    assert "_socket_creation_lock(" in tmux_source
     assert "TMUX_SOCKET_NAME" in tmux_source
     assert "mark_socket_owner(server)" in tmux_source
 
@@ -465,21 +472,23 @@ def _assert_tmux_terminal_isolation_contract() -> None:
     """Keep terminal cleanup isolated across simultaneous Agent Servers."""
 
     session_source = getsource(_new_owned_session)
-    assert 'socket_name=f"{TMUX_SOCKET_NAME}-{uuid.uuid4().hex}"' in session_source
-    assert "with _socket_creation_lock()" in session_source
+    assert 'socket_name = f"{TMUX_SOCKET_NAME}-{uuid.uuid4().hex}"' in session_source
+    assert "with _socket_creation_lock(" in session_source
     assert "mark_socket_owner(server)" in session_source
 
     cleanup_source = getsource(_cleanup_stale_tmux_sessions)
-    assert "with _socket_creation_lock()" in cleanup_source
+    assert "with _socket_creation_lock(" in cleanup_source
     assert "_reclaim_stale_tmux_sockets(socket_dir)" in cleanup_source
 
     reclaim_source = getsource(_reclaim_stale_tmux_sockets)
+    assert "_isolated_socket_names(socket_dir)" in reclaim_source
     assert "_socket_owner_pid(server)" in reclaim_source
     assert "_is_pid_alive(owner_pid)" in reclaim_source
     assert "Leaving tmux socket" in reclaim_source
 
     tmpdir_source = getsource(_ensure_server_tmux_tmpdir)
     assert "_default_server_tmux_tmpdir()" in tmpdir_source
+    assert "_fits_tmux_socket(" in tmpdir_source
     assert 'os.environ["TMUX_TMPDIR"] = str(tmux_tmpdir)' in tmpdir_source
 
 
@@ -709,8 +718,23 @@ def _assert_profile_provider_secret_and_condenser_behavior() -> None:
         }
     )
     assert isinstance(migrated, OpenHandsAgentProfile)
-    assert migrated.schema_version == AGENT_PROFILE_SCHEMA_VERSION == 3
+    assert migrated.schema_version == AGENT_PROFILE_SCHEMA_VERSION == 4
     assert migrated.disabled_skills == []
+    migrated_settings = validate_agent_settings(
+        {
+            "schema_version": 8,
+            "agent_kind": "openhands",
+            "tools": [{"name": "terminal"}],
+            "enable_sub_agents": True,
+            "enable_switch_llm_tool": True,
+        },
+        persisted=True,
+    )
+    assert isinstance(migrated_settings, OpenHandsAgentSettings)
+    assert migrated_settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION == 9
+    assert [tool.name for tool in migrated_settings.tools] == ["terminal"]
+    assert "enable_sub_agents" not in migrated_settings.model_dump()
+    assert "enable_switch_llm_tool" not in migrated_settings.model_dump()
 
     with TemporaryDirectory() as directory:
         root = Path(directory)
@@ -770,6 +794,157 @@ def _assert_profile_provider_secret_and_condenser_behavior() -> None:
     assert subscription_condenser.llm is subscription_llm
     assert subscription_condenser.llm.requires_streaming is True
     assert subscription_condenser.llm.stream is True
+
+
+async def _assert_fork_condensation_credentials() -> None:
+    with TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        primary = LLM(
+            model="openai/gpt-4o-mini",
+            api_key=SecretStr("fork-source-probe-key"),
+            usage_id="fork-primary",
+            stream=True,
+        )
+        agent = Agent(
+            llm=primary,
+            tools=[],
+            condenser=LLMSummarizingCondenser(
+                llm=primary.model_copy(update={"usage_id": "condenser"}),
+                max_size=100,
+                keep_first=1,
+            ),
+        )
+        async with ConversationService(
+            conversations_dir=root / "conversations",
+            runtime_cipher_resolver=lambda conversation_id: Cipher(
+                f"fork-probe-storage-{conversation_id}"
+            ),
+        ) as service:
+            info, _ = await service.start_conversation(
+                StartConversationRequest(
+                    agent=agent,
+                    workspace=LocalWorkspace(working_dir=str(root / "workspace")),
+                    autotitle=False,
+                )
+            )
+            source = await service.get_event_service(info.id)
+            assert source is not None
+            for index in range(16):
+                await source.send_message(
+                    Message(role="user", content=[TextContent(text=f"Fact {index}")])
+                )
+            source_ids = {event.id for event in source.get_conversation().state.events}
+            source_info = await service.get_conversation(info.id)
+            assert source_info is not None
+            assert source_info.stored_event_count == len(source_ids)
+            fork = await service.fork_conversation(info.id)
+            assert fork is not None
+            assert fork.stored_event_count == len(source_ids)
+            await service._evict_idle_conversations(0.0)
+            fork_service = await service.get_event_service(fork.id)
+            assert fork_service is not None
+            conversation = fork_service.get_conversation()
+            assert isinstance(conversation.agent.condenser, LLMSummarizingCondenser)
+            assert conversation.agent.condenser.llm.api_key == primary.api_key
+            switched = primary.model_copy(
+                update={
+                    "api_key": SecretStr("fork-switched-probe-key"),
+                    "usage_id": "fork-switched",
+                }
+            )
+            conversation.switch_llm(switched)
+
+            def summarize(llm: LLM, **_kwargs: object) -> SimpleNamespace:
+                assert llm.api_key == switched.api_key
+                assert llm.stream is False
+                return SimpleNamespace(
+                    id="fork-summary-response",
+                    message=Message(
+                        role="assistant", content=[TextContent(text="Fork summary")]
+                    ),
+                )
+
+            with patch.object(LLM, "generate", summarize):
+                assert await service.condense(fork.id)
+            await service._evict_idle_conversations(0.0)
+            restored = await service.get_event_service(fork.id)
+            assert restored is not None
+            events = list(restored.get_conversation().state.events)
+            assert source_ids <= {event.id for event in events}
+            assert any(
+                isinstance(event, Condensation) and event.summary == "Fork summary"
+                for event in events
+            )
+
+
+async def _assert_condenser_credentials_restoration() -> None:
+    with TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        primary = LLM(
+            model="openai/gpt-4o-mini",
+            api_key=SecretStr("restore-probe-key"),
+            usage_id="restore-primary",
+            stream=True,
+        )
+        agent = Agent(
+            llm=primary,
+            tools=[],
+            condenser=LLMSummarizingCondenser(
+                llm=primary.model_copy(
+                    update={"api_key": None, "usage_id": "condenser"}
+                ),
+                max_size=100,
+                keep_first=1,
+            ),
+        )
+        async with ConversationService(
+            conversations_dir=root / "conversations",
+            cipher=Cipher("restore-storage-key"),
+        ) as service:
+            info, _ = await service.start_conversation(
+                StartConversationRequest(
+                    agent=agent,
+                    workspace=LocalWorkspace(working_dir=str(root / "workspace")),
+                    autotitle=False,
+                )
+            )
+            owner = await service.get_event_service(info.id)
+            assert owner is not None
+            for index in range(16):
+                await owner.send_message(
+                    Message(role="user", content=[TextContent(text=f"Fact {index}")])
+                )
+            original_ids = {event.id for event in owner.get_conversation().state.events}
+            await service._evict_idle_conversations(0.0)
+            owner = await service.get_event_service(info.id)
+            assert owner is not None
+            await owner.restore_condenser_credentials(primary)
+            await service._evict_idle_conversations(0.0)
+            owner = await service.get_event_service(info.id)
+            assert owner is not None
+            conversation = owner.get_conversation()
+            assert isinstance(conversation.agent.condenser, LLMSummarizingCondenser)
+            assert conversation.agent.condenser.llm.api_key == primary.api_key
+            assert conversation.agent.llm.api_key == primary.api_key
+
+            def summarize(llm: LLM, **_kwargs: object) -> SimpleNamespace:
+                assert llm.api_key == primary.api_key
+                assert llm.stream is False
+                return SimpleNamespace(
+                    id="restore-summary",
+                    message=Message(
+                        role="assistant", content=[TextContent(text="Restored summary")]
+                    ),
+                )
+
+            with patch.object(LLM, "generate", summarize):
+                assert await service.condense(info.id)
+            events = list(conversation.state.events)
+            assert original_ids <= {event.id for event in events}
+            assert any(
+                isinstance(event, Condensation) and event.summary == "Restored summary"
+                for event in events
+            )
 
 
 def _assert_mcp_oauth_and_subscription_preflight_contract() -> None:
@@ -837,6 +1012,150 @@ def _assert_quota_fallback_contract() -> None:
     assert strategy.fallback_llms == ["flowweave-fallback"]
 
 
+def _assert_governed_child_contract() -> None:
+    from pydantic import ValidationError
+
+    from openhands.sdk.conversation.child_creation import (
+        ChildConversationCreationIdentity,
+        ChildConversationLaunchGate,
+        ChildConversationPreparation,
+        ChildConversationPreparationRequest,
+        GovernedChildConversationPreparationRequest,
+    )
+    from openhands.sdk.conversation.child_governance import (
+        ChildConversationPreparationOverrides,
+    )
+    from openhands.sdk.conversation.message_request import SendMessageRequest
+    from openhands.sdk.conversation.child_launcher import (
+        ChildLauncherInvocation,
+        ChildLauncherPolicy,
+        ChildLauncherResolution,
+    )
+    from openhands.sdk.secret import StaticSecret
+    from openhands.sdk.event.user_action import InterruptEvent, PauseEvent
+    from openhands.tools.child_conversation.commands import (
+        InterruptChildConversationTool,
+        SendChildConversationMessageTool,
+    )
+    from openhands.tools.child_conversation.governed import (
+        StartGovernedChildConversationTool,
+    )
+    from openhands.tools.child_conversation.queries import (
+        ListChildConversationsTool,
+        ReadChildConversationTool,
+        WaitForChildConversationTool,
+    )
+
+    paths = create_app().openapi()["paths"]
+    prefix = "/api/conversations/{conversation_id}/children"
+    for suffix, method in (
+        ("/launcher/verify", "post"),
+        ("/launcher/resolve", "post"),
+        ("/preparations/{creation_id}/governed", "post"),
+        ("/preparations/{creation_id}", "post"),
+        ("/preparations/{creation_id}", "get"),
+        ("/preparations/{creation_id}/release", "post"),
+        ("/queries/verify", "post"),
+        ("/queries", "post"),
+        ("/commands/verify", "post"),
+        ("/commands", "post"),
+    ):
+        assert method in paths[prefix + suffix]
+    assert "submission_id" in SendMessageRequest.model_fields
+    for event_class in (MessageEvent, InterruptEvent, PauseEvent):
+        assert "parent_instruction" in event_class.model_fields
+    assert ChildConversationPreparationRequest(task="probe").isolation == "shared"
+    try:
+        ChildConversationPreparationRequest(task="probe", isolation="worktree")
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("Governed preparation accepted worktree isolation")
+
+    assert set(ChildConversationPreparationOverrides.model_fields) == {
+        "governance_id", "remove_secrets", "replace_secrets", "remove_mcp_servers",
+    }
+    assert GovernedChildConversationPreparationRequest.model_fields["overrides"].is_required()
+    assert "governance_id" in ChildConversationPreparation.model_fields
+    assert "governance_id" in ChildConversationLaunchGate.model_fields
+    overrides = ChildConversationPreparationOverrides(
+        governance_id=uuid4(),
+        remove_secrets=frozenset({"parent-only"}),
+        replace_secrets={"bound": StaticSecret(value=SecretStr("child-contract-value"))},
+        remove_mcp_servers=frozenset({"history"}),
+    )
+    prepared = GovernedChildConversationPreparationRequest(task="contract", overrides=overrides)
+    assert GovernedChildConversationPreparationRequest.model_validate_json(
+        prepared.model_dump_json(context={"expose_secrets": True})
+    ) == prepared
+    assert prepared.isolation == "shared"
+    assert "child-contract-value" not in repr(prepared)
+    invalid = overrides.model_dump(mode="json", context={"expose_secrets": True})
+    invalid["remove_secrets"] = ["bound"]
+    try:
+        ChildConversationPreparationOverrides.model_validate(invalid)
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("Native governance accepted remove/replace overlap")
+    schemas = create_app().openapi()["components"]["schemas"]
+    assert "overrides" in schemas["GovernedChildConversationPreparationRequest"]["required"]
+    assert {"identity", "invocation"} <= set(schemas["ChildLauncherResolution"]["properties"])
+
+    with TemporaryDirectory(prefix="child-tool-contract-") as temporary:
+        conversation = LocalConversation(
+            agent=Agent(llm=LLM(model="test-model", usage_id="contract"), tools=[]),
+            workspace=temporary,
+            profile_store_dir=Path(temporary) / "profiles",
+            visualizer=None,
+        )
+        try:
+            policy = ChildLauncherPolicy(
+                parent_conversation_id=conversation.id,
+                scope_id=uuid4(),
+                runtime_session_id=uuid4(),
+                generation=1,
+                manifest_digest="a" * 64,
+                max_active_children=3,
+            ).model_dump(mode="json")
+            from datetime import timedelta
+            from openhands.sdk.utils import utc_now
+
+            invocation = ChildLauncherInvocation(
+                policy=ChildLauncherPolicy.model_validate(policy),
+                action_id="contract-action", tool_call_id="contract-tool-call",
+                audience="http://control.example/children", request_digest="b" * 64,
+                issued_at=utc_now(), expires_at=utc_now() + timedelta(minutes=5),
+            )
+            assert "creation_id" not in invocation.model_dump(mode="json")
+            resolved = ChildLauncherResolution.from_invocation(invocation)
+            assert resolved.identity == ChildConversationCreationIdentity.for_request(
+                conversation.id, invocation.creation_id
+            )
+            assert ChildLauncherResolution.model_validate_json(resolved.model_dump_json()) == resolved
+            factories = (
+                StartGovernedChildConversationTool,
+                ListChildConversationsTool,
+                ReadChildConversationTool,
+                WaitForChildConversationTool,
+                SendChildConversationMessageTool,
+                InterruptChildConversationTool,
+            )
+            for index, factory in enumerate(factories):
+                key = "launch_url" if index == 0 else "access_url"
+                spec = Tool(name=factory.name, params={
+                    "policy": policy, key: "http://control.example/children",
+                })
+                resolved = resolve_tool(spec, conversation.state)
+                assert len(resolved) == 1 and resolved[0].name == spec.name
+                assert {"policy", "launch_url", "access_url"}.isdisjoint(
+                    resolved[0].action_type.model_fields
+                )
+            assert len(conversation.state.events) == 0
+        finally:
+            conversation.close()
+
+
 def main() -> None:
     versions = {package: version(package) for package in PACKAGES}
     assert set(versions.values()) == {EXPECTED_VERSION}, versions
@@ -873,6 +1192,7 @@ def main() -> None:
         EventService._get_view_context_sync
     )
     server_info = ServerInfo(uptime=0, idle_time=0)
+    assert "conversation_stored_event_count_v1" in server_info.capabilities
     assert server_info.version == EXPECTED_VERSION
     assert server_info.sdk_version == EXPECTED_VERSION
     assert server_info.tools_version == EXPECTED_VERSION
@@ -885,8 +1205,10 @@ def main() -> None:
     assert len(server_info.capabilities) == len(set(server_info.capabilities))
     assert "conversation_runtime_routes_v1" in server_info.capabilities
     assert "conversation_dynamic_context_v1" in server_info.capabilities
+    assert "conversation_condenser_credentials_restore_v1" in server_info.capabilities
     _assert_credential_dynamic_context_contract()
     _assert_memory_launch_contract()
+    _assert_governed_child_contract()
     event_socket_source = getsource(events_socket)
     bash_socket_source = getsource(bash_events_socket)
     socket_source = event_socket_source + bash_socket_source
@@ -909,6 +1231,8 @@ def main() -> None:
     _assert_condensation_system_prompt_contract()
     _assert_subagent_mcp_inheritance_contract()
     _assert_profile_provider_secret_and_condenser_behavior()
+    asyncio.run(_assert_fork_condensation_credentials())
+    asyncio.run(_assert_condenser_credentials_restoration())
     _assert_mcp_oauth_and_subscription_preflight_contract()
     _assert_runtime_capability_build_contract()
     _assert_quota_fallback_contract()
@@ -1825,6 +2149,9 @@ def main() -> None:
                 "subagent_conversation_local_tool_exemption": True,
                 "native_skill_activation": activated_skill_names,
                 "native_skill_invocation": invoked_skills,
+                "governed_shared_child_contract": True,
+                "governed_child_creation_identity_resolution": True,
+                "immutable_child_preparation_overrides": True,
                 "goal_http_paths": goal_http_paths,
                 "memory_index_relpath": MEMORY_INDEX_RELPATH,
                 "memory_char_budget": MEMORY_CHAR_BUDGET,
@@ -1833,9 +2160,14 @@ def main() -> None:
                 "memory_stored_preference_stamped_on_all_launches": True,
                 "memory_native_workspace_loader": True,
                 "profile_v1_migration": True,
+                "agent_profile_schema_version": AGENT_PROFILE_SCHEMA_VERSION,
+                "agent_settings_schema_version": AGENT_SETTINGS_SCHEMA_VERSION,
                 "provider_connection_read_at_use": True,
                 "nested_secret_serializer_probe": True,
                 "subscription_condenser_dispatch": True,
+                "fork_condensation_credentials_survive_reload_and_switch": True,
+                "condenser_credentials_restored_after_reload": True,
+                "stored_event_count_survives_reload_and_fork": True,
                 "mcp_oauth_refreshable_fastmcp": True,
                 "subscription_preflight_credentials_restored": True,
                 "runtime_capability_build_arg_validated": True,

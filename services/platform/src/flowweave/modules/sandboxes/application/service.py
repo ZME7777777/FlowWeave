@@ -81,6 +81,26 @@ class _ReconcileOutcome:
     error: DomainError | None = None
 
 
+def _has_governed_parent(db: Session, runtime_session_id: str) -> bool:
+    from flowweave.modules.agent_sessions.infrastructure.models import AgentConversationBinding
+    from flowweave.modules.users.application.security import tenant_bypass
+
+    with tenant_bypass():
+        return (
+            db.scalar(
+                select(AgentConversationBinding.id)
+                .where(
+                    AgentConversationBinding.runtime_session_id == runtime_session_id,
+                    AgentConversationBinding.child_parent_manifest_json["profile"]
+                    .as_string()
+                    .in_(("OH_FW_V4", "OH_FW_V5")),
+                )
+                .limit(1)
+            )
+            is not None
+        )
+
+
 def _error(resource: ManagedSandbox, exc: DomainError) -> None:
     resource.observed_state = "ERROR"
     resource.last_error_code = exc.code
@@ -375,6 +395,35 @@ def _create_managed_runtime(
                         {"owner_type": owner_type, "owner_id": owner_id},
                     )
                 resource = active_resources[0] if active_resources else None
+                if (
+                    (flow_run_runtime or node_attempt_runtime)
+                    and logical_session is not None
+                    and logical_session.active_generation is not None
+                    and (
+                        logical_session.status in {"REPLACING", "RECONNECTING", "DEGRADED"}
+                        or resource is None
+                        or resource.generation != logical_session.active_generation
+                        or resource.observed_state in {"ERROR", "DELETING"}
+                    )
+                    and _has_governed_parent(control_db, logical_session.id)
+                ):
+                    # Reuse durable replacement, including the native lease
+                    # handoff and identity probes, before admitting any access.
+                    # The same allocation lock also fences its target creation.
+                    if logical_session.status == "ACTIVE":
+                        logical_session.status = "RECONNECTING"
+                        logical_session.row_version += 1
+                    enqueue_flow_run_runtime_replacement(
+                        control_db,
+                        flow_run_id=logical_session.flow_run_id,
+                        node_attempt_id=logical_session.node_attempt_id,
+                        failed_generation=logical_session.active_generation,
+                        reason="AGENT_CHILD_RUNTIME_RECOVERY",
+                    )
+                    control_db.commit()
+                    raise DomainError(
+                        "RUNTIME_SESSION_NOT_ACTIVE", "正在恢复原父子会话，请稍后重试", 503
+                    )
                 if resource is None:
                     managed_generation_floor = int(
                         control_db.scalar(
@@ -1278,13 +1327,8 @@ def _apply_reconcile_outcome(
             and current.kind == "AGENT_RUNTIME"
             and current.owner_type == "FLOW_NODE_ATTEMPT"
         ):
-            # Attempt Runtimes have no separate replacement queue. Mark the
-            # missing physical generation for idempotent cleanup and let the
-            # next session access call ``ensure_node_attempt_runtime`` to
-            # provision generation N+1 while preserving the same session and
-            # Conversation locator.
-            current.desired_state = "DELETED"
-            current.next_reconcile_at = now
+            # Governed parents use the durable replacement lifecycle. Legacy
+            # Attempts retain their existing cleanup/access recovery path.
             active_session = control_db.scalar(
                 select(FlowRunRuntime)
                 .join(
@@ -1294,16 +1338,26 @@ def _apply_reconcile_outcome(
                 )
                 .where(
                     FlowRunRuntime.node_attempt_id == current.owner_id,
-                    FlowRunRuntime.status == "ACTIVE",
                     RuntimeGeneration.managed_runtime_id == current.id,
                     RuntimeGeneration.generation == current.generation,
                 )
                 .with_for_update()
             )
-            if active_session is not None:
+            if active_session is not None and active_session.status == "ACTIVE":
                 active_session.status = "RECONNECTING"
                 active_session.row_version += 1
                 active_session.updated_at = now
+            if active_session is not None and _has_governed_parent(control_db, active_session.id):
+                enqueue_flow_run_runtime_replacement(
+                    control_db,
+                    flow_run_id=active_session.flow_run_id,
+                    node_attempt_id=current.owner_id,
+                    failed_generation=current.generation,
+                    reason=current.last_error_code or "RUNTIME_HEALTH_FAILED",
+                )
+            else:
+                current.desired_state = "DELETED"
+                current.next_reconcile_at = now
         control_db.commit()
     return deleted, errors
 

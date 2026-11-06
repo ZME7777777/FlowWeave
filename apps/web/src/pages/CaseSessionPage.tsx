@@ -56,6 +56,7 @@ export function CaseSessionPage({
     onReturnToSource={onReturn}
     scopeWorkDirectoryId={item.data.control_work_directory_id}
     embedded
+    locatePlanId={new URLSearchParams(window.location.search).get('plan') ?? undefined}
     onHostStateChanged={() => { void queryClient.invalidateQueries({ queryKey: ['cases'] }); void queryClient.invalidateQueries({ queryKey: ['case', caseId] }); }}
   />;
 }

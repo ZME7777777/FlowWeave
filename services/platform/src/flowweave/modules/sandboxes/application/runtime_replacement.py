@@ -64,6 +64,7 @@ _NON_RETRYABLE_RELOAD_ERRORS = {
     "RUNTIME_WORKSPACE_IDENTITY_DRIFT",
     "RUNTIME_PERSISTENCE_IDENTITY_DRIFT",
     "RUNTIME_RELOAD_EMPTY",
+    "AGENT_CHILD_RECOVERY_IDENTITY_MISMATCH",
 }
 
 
@@ -79,6 +80,7 @@ def enqueue_flow_run_runtime_replacement(
     failed_generation: int,
     reason: str,
     request_key: str | None = None,
+    node_attempt_id: str | None = None,
 ) -> None:
     """Publish one idempotent recovery task for a failed active generation."""
 
@@ -88,12 +90,13 @@ def enqueue_flow_run_runtime_replacement(
         aggregate_type="FLOW_RUN",
         aggregate_id=flow_run_id,
         idempotency_key=(
-            f"runtime-replacement:{flow_run_id}:{failed_generation}"
+            f"runtime-replacement:{node_attempt_id or flow_run_id}:{failed_generation}"
             f"{f':{request_key}' if request_key else ''}"
         ),
         payload={
             "failed_generation": failed_generation,
             "reason": reason[:100],
+            **({"node_attempt_id": node_attempt_id} if node_attempt_id else {}),
         },
     )
 
@@ -104,6 +107,7 @@ def record_terminal_runtime_replacement_failure(
     error: str,
     *,
     replacement_task_id: str | None = None,
+    node_attempt_id: str | None = None,
 ) -> None:
     """Make exhausted replacement retries explicitly diagnosable and non-routable."""
 
@@ -111,7 +115,7 @@ def record_terminal_runtime_replacement_failure(
         select(FlowRunRuntime)
         .where(
             FlowRunRuntime.flow_run_id == flow_run_id,
-            FlowRunRuntime.node_attempt_id.is_(None),
+            FlowRunRuntime.node_attempt_id == node_attempt_id,
         )
         .with_for_update()
     )
@@ -145,7 +149,9 @@ def record_terminal_runtime_replacement_failure(
 
 
 def _require_task_lease(db: Session, lease: Lease) -> None:
-    if not lease_is_current(db, lease):
+    current = lease_is_current(db, lease)
+    db.rollback()
+    if not current:
         raise RuntimeError("task lease was lost during Runtime replacement")
 
 
@@ -173,12 +179,15 @@ def _ensure_replacement_state(
     flow_run_id: str,
     expected_generation: int,
     lease: Lease,
+    node_attempt_id: str | None = None,
 ) -> _ReplacementState | None:
     settings = get_settings()
     owner = _replacement_owner(lease)
+    runtime_owner_type = "FLOW_NODE_ATTEMPT" if node_attempt_id else "FLOW_RUN"
+    runtime_owner_id = node_attempt_id or flow_run_id
     engine = _control_engine(db)
     with engine.connect() as connection:
-        lock_key = f"RUNTIME_REPLACEMENT:{flow_run_id}"
+        lock_key = f"AGENT_RUNTIME:{runtime_owner_type}:{runtime_owner_id}"
         lock_id = connection.scalar(select(func.hashtextextended(lock_key, 0)))
         if lock_id is None:
             raise RuntimeError("Could not derive the Runtime replacement lock")
@@ -190,7 +199,7 @@ def _ensure_replacement_state(
                     select(FlowRunRuntime)
                     .where(
                         FlowRunRuntime.flow_run_id == flow_run_id,
-                        FlowRunRuntime.node_attempt_id.is_(None),
+                        FlowRunRuntime.node_attempt_id == node_attempt_id,
                     )
                     .with_for_update()
                 )
@@ -240,6 +249,7 @@ def _ensure_replacement_state(
                     # replacement lease remains valid. Only that same task
                     # may safely take over the durable operation.
                     takeover_task_id=lease.task_id,
+                    node_attempt_id=node_attempt_id,
                 )
                 source = control_db.scalar(
                     select(RuntimeGeneration)
@@ -304,8 +314,8 @@ def _ensure_replacement_state(
                             control_db.scalar(
                                 select(func.coalesce(func.max(ManagedSandbox.generation), 0)).where(
                                     ManagedSandbox.kind == "AGENT_RUNTIME",
-                                    ManagedSandbox.owner_type == "FLOW_RUN",
-                                    ManagedSandbox.owner_id == flow_run_id,
+                                    ManagedSandbox.owner_type == runtime_owner_type,
+                                    ManagedSandbox.owner_id == runtime_owner_id,
                                 )
                             )
                             or 0
@@ -316,13 +326,13 @@ def _ensure_replacement_state(
                     target_runtime = ManagedSandbox(
                         id=resource_id,
                         kind="AGENT_RUNTIME",
-                        owner_type="FLOW_RUN",
-                        owner_id=flow_run_id,
+                        owner_type=runtime_owner_type,
+                        owner_id=runtime_owner_id,
                         backend="docker",
                         backend_resource_name=backend_name(
                             resource_id,
-                            owner_type="FLOW_RUN",
-                            owner_id=flow_run_id,
+                            owner_type=runtime_owner_type,
+                            owner_id=runtime_owner_id,
                         ),
                         desired_state="RUNNING",
                         observed_state="CREATING",
@@ -362,8 +372,8 @@ def _ensure_replacement_state(
                     or target_runtime.image_reference != session.runtime_image_digest
                     or target_runtime.runtime_allocation_id != session.workspace_allocation_id
                     or target_runtime.generation != target.generation
-                    or target_runtime.owner_type != "FLOW_RUN"
-                    or target_runtime.owner_id != flow_run_id
+                    or target_runtime.owner_type != runtime_owner_type
+                    or target_runtime.owner_id != runtime_owner_id
                 ):
                     raise DomainError(
                         "RUNTIME_REPLACEMENT_TARGET_INVALID",
@@ -475,8 +485,14 @@ def process_flow_run_runtime_replacement(
     lease: Lease,
     *,
     commit: bool = True,
+    node_attempt_id: str | None = None,
 ) -> None:
     """Idempotently replace N with one preallocated N+1 and original-ID reload."""
+
+    from flowweave.modules.agent_sessions.application import child_recovery
+    from flowweave.modules.agent_sessions.application.child_relations import (
+        ordinary_conversation_clause,
+    )
 
     _require_task_lease(db, lease)
     # Every durable replacement mutation uses independent control Sessions.
@@ -488,6 +504,7 @@ def process_flow_run_runtime_replacement(
         flow_run_id=flow_run_id,
         expected_generation=expected_generation,
         lease=lease,
+        node_attempt_id=node_attempt_id,
     )
     if state is None:
         return
@@ -542,10 +559,12 @@ def process_flow_run_runtime_replacement(
                     AgentConversationBinding.host_kind == "FLOW_NODE",
                     AgentConversationBinding.runtime_session_id == session.id,
                     AgentConversationBinding.lifecycle == "ACTIVE",
+                    ordinary_conversation_clause(),
                 )
                 .order_by(AgentConversationBinding.created_at)
                 .limit(1)
             )
+            families = child_recovery.collect(control_db, session.id)
             source = control_db.get(RuntimeGeneration, state.source_generation_id)
             source_runtime = (
                 control_db.get(ManagedSandbox, state.source_runtime_id)
@@ -555,6 +574,7 @@ def process_flow_run_runtime_replacement(
             control_db.commit()
 
         expected_identity: RuntimeConversationIdentity | None = None
+        expected_children: dict[str, RuntimeConversationIdentity] = {}
         if source is None:
             raise DomainError(
                 "RUNTIME_REPLACEMENT_SOURCE_MISSING",
@@ -562,7 +582,7 @@ def process_flow_run_runtime_replacement(
                 409,
             )
         if binding is not None and source_runtime is not None and source.state == "READY":
-            workspace_root = ""
+            workspace_root = binding.working_directory or ""
             if binding.node_attempt_id and binding.flow_run_id:
                 workspace_root = str(
                     node_attempt_workspace_context(
@@ -572,6 +592,7 @@ def process_flow_run_runtime_replacement(
                     ).runtime_working_directory
                 )
             try:
+                db.rollback()
                 expected_identity = _probe_identity(
                     resource_name=source_runtime.backend_resource_name,
                     conversation_id=binding.openhands_conversation_id,
@@ -581,6 +602,16 @@ def process_flow_run_runtime_replacement(
                 )
             except DomainError as exc:
                 if exc.code in _NON_RETRYABLE_RELOAD_ERRORS:
+                    raise
+
+        if families and source_runtime is not None and source.state == "READY":
+            db.rollback()
+            try:
+                expected_children = child_recovery.probe(
+                    families, source_runtime.backend_resource_name
+                )
+            except DomainError as exc:
+                if exc.status not in {503, 504}:
                     raise
 
         graceful = False
@@ -616,6 +647,12 @@ def process_flow_run_runtime_replacement(
                 control_db.commit()
             if source_runtime is not None:
                 drain_result = provider.drain(source_runtime)
+                if not drain_result.stopped:
+                    raise DomainError(
+                        "RUNTIME_REPLACEMENT_DRAIN_PENDING",
+                        "The original Runtime has not confirmed it stopped",
+                        503,
+                    )
                 graceful = drain_result.graceful
             _require_task_lease(db, lease)
             with Session(bind=engine, expire_on_commit=False) as control_db:
@@ -647,7 +684,7 @@ def process_flow_run_runtime_replacement(
             _require_task_lease(db, lease)
 
         if binding is not None:
-            workspace_root = ""
+            workspace_root = binding.working_directory or ""
             if binding.node_attempt_id and binding.flow_run_id:
                 workspace_root = str(
                     node_attempt_workspace_context(
@@ -656,6 +693,7 @@ def process_flow_run_runtime_replacement(
                         node_attempt_id=binding.node_attempt_id,
                     ).runtime_working_directory
                 )
+            db.rollback()
             _probe_identity(
                 resource_name=target_runtime.backend_resource_name,
                 conversation_id=binding.openhands_conversation_id,
@@ -663,6 +701,17 @@ def process_flow_run_runtime_replacement(
                 workspace_root=workspace_root,
                 protocol_profile=session.protocol_profile,
             )
+
+        # Draining closes every materialization admitted by the old writer.
+        # Re-read the governed set to include reservations committed in flight.
+        with Session(bind=engine, expire_on_commit=False) as control_db:
+            session = _renew(control_db, state)
+            recovered_families = child_recovery.collect(control_db, session.id)
+            control_db.commit()
+        db.rollback()
+        child_recovery.probe(
+            recovered_families, target_runtime.backend_resource_name, expected_children
+        )
 
         if source_runtime is not None:
             provider.delete(source_runtime)
@@ -681,6 +730,12 @@ def process_flow_run_runtime_replacement(
                     "RUNTIME_REPLACEMENT_GENERATION_MISSING",
                     "The replacement generation audit record is unavailable",
                     409,
+                )
+            if child_recovery.collect(control_db, session.id) != recovered_families:
+                raise DomainError(
+                    "AGENT_CHILD_RECOVERY_SET_CHANGED",
+                    "子会话恢复范围变化，请重试同一 generation",
+                    503,
                 )
             mark_runtime_generation_deleted(
                 control_db,

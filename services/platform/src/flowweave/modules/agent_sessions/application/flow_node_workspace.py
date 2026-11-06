@@ -31,6 +31,7 @@ from flowweave.modules.agent_sessions.application.ide import ssh_remote_descript
 from flowweave.modules.agent_sessions.public import AgentConversationMessageAttachment
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
 from flowweave.modules.sandboxes import public as sandboxes
+from flowweave.runtime.base import RuntimeHandle
 from flowweave.shared.errors import DomainError
 from flowweave.shared.models import NodeAttempt
 from flowweave.shared.observability import current_metrics
@@ -637,6 +638,83 @@ def git_repositories(
     ]
 
 
+def _git_runtime_handle(db: Session, flow_run_id: str, attempt_id: str) -> RuntimeHandle:
+    name, resource_id, directory = flow_node_conversations.node_draft_terminal_resource_details(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+    )
+    return RuntimeHandle(
+        job_id=f"env-exec:{name}",
+        conversation_id="",
+        runtime_resource_id=resource_id,
+        runtime_resource_name=name,
+        workspace_root=directory,
+    )
+
+
+def list_git_branches(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    repository_path: str,
+    binding_id: str | None = None,
+    work_directory_id: str | None = None,
+) -> dict[str, Any]:
+    project_root, runtime_root, _, _ = _authorize_entry(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id
+    )
+    _, _, roots = _scope(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        work_directory_id=work_directory_id,
+        runtime_root=runtime_root,
+    )
+    _validate_scope_roots(project_root, runtime_root, roots)
+    return agent_workspace_host.git_branches(
+        project_root, str(runtime_root), roots, repository_path
+    )
+
+
+def switch_git_branch(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    repository_path: str,
+    ref: str,
+    expected_head: str,
+    expected_ref: str,
+    binding_id: str | None = None,
+    work_directory_id: str | None = None,
+) -> dict[str, Any]:
+    project_root, runtime_root, _, _ = _authorize_entry(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id
+    )
+    _, _, roots = _scope(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
+        work_directory_id=work_directory_id,
+        runtime_root=runtime_root,
+    )
+    _validate_scope_roots(project_root, runtime_root, roots)
+    return agent_workspace_host.runtime_git_switch(
+        _git_runtime_handle(db, flow_run_id, attempt_id),
+        project_root,
+        str(runtime_root),
+        roots,
+        repository_path,
+        ref,
+        expected_head,
+        expected_ref,
+    )
+
+
 def git_history(
     db: Session,
     *,
@@ -658,7 +736,17 @@ def git_history(
         runtime_root=runtime_root,
     )
     _validate_scope_roots(project_root, runtime_root, roots)
-    return agent_workspace_host.git_log(project_root, str(runtime_root), roots, repository_path)
+    try:
+        handle = _git_runtime_handle(db, flow_run_id, attempt_id)
+    except DomainError:
+        return agent_workspace_host.git_log(project_root, str(runtime_root), roots, repository_path)
+    return agent_workspace_host.runtime_git_history(
+        handle,
+        project_root,
+        str(runtime_root),
+        roots,
+        repository_path,
+    )
 
 
 def sync_git_repository(
@@ -682,7 +770,13 @@ def sync_git_repository(
         runtime_root=runtime_root,
     )
     _validate_scope_roots(project_root, runtime_root, roots)
-    return agent_workspace_host.git_sync(project_root, str(runtime_root), roots, repository_path)
+    return agent_workspace_host.runtime_git_sync(
+        _git_runtime_handle(db, flow_run_id, attempt_id),
+        project_root,
+        str(runtime_root),
+        roots,
+        repository_path,
+    )
 
 
 def git_changes(

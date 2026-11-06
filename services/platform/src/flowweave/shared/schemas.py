@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
+from flowweave.modules.model_providers.domain.usage_query import ProviderUsageQuery
 from flowweave.runtime.protocol_profiles import (
     DEFAULT_FLOW_RUN_PROTOCOL_PROFILE,
     FlowRunProtocolProfile,
@@ -24,6 +25,12 @@ def _empty_str_dict() -> dict[str, str]:
 
 class ApiModel(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+
+class WorkspaceGitSwitchWrite(ApiModel):
+    ref: str = Field(min_length=1, max_length=1024, pattern=r"^refs/(heads|remotes)/")
+    expected_head: str = Field(pattern=r"^[0-9a-fA-F]{40,64}$")
+    expected_ref: str = Field(default="", max_length=1024, pattern=r"^(refs/heads/.+)?$")
 
 
 _EVENT_TRIGGER_SOURCES = {"OPENHANDS", "RUNTIME", "ORCHESTRATION"}
@@ -133,6 +140,17 @@ class IOFieldWrite(ApiModel):
     # Kept only to accept older saved clients during rollout. It is ignored and
     # never persisted, projected, or passed to the Runtime.
     template_url: str = Field(default="", exclude=True)
+
+
+class RuntimePortFieldWrite(IOFieldWrite):
+    """A run-level port as clients echo it back.
+
+    Saved runtime ports carry server-owned markers (``required``, ``runtime_port``).
+    A client that re-submits the ports it read must not be rejected for them; the
+    service always re-derives those markers.
+    """
+
+    model_config = ConfigDict(extra="ignore")
 
 
 def _empty_io_fields() -> list[IOFieldWrite]:
@@ -347,6 +365,8 @@ class ProviderModelWrite(ApiModel):
     model_name: str = Field(min_length=1, max_length=240)
     enabled: bool = True
     is_default: bool = False
+    # ``None`` = automatic: FlowWeave derives the protocol from the model name.
+    protocol: Literal["CHAT_COMPLETIONS", "RESPONSES", "ANTHROPIC"] | None = None
 
 
 def _empty_provider_models() -> list[ProviderModelWrite]:
@@ -370,23 +390,46 @@ class ModelProviderDiscoveryWrite(ApiModel):
         return self
 
 
+class ModelProviderUsagePreviewWrite(ModelProviderDiscoveryWrite):
+    auth_type: Literal["API_KEY", "ANTHROPIC_API_KEY"] = "API_KEY"
+    usage_query: ProviderUsageQuery | None = None
+
+
 class ModelProviderWrite(ApiModel):
     name: str = Field(min_length=1, max_length=200)
+    # ``ANTHROPIC_API_KEY`` is a deprecated alias of ``API_KEY`` whose models
+    # default to the Anthropic protocol.
     auth_type: Literal["API_KEY", "ANTHROPIC_API_KEY", "CODEX_OAUTH"] = "API_KEY"
-    api_protocol: Literal["CHAT_COMPLETIONS", "RESPONSES"] = "CHAT_COMPLETIONS"
+    # Deprecated: the protocol is chosen per model.  Only used as the default
+    # for models that carry no protocol of their own.
+    api_protocol: Literal["CHAT_COMPLETIONS", "RESPONSES"] | None = None
     base_url: str = ""
     api_key: str | None = None
+    usage_query: ProviderUsageQuery | None = None
     row_version: int | None = None
     models: list[ProviderModelWrite] = Field(default_factory=_empty_provider_models)
+    # Set only by the deprecated ``ANTHROPIC_API_KEY`` alias, whose providers
+    # were never probed because Anthropic exposes no OpenAI model list.
+    legacy_anthropic: bool = Field(default=False, exclude=True)
 
     @model_validator(mode="after")
     def validate_models(self) -> ModelProviderWrite:
         self.base_url = self.base_url.strip()
+        if self.auth_type == "ANTHROPIC_API_KEY":
+            self.auth_type = "API_KEY"
+            self.legacy_anthropic = True
+            for model in self.models:
+                model.protocol = model.protocol or "ANTHROPIC"
+        elif self.api_protocol is not None and self.auth_type == "API_KEY":
+            for model in self.models:
+                model.protocol = model.protocol or self.api_protocol
         if self.auth_type == "CODEX_OAUTH":
             self.api_protocol = "RESPONSES"
-        if self.auth_type in {"API_KEY", "ANTHROPIC_API_KEY"} and not self.base_url:
+            if self.usage_query is not None:
+                raise ValueError("Codex OAuth 不支持自定义 API Key 余额查询")
+        if self.auth_type == "API_KEY" and not self.base_url:
             raise ValueError("base_url is required for API-key providers")
-        if self.auth_type in {"API_KEY", "ANTHROPIC_API_KEY"} and not self.models:
+        if self.auth_type == "API_KEY" and not self.models:
             raise ValueError("at least one model is required for this provider")
         names = [item.model_name for item in self.models]
         if len(names) != len(set(names)):
@@ -500,6 +543,14 @@ class GateWrite(ApiModel):
                 not isinstance(filename, str) or not filename.endswith(".py")
             ):
                 raise ValueError("Python gate script_filename must end in .py")
+        if "on_fail" in self.config:
+            from flowweave.shared.domain.gate_failure_policy import validate_on_fail
+
+            if self.stage != "END":
+                raise ValueError("on_fail is only valid for END gates")
+            problem = validate_on_fail(self.config["on_fail"])
+            if problem:
+                raise ValueError(problem)
         contract = self.config.get("business_result_contract")
         if contract is not None:
             if self.stage != "END" or not isinstance(contract, dict):
@@ -899,6 +950,63 @@ class CaseCreateWrite(CaseBasicsWrite):
         return self
 
 
+class CaseBundleLinkWrite(ApiModel):
+    kind: Literal["LINK"]
+    name: str = Field(min_length=1, max_length=220)
+    value: str = Field(min_length=1, max_length=2000)
+
+
+class CaseBundleFileWrite(ApiModel):
+    name: str = Field(min_length=1, max_length=220)
+    # None records a file whose bytes were unavailable at export time (reported on import).
+    content_base64: str | None = Field(default=None, max_length=90_000_000)
+
+
+class CaseBundleStageWrite(ApiModel):
+    stage_key: str = Field(pattern=r"^[a-z][a-z0-9._-]{0,99}$")
+    name: str = Field(min_length=1, max_length=220)
+    objective: str = Field(default="", max_length=10_000)
+    execution_mode: Literal["STEPWISE", "CONTINUOUS"] = "STEPWISE"
+    template_flow_run_id: str | None = Field(default=None, min_length=1, max_length=36)
+
+
+class CaseBundleEntryWrite(ApiModel):
+    name: str = Field(min_length=1, max_length=220)
+    description: str = Field(default="", max_length=20_000)
+    objective: str = Field(default="", max_length=20_000)
+    work_directory_id: str | None = Field(default=None, min_length=1, max_length=36)
+    link_materials: list[CaseBundleLinkWrite] = Field(default_factory=list, max_length=100)
+    file_materials: list[CaseBundleFileWrite] = Field(default_factory=list, max_length=100)
+    stages: list[CaseBundleStageWrite] = Field(default_factory=list, max_length=50)
+    session_config: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_unique_stage_keys(self) -> CaseBundleEntryWrite:
+        keys = [stage.stage_key for stage in self.stages]
+        if len(keys) != len(set(keys)):
+            raise ValueError("case stage keys must be unique")
+        return self
+
+
+class CaseBundleImportWrite(ApiModel):
+    """Versioned document produced by ``POST /cases/export``."""
+
+    format: Literal["flowweave.case-bundle"]
+    version: Literal[1]
+    exported_at: str | None = Field(default=None, max_length=64)
+    cases: list[CaseBundleEntryWrite] = Field(min_length=1, max_length=50)
+
+
+class CaseExportWrite(ApiModel):
+    case_ids: list[str] = Field(min_length=1, max_length=50)
+
+    @model_validator(mode="after")
+    def validate_unique(self) -> CaseExportWrite:
+        if len(self.case_ids) != len(set(self.case_ids)):
+            raise ValueError("case_ids must be unique")
+        return self
+
+
 class CasePathCardWrite(ApiModel):
     id: str | None = Field(default=None, min_length=1, max_length=36)
     flow_run_id: str | None = Field(default=None, min_length=1, max_length=36)
@@ -918,6 +1026,11 @@ class CasePathWrite(ApiModel):
 class CaseCoordinationStateWrite(ApiModel):
     expected_row_version: int = Field(ge=1)
     state: Literal["ACTIVE", "PAUSED"]
+
+
+class CaseConclusionDecisionWrite(ApiModel):
+    expected_row_version: int = Field(ge=1)
+    note: str | None = Field(default=None, max_length=2000)
 
 
 class CaseStageStateWrite(ApiModel):
@@ -954,6 +1067,7 @@ class CaseControlPlanWrite(ApiModel):
         "COPY_STEPWISE_EXECUTION",
         "ADVANCE_CASE_STAGE",
         "COMPLETE_CASE",
+        "CONCLUDE_CASE",
     ]
     idempotency_key: str = Field(pattern=r"^[a-z][a-z0-9._:-]{0,139}$")
     reason: str = Field(min_length=1, max_length=2_000)
@@ -1040,8 +1154,15 @@ class StepwiseRuntimePortMappingWrite(ApiModel):
 
 class StepwiseRuntimePortsWrite(ApiModel):
     expected_active_snapshot_version: int = Field(ge=1)
-    node_ports: dict[str, dict[str, list[IOFieldWrite]]] = Field(default_factory=dict)
+    # Per node, the COMPLETE set of run-level ports: a port left out is deleted.
+    node_ports: dict[str, dict[str, list[RuntimePortFieldWrite]]] = Field(default_factory=dict)
+    # When non-empty, run-level connections touching the nodes in node_ports are replaced by
+    # this list (send the ones to keep too). A target input takes one connection.
     port_mappings: list[StepwiseRuntimePortMappingWrite] = Field(
+        default_factory=list, max_length=500
+    )
+    # Run-level connections to delete. A connection whose port was deleted is dropped too.
+    remove_port_mappings: list[StepwiseRuntimePortMappingWrite] = Field(
         default_factory=list, max_length=500
     )
 

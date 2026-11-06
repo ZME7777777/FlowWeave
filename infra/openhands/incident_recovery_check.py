@@ -159,7 +159,7 @@ def serve(directory, port):
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="error")
 
 
-def restart_recovery():
+def restart_recovery(*, startup_timeout_seconds: float = 30):
     import httpx
 
     with tempfile.TemporaryDirectory(prefix="incident-restart-") as temporary:
@@ -201,7 +201,7 @@ def restart_recovery():
                     start_new_session=True,
                 )
                 processes.append(process)
-                deadline = time.monotonic() + 30
+                deadline = time.monotonic() + startup_timeout_seconds
                 while time.monotonic() < deadline:
                     require(
                         process.poll() is None,
@@ -353,11 +353,19 @@ def main():
     parser.add_argument("--allow-isolated-fault-injection", action="store_true")
     parser.add_argument("--expected-source-commit")
     parser.add_argument(
+        "--server-startup-timeout-seconds",
+        type=float,
+        default=30,
+        help="Cold server startup budget; use up to 180 seconds under CPU emulation.",
+    )
+    parser.add_argument(
         "--scenario", choices=["terminal", "restart", "all"], default="all"
     )
     parser.add_argument("--serve", type=Path)
     parser.add_argument("--port", type=int)
     args = parser.parse_args()
+    if not 1 <= args.server_startup_timeout_seconds <= 180:
+        parser.error("server startup timeout must be between 1 and 180 seconds")
     logging.disable(logging.CRITICAL)
     os.environ["OPENHANDS_SUPPRESS_BANNER"] = "1"
     if args.serve:
@@ -393,7 +401,14 @@ def main():
     if args.scenario in ("terminal", "all"):
         print(json.dumps(terminal_pressure()), flush=True)
     if args.scenario in ("restart", "all"):
-        print(json.dumps(restart_recovery()), flush=True)
+        print(
+            json.dumps(
+                restart_recovery(
+                    startup_timeout_seconds=args.server_startup_timeout_seconds
+                )
+            ),
+            flush=True,
+        )
 
 
 if __name__ == "__main__":

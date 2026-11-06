@@ -34,7 +34,7 @@ scripts/verify-remote-deploy.sh --config .local/remote-deploy.env \
 
 远程 Compose、环境文件、持久数据路径和私有入口均为服务器侧资产，不得复制进仓库。更新 API 时，必须从同一已提交版本同步更新并 recreate `stream-api`；不得以 orphan 或 `--remove-orphans` 忽略它。发生故障时先保留日志和数据库错误状态，再仅回滚受影响服务；禁止使用删除 volume、清空 Workspace、`reset --hard` 或 `clean -f` 代替回滚。
 
-普通 `web`／`platform` 发布必须按 `docs/deployment.md` 使用 `make remote-release-prepare` 的 commit-bound 最小上下文，并在健康、版本与路由验收后执行 `make remote-release-finish`，保留最近 24 小时的受管上下文、所有实际路径引用和每仓库一个回滚镜像，避免继续创建无人管理的源码副本和 tar 包。该收尾只回收受管发布上下文与精确平台／Web 历史 image tags，不得扩大为共享 BuildKit、卷、Workspace 或数据库备份清理；Runtime 发布继续遵守独立预检与活跃会话门禁。
+普通 `web`／`platform` 发布必须按 `docs/deployment.md` 使用 `make remote-release-prepare` 的 commit-bound 最小上下文，并在健康、版本与路由验收后执行 `make remote-release-finish`，保留最近三份成功上下文、最近 24 小时的受管上下文、所有实际路径引用和每仓库一个回滚镜像，避免继续创建无人管理的源码副本和 tar 包。该收尾只回收受管发布上下文与精确平台／Web 历史 image tags，不得扩大为共享 BuildKit、卷、Workspace 或数据库备份清理；Runtime 发布继续遵守独立预检与活跃会话门禁。
 
 ## OpenHands-first 架构原则
 
@@ -49,7 +49,7 @@ scripts/verify-remote-deploy.sh --config .local/remote-deploy.env \
 
 ## OpenHands 源码与镜像基线
 
-OpenHands `baseline` 是 FlowWeave 的持续集成基线：先合并已验证的 upstream `main`，再在同一 `baseline` 分支追加经审计的 FlowWeave Runtime 扩展。当前上游锚点为 `f0206428306db687ac9c8d833ece4fb82b015eba`，四包发布版本为 `1.54.0`；实际 Runtime 身份始终以 `baseline` 的固定 commit、归档 SHA-256 和 source lock 为准，而非假定等于上游锚点或浮动分支 HEAD。
+OpenHands `baseline` 是 FlowWeave 的持续集成基线：先合并已验证的 upstream `main`，再在同一 `baseline` 分支追加经审计的 FlowWeave Runtime 扩展。当前上游锚点为 `ce5716a3c0a955a85bb0cc4dcfaa94d5fefcda50`，四包发布版本为 `1.58.2`；实际 Runtime 身份始终以 `baseline` 的固定 commit、归档 SHA-256 和 source lock 为准，而非假定等于上游锚点或浮动分支 HEAD。
 
 - SDK 源码工作树可在 `baseline` 分支实施最小、可测试的 FlowWeave 扩展；不得直接修改 `main`，不得基于浮动上游提交构建，也不得在镜像构建期施加未进入 `baseline` 提交的源码补丁。
 - 每次合并上游后必须重新验证所有 FlowWeave 扩展；发生冲突时保留扩展的明确契约、更新其测试，并以新的 `baseline` commit、不可变归档和镜像 provenance 锁定。
@@ -58,7 +58,7 @@ OpenHands `baseline` 是 FlowWeave 的持续集成基线：先合并已验证的
 
 - SDK 源码：`/Users/zhengmengen/WorkSpace/openhands/software-agent-sdk-total-tokens-1.47`（`baseline`）
 - 历史兼容基线：`v1.42.0` / `f09e03eac772290feeb51b7d7390ffaefeca1a09`
-- 固定包版本：`openhands-agent-server==1.54.0`、`openhands-sdk==1.54.0`、`openhands-tools==1.54.0`、`openhands-workspace==1.54.0`
+- 固定包版本：`openhands-agent-server==1.58.2`、`openhands-sdk==1.58.2`、`openhands-tools==1.58.2`、`openhands-workspace==1.58.2`
 - 固定运行时镜像：`flowweave-openhands-runtime:1`
 - 契约探针：`infra/openhands/contract_check.py`
 

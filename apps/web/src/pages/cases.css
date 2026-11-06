@@ -424,8 +424,47 @@ html:has(.scenario-space){overscroll-behavior:none}
 /* 单一启动入口：主按钮 + 会话方式菜单 */
 .case-start-split{position:relative;display:inline-flex;align-items:stretch}
 .case-start-split>.primary:first-child:not(:last-child){border-top-right-radius:0;border-bottom-right-radius:0}
-.case-start-split>.case-start-more{margin-left:1px;border-top-left-radius:0;border-bottom-left-radius:0;padding:6px 7px}
+.case-start-split>.case-start-more{margin-left:0;border-top-left-radius:0;border-bottom-left-radius:0}
 .case-start-menu{position:absolute;z-index:30;top:calc(100% + 4px);right:0;display:grid;min-width:190px;border:1px solid #cfdcd3;border-radius:9px;background:#fff;padding:4px;box-shadow:0 14px 30px #0a1a1038}
 .case-start-menu>button{display:grid;gap:1px;border:0;border-radius:6px;background:transparent;padding:8px 10px;color:#2f4b3a;font-size:11px;text-align:left}
 .case-start-menu>button small{color:#8a9a8f;font-size:9px}
 .case-start-menu>button:hover,.case-start-menu>button:focus-visible{outline:0;background:#eaf2ec}
+
+/* 场景工具栏：图标 + 简短文字，启动为带下拉的分体按钮 */
+.case-workspace-toolbar .scenario-case-actions .case-start-split>button.case-start-more{flex:0 0 30px;width:30px;min-width:30px;padding:0;justify-content:center}
+.case-workspace-toolbar .scenario-case-actions .case-start-more svg{flex:none}
+.case-workspace-toolbar .scenario-case-actions .case-start-split>button.case-start-main{flex:0 0 auto;padding:6px 12px;font-weight:600}
+.case-start-split>.case-start-more{border-left:1px solid #ffffff3d}
+.case-issue-chip{display:inline-flex;align-items:center;gap:4px;border:1px solid #ecd9ae;border-radius:999px;background:#fff8e8;padding:2px 9px;color:#8a6420;font-size:10px}
+.case-issue-chip:hover{background:#fff1d3}
+.spin{animation:case-spin 1s linear infinite}
+@keyframes case-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.spin{animation:none}}
+
+.case-batch-bar{display:flex;flex:none;align-items:center;gap:4px;margin:6px 12px 2px;min-height:26px}
+.case-batch-bar button{display:inline-flex;align-items:center;gap:4px;border:1px solid #dce5df;border-radius:6px;background:#fff;padding:4px 7px;font-size:11px;color:#51635a;cursor:pointer}
+.case-batch-bar button:disabled{opacity:.45;cursor:not-allowed}
+.case-batch-bar button.danger{color:#b4372d}
+.case-batch-all{display:inline-flex;align-items:center;gap:5px;margin-right:auto;font-size:11px;color:#51635a}
+.case-batch-notice{margin:4px 12px;font-size:11px;word-break:break-word}
+.scenario-space .scenario-case-row:has(.scenario-case-check){grid-template-columns:22px minmax(0,1fr) 26px}
+.scenario-case-check{margin:0 0 0 8px}
+
+.case-action-count{min-width:16px;border-radius:999px;background:#eaf2ec;padding:0 5px;color:#5c7a66;font-size:9px;line-height:16px;text-align:center}
+.case-single-workspace .case-question{display:flex;flex:0 0 auto;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px solid #ecd9ae;background:#fff8e8;padding:10px 20px}
+.case-question>div:first-child{min-width:0}.case-question b{color:#8a6420;font-size:12px}
+.case-question p{display:-webkit-box;max-height:4.8em;margin:4px 0 0;overflow:hidden;color:#80662f;font-size:11px;line-height:1.6;overflow-wrap:anywhere;-webkit-box-orient:vertical;-webkit-line-clamp:3;white-space:pre-wrap}
+.case-conclusion-note{box-sizing:border-box;width:min(100%,420px);margin-top:6px;font-size:11px}
+.case-question-actions{display:flex;flex:0 0 auto;align-items:center;gap:7px}.case-question-actions button{display:inline-flex;align-items:center;gap:5px;font-size:11px}
+.case-inspector.case-inspector-actions{width:min(640px,calc(100vw - 48px))}
+@media (max-width:640px){.case-single-workspace .case-question{flex-direction:column;align-items:stretch}.case-question-actions{justify-content:flex-end}}
+
+.scenario-space>aside>.scenario-side-head{gap:8px}.scenario-side-head .case-sidebar-search{flex:1;min-width:0;margin:0}
+.case-batch-bar{flex-wrap:nowrap;gap:3px}.case-batch-bar button{padding:4px 6px}.case-batch-all{margin-right:auto;white-space:nowrap}
+.case-activity-list>article{display:flex;align-items:center;gap:10px;margin-bottom:6px;padding:8px 12px}
+.case-activity-list>article>b{flex:none}.case-activity-list>article>small{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.case-activity-list>article>em{font-style:normal;font-size:10px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.case-activity-list article>footer{margin:0;gap:4px;flex:none}.case-activity-list article>footer button{display:inline-flex;align-items:center;gap:3px;padding:3px 6px}
+.case-batch-bar button>span{display:none}.case-batch-bar{overflow:hidden}.case-batch-bar button{padding:5px 8px}
+
+.scenario-space>aside{display:flex;flex-direction:column}.scenario-space>aside>.scenario-side-head,.scenario-space>aside>.case-batch-bar{flex:none}.scenario-space>aside>.scenario-tree{flex:1}.scenario-space>aside>.scenario-session-footer{flex:none}

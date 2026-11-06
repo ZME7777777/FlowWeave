@@ -1,4 +1,4 @@
-import { CheckCircle2, CheckSquare, ChevronDown, ExternalLink, KeyRound, Link2, LoaderCircle, LogIn, LogOut, Pencil, Plus, Server, ShieldCheck, ShieldX, Trash2 } from 'lucide-react';
+import { CheckCircle2, CheckSquare, ChevronDown, ExternalLink, KeyRound, Link2, LoaderCircle, LogIn, LogOut, Pencil, Plus, Server, ShieldCheck, ShieldX, Star, Trash2 } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, KeyboardEvent, useCallback, useEffect, useId, useRef, useState } from 'react';
 import { api } from '../api/client';
@@ -6,15 +6,15 @@ import { useProductDialog } from '../components/ProductDialogContext';
 import { useEscapeClose } from '../components/useEscapeClose';
 import { SettingsManagementLayout, SettingsResourceRow } from '../components/SettingsManagementLayout';
 import { Pagination } from '../components/Pagination';
-import type { CodexDeviceAuthorization, CodexOAuthStatus, ModelProvider, ModelProviderUsage, ModelProviderWrite, ProviderModel } from '../types';
+import type { CodexDeviceAuthorization, CodexOAuthStatus, ModelProtocol, ModelProvider, ModelProviderUsage, ModelProviderWrite, ProviderModel, ProviderUsageQuery } from '../types';
+import { Toast } from '../components/Toast';
 
-const blank = (): ModelProviderWrite => ({ name: '', auth_type: 'API_KEY', api_protocol: 'CHAT_COMPLETIONS', base_url: '', api_key: '', models: [{ model_name: '', enabled: true, is_default: true }] });
+const blank = (): ModelProviderWrite => ({ name: '', auth_type: 'API_KEY', base_url: '', api_key: '', models: [{ model_name: '', enabled: true, is_default: true }] });
 const CONNECTION_STATE_LABELS: Record<string, string> = { UNTESTED: '未测试', AUTHORIZING: '等待登录', CONNECTED: '已连接', FAILED: '连接失败' };
 type TestFeedback = { state: 'testing' | 'success' | 'error'; message: string };
 type ProviderAuthType = ModelProviderWrite['auth_type'];
 const providerAuthOptions: ReadonlyArray<{ value: ProviderAuthType; label: string }> = [
-  { value: 'API_KEY', label: 'OpenAI 兼容 API Key' },
-  { value: 'ANTHROPIC_API_KEY', label: 'Anthropic API Key（Claude）' },
+  { value: 'API_KEY', label: 'API Key（自动适配 GPT / Claude 等协议）' },
   { value: 'CODEX_OAUTH', label: 'Codex OAuth（ChatGPT 订阅）' },
 ];
 const isApiKeyProvider = (authType: ProviderAuthType) => authType !== 'CODEX_OAUTH';
@@ -54,57 +54,66 @@ function ProviderAuthSelect({ value, onChange }: { value: ProviderAuthType; onCh
     {open && <div id={listId} className="credential-auth-options" role="listbox" aria-label="认证方式">{providerAuthOptions.map(option => <button key={option.value} type="button" role="option" aria-selected={option.value === value} onClick={() => select(option.value)}>{option.label}</button>)}</div>}
   </div>;
 }
-const providerProtocolOptions: ReadonlyArray<{ value: ModelProviderWrite['api_protocol']; label: string }> = [
-  { value: 'CHAT_COMPLETIONS', label: 'Chat Completions（/chat/completions）' },
-  { value: 'RESPONSES', label: 'Responses（/responses）' },
-];
+const PROTOCOL_LABELS: Record<ModelProtocol, string> = { CHAT_COMPLETIONS: 'Chat Completions', RESPONSES: 'Responses', ANTHROPIC: 'Anthropic Messages' };
+const protocolSummary = (protocols: ModelProtocol[]) => protocols.length ? protocols.map(protocol => PROTOCOL_LABELS[protocol]).join(' · ') : '—';
+// Mirrors the server's name-based inference so the editor can preview it before saving.
+const inferProtocol = (name: string): ModelProtocol => /(^|[/:._-])claude/i.test(name) ? 'ANTHROPIC' : /(^|[/:._-])(gpt-?[5-9]|gpt-?\d{2,}|codex|o[1-9](?![a-z]))/i.test(name) ? 'RESPONSES' : 'CHAT_COMPLETIONS';
+const effectiveProtocol = (model: { model_name: string; protocol?: ModelProtocol | null }) => model.protocol ?? inferProtocol(model.model_name);
+const protocolChoices: ReadonlyArray<ModelProtocol | null> = [null, 'CHAT_COMPLETIONS', 'RESPONSES', 'ANTHROPIC'];
 
-function ProviderProtocolSelect({ value, onChange }: { value: ModelProviderWrite['api_protocol']; onChange: (value: ModelProviderWrite['api_protocol']) => void }) {
+function ModelProtocolSelect({ model, onChange }: { model: { model_name: string; protocol?: ModelProtocol | null }; onChange: (value: ModelProtocol | null) => void }) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const listId = useId();
-  const selected = providerProtocolOptions.find(option => option.value === value) ?? providerProtocolOptions[0];
+  const label = (value: ModelProtocol | null) => value ? PROTOCOL_LABELS[value] : `自动 · ${PROTOCOL_LABELS[inferProtocol(model.model_name)]}`;
 
   useEffect(() => {
+    if (!open) return;
     const closeIfOutside = (event: MouseEvent) => {
       if (root.current && !root.current.contains(event.target as Node)) setOpen(false);
     };
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setOpen(false); }
+    };
     document.addEventListener('mousedown', closeIfOutside);
-    return () => document.removeEventListener('mousedown', closeIfOutside);
-  }, []);
+    document.addEventListener('keydown', closeOnEscape, true);
+    return () => { document.removeEventListener('mousedown', closeIfOutside); document.removeEventListener('keydown', closeOnEscape, true); };
+  }, [open]);
 
-  const select = (next: ModelProviderWrite['api_protocol']) => {
-    onChange(next);
-    setOpen(false);
-  };
+  const select = (next: ModelProtocol | null) => { onChange(next); setOpen(false); };
   const move = (event: KeyboardEvent<HTMLButtonElement>, offset: number) => {
     event.preventDefault();
-    const current = providerProtocolOptions.findIndex(option => option.value === value);
-    const next = (current + offset + providerProtocolOptions.length) % providerProtocolOptions.length;
-    select(providerProtocolOptions[next].value);
+    const current = protocolChoices.indexOf(model.protocol ?? null);
+    select(protocolChoices[(current + offset + protocolChoices.length) % protocolChoices.length]);
   };
 
-  return <div className="provider-protocol-select" ref={root}>
-    <button type="button" className="provider-protocol-trigger" aria-haspopup="listbox" aria-expanded={open} aria-controls={listId} onClick={() => setOpen(current => !current)} onKeyDown={event => {
+  return <div className="provider-protocol-select model-protocol-select" ref={root}>
+    <button type="button" className="provider-protocol-trigger" aria-label={`模型 ${model.model_name || ''} 协议`} aria-haspopup="listbox" aria-expanded={open} aria-controls={listId} onClick={() => setOpen(current => !current)} onKeyDown={event => {
       if (event.key === 'ArrowDown') move(event, 1);
       else if (event.key === 'ArrowUp') move(event, -1);
-      else if (event.key === 'Escape') setOpen(false);
-    }}><span>{selected.label}</span><ChevronDown size={16} aria-hidden="true"/></button>
-    {open && <div id={listId} className="provider-protocol-options" role="listbox" aria-label="调用协议">{providerProtocolOptions.map(option => <button key={option.value} type="button" role="option" aria-selected={option.value === value} onClick={() => select(option.value)}>{option.label}</button>)}</div>}
+    }}><span>{label(model.protocol ?? null)}</span><ChevronDown size={14} aria-hidden="true"/></button>
+    {open && <div id={listId} className="provider-protocol-options" role="listbox" aria-label="调用协议">{protocolChoices.map(choice => <button key={choice ?? 'auto'} type="button" role="option" aria-selected={(model.protocol ?? null) === choice} onClick={() => select(choice)}>{label(choice)}</button>)}</div>}
   </div>;
 }
 
 function ProviderUsagePanel({ provider, value, loading, onRefresh }: { provider: ModelProvider; value?: ModelProviderUsage; loading: boolean; onRefresh: () => void }) {
-  if (provider.auth_type !== 'API_KEY') return <div className="provider-usage unavailable"><span>上游 Key 预算</span><b>该认证方式不支持查询</b></div>;
+  if (provider.auth_type !== 'API_KEY' && !provider.usage_query) return <div className="provider-usage unavailable"><div><span>上游 Key 预算</span><b>该认证方式不支持查询</b></div></div>;
   const detail = value?.status === 'AVAILABLE'
     ? <>已用 {budgetNumber(value.spend ?? 0)} / 上限 {budgetNumber(value.max_budget ?? 0)} <strong>剩余 {budgetNumber(value.remaining ?? 0)}</strong></>
     : value?.status === 'UNLIMITED'
       ? <>已用 {budgetNumber(value.spend ?? 0)}；上游未设置预算上限</>
       : value?.status === 'UNAVAILABLE'
         ? <>{value.reason ?? '上游未提供预算查询'}</>
-        : <>按需查询上游 API Key 的共享预算</>;
-  return <div className={`provider-usage ${value?.status?.toLowerCase() ?? ''}`}><div><span>上游 Key 预算</span><b>{detail}</b></div><button className="ghost" disabled={loading || !provider.has_api_key} onClick={onRefresh}>{loading ? '查询中…' : value ? '刷新用量' : '查询用量'}</button></div>;
+        : <>{provider.usage_query ? '按当前配置查询服务余额' : '按需查询上游 API Key 的共享预算'}</>;
+  return <div className={`provider-usage ${value?.status?.toLowerCase() ?? ''}`}><div><span>{provider.usage_query ? '自定义余额查询' : '上游 Key 预算'}</span>{value?.metrics ? <ProviderUsageMetrics metrics={value.metrics}/> : <b>{detail}</b>}</div><button className="ghost" disabled={loading || !provider.has_api_key} onClick={onRefresh}>{loading ? '查询中…' : provider.usage_query ? (value ? '刷新余额' : '查询余额') : value ? '刷新用量' : '查询用量'}</button></div>;
 }
+function ProviderUsageMetrics({ metrics }: { metrics: NonNullable<ModelProviderUsage['metrics']> }) {
+  return <div className="provider-usage-metrics" role="status">{metrics.map((metric, index) => <div className="provider-usage-metric" key={index}>
+    <span>{metric.label}</span><b>{metric.value === null ? '—' : `${metric.currency ? '$' : ''}${budgetNumber(metric.value)}${metric.percentage ? '%' : ''}`}</b>
+    {metric.percentage && metric.value !== null && <progress aria-label={metric.label} max={100} value={Math.max(0, Math.min(100, metric.value))}/>}
+  </div>)}</div>;
+}
+
 function ProviderEditor({ provider, onClose }: { provider?: ModelProvider; onClose: () => void }) {
   useEscapeClose(onClose);
   const qc = useQueryClient();
@@ -112,6 +121,38 @@ function ProviderEditor({ provider, onClose }: { provider?: ModelProvider; onClo
   const [discovered, setDiscovered] = useState<string[]>([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [usageHeaders, setUsageHeaders] = useState('{}');
+  const [usagePreview, setUsagePreview] = useState<ModelProviderUsage>();
+  const [usagePreviewError, setUsagePreviewError] = useState('');
+  const [previewingUsage, setPreviewingUsage] = useState(false);
+  const usageRequest = useRef<AbortController | undefined>(undefined);
+  useEffect(() => {
+    setUsagePreview(undefined); setUsagePreviewError('');
+    usageRequest.current?.abort(); setPreviewingUsage(false);
+    return () => usageRequest.current?.abort();
+  }, [form, usageHeaders]);
+  const usageQuery = (): ProviderUsageQuery | null => {
+    if (!form.usage_query || form.auth_type === 'CODEX_OAUTH') return null;
+    let headers: unknown;
+    try { headers = JSON.parse(usageHeaders); }
+    catch { throw new Error('查询请求头必须是 JSON 对象'); }
+    if (!headers || Array.isArray(headers) || typeof headers !== 'object' || Object.values(headers).some(value => typeof value !== 'string')) throw new Error('查询请求头必须是字符串键值组成的 JSON 对象');
+    return { ...form.usage_query, headers: headers as Record<string, string> };
+  };
+  const previewUsage = async () => {
+    setUsagePreview(undefined); setUsagePreviewError('');
+    const controller = new AbortController();
+    usageRequest.current?.abort(); usageRequest.current = controller;
+    try {
+      if (form.auth_type === 'CODEX_OAUTH') return;
+      const query = usageQuery();
+      setPreviewingUsage(true);
+      const result = await api.previewProviderUsage({ provider_id: provider?.id, base_url: form.base_url, api_key: form.api_key, usage_query: query }, controller.signal);
+      if (!controller.signal.aborted) setUsagePreview(result);
+    } catch (reason) {
+      if (!controller.signal.aborted) setUsagePreviewError(reason instanceof Error ? reason.message : '余额查询失败');
+    } finally { if (!controller.signal.aborted) setPreviewingUsage(false); }
+  };
   const applyDiscovery = useCallback((result: { models: string[]; provider?: ModelProvider }) => {
     setDiscovered(result.models);
     if (result.provider) {
@@ -119,9 +160,9 @@ function ProviderEditor({ provider, onClose }: { provider?: ModelProvider; onClo
       setForm(old => ({
         ...old,
         row_version: synchronized.row_version,
-        models: synchronized.models.map(({ model_name, enabled, is_default }) => ({ model_name, enabled, is_default })),
+        models: synchronized.models.map(({ model_name, enabled, is_default, protocol }) => ({ model_name, enabled, is_default, protocol: protocol ?? null })),
       }));
-      qc.setQueryData<ModelProvider[]>(['providers'], current => current?.map(item => item.id === synchronized.id ? synchronized : item));
+      qc.setQueryData<ModelProvider[]>(['model-providers'], current => current?.map(item => item.id === synchronized.id ? synchronized : item));
       return;
     }
     setForm(old => {
@@ -130,7 +171,8 @@ function ProviderEditor({ provider, onClose }: { provider?: ModelProvider; onClo
     });
   }, [qc]);
   useEffect(() => {
-    setForm(provider ? { name: provider.name, auth_type: provider.auth_type, api_protocol: provider.api_protocol, base_url: provider.base_url, api_key: '', row_version: provider.row_version, models: provider.models.map(({ model_name, enabled, is_default }) => ({ model_name, enabled, is_default })) } : blank());
+    setForm(provider ? { name: provider.name, auth_type: provider.auth_type, base_url: provider.base_url, api_key: '', usage_query: provider.usage_query ?? null, row_version: provider.row_version, models: provider.models.map(({ model_name, enabled, is_default, protocol }) => ({ model_name, enabled, is_default, protocol: protocol ?? null })) } : blank());
+    setUsageHeaders(JSON.stringify(provider?.usage_query?.headers ?? {}, null, 2));
     setDiscovered([]); setError('');
   }, [applyDiscovery, provider]);
   useEffect(() => {
@@ -148,13 +190,14 @@ function ProviderEditor({ provider, onClose }: { provider?: ModelProvider; onClo
   const save = async (event: FormEvent) => {
     event.preventDefault(); setBusy(true); setError('');
     try {
-      const saved = provider ? await api.updateProvider(provider.id, form) : await api.createProvider(form);
-      qc.setQueryData<ModelProvider[]>(['providers'], current => {
+      const payload = { ...form, models: form.models.map(model => ({ ...model, protocol: model.protocol ?? null })), usage_query: usageQuery() };
+      const saved = provider ? await api.updateProvider(provider.id, payload) : await api.createProvider(payload);
+      qc.setQueryData<ModelProvider[]>(['model-providers'], current => {
         const providers = current ?? [];
         const exists = providers.some(item => item.id === saved.id);
         return exists ? providers.map(item => item.id === saved.id ? saved : item) : [saved, ...providers];
       });
-      void qc.invalidateQueries({ queryKey: ['providers'] });
+      void qc.invalidateQueries({ queryKey: ['model-providers'] });
       onClose();
     }
     catch (reason) { setError(reason instanceof Error ? reason.message : '保存失败'); }
@@ -207,20 +250,30 @@ function ProviderEditor({ provider, onClose }: { provider?: ModelProvider; onClo
   const changeAuthType = (auth_type: ProviderAuthType) => setForm(old => ({
     ...old,
     auth_type,
-    api_protocol: auth_type === 'CODEX_OAUTH' ? 'RESPONSES' : 'CHAT_COMPLETIONS',
     base_url: auth_type === 'CODEX_OAUTH' ? '' : old.base_url,
     api_key: '',
+    usage_query: auth_type === 'CODEX_OAUTH' ? null : old.usage_query,
     models: auth_type === 'CODEX_OAUTH' ? [] : old.models.length ? old.models : [{ model_name: '', enabled: true, is_default: true }],
   }));
-  const isAnthropic = form.auth_type === 'ANTHROPIC_API_KEY';
-  return <div className="modal-backdrop"><form className="modal model-editor" onSubmit={save}><header><div><span className="eyebrow">MODEL PROVIDER</span><h2>{provider ? '编辑模型服务' : '新增模型服务'}</h2><p>API Key 与 Codex OAuth 凭据均加密保存且永不返回浏览器。</p></div><button type="button" className="ghost" onClick={onClose}>关闭</button></header>
-    <div className="form-grid"><label>服务名称<input required value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}/></label><label>认证方式<ProviderAuthSelect value={form.auth_type} onChange={changeAuthType}/></label>{form.auth_type === 'CODEX_OAUTH' ? <p className="startpoint wide">保存后在服务详情点击“登录 Codex”，使用设备码连接 ChatGPT 订阅。OAuth 服务仅用于 Agent 节点，不用于 Prompt Gate。</p> : <>{form.auth_type === 'API_KEY' ? <label>调用协议<ProviderProtocolSelect value={form.api_protocol} onChange={api_protocol => setForm({ ...form, api_protocol })}/></label> : <label>调用协议<input readOnly value="Anthropic Messages（/v1/messages）"/></label>}<label>Base URL<input required value={form.base_url} placeholder={isAnthropic ? 'https://api.anthropic.com' : 'https://api.example.com/v1'} onChange={e => setForm({ ...form, base_url: e.target.value })}/></label><label className="wide">{isAnthropic ? 'Anthropic API Key' : 'API Key'}<input type="password" value={form.api_key ?? ''} placeholder={provider?.has_api_key ? `留空保留现有密钥 ${provider.api_key_hint ?? ''}` : isAnthropic ? '输入 ANTHROPIC_API_KEY' : '输入 API Key'} onChange={e => setForm({ ...form, api_key: e.target.value })}/></label></>}</div>
-    <div className="model-discovery-head"><div><b>可用模型</b><small>{form.auth_type === 'CODEX_OAUTH' ? provider?.oauth_connected ? '已按当前登录账号自动拉取；也可手动刷新' : '登录 Codex 后可按账号自动拉取模型' : '填写连接信息后拉取模型，再选择启用项和默认模型'}</small></div>{(isApiKeyProvider(form.auth_type) || (form.auth_type === 'CODEX_OAUTH' && provider?.oauth_connected)) && <button type="button" className="secondary" disabled={busy || !form.base_url.trim() && isApiKeyProvider(form.auth_type)} onClick={() => void discover()}>{busy ? '拉取中…' : form.auth_type === 'CODEX_OAUTH' ? '刷新模型' : '拉取模型'}</button>}</div>
+  return <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget) onClose(); }}><form className="modal model-editor" onSubmit={save}><header><div><span className="eyebrow">MODEL PROVIDER</span><h2>{provider ? '编辑供应商' : '新增供应商'}</h2><p>API Key 与 Codex OAuth 凭据均加密保存且永不返回浏览器。</p></div><button type="button" className="ghost" onClick={onClose}>关闭</button></header>
+    <div className="form-grid"><label>服务名称<input required value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}/></label><label>认证方式<ProviderAuthSelect value={form.auth_type} onChange={changeAuthType}/></label>{form.auth_type === 'CODEX_OAUTH' ? <p className="startpoint wide">保存后在服务详情点击“登录 Codex”，使用设备码连接 ChatGPT 订阅。OAuth 服务仅用于 Agent 节点，不用于 Prompt Gate。</p> : <><label>Base URL<input required value={form.base_url} placeholder="https://api.example.com" onChange={e => setForm({ ...form, base_url: e.target.value })}/></label><label className="wide">API Key<input type="password" value={form.api_key ?? ''} placeholder={provider?.has_api_key ? `留空保留现有密钥 ${provider.api_key_hint ?? ''}` : '输入 API Key'} onChange={e => setForm({ ...form, api_key: e.target.value })}/></label><small className="wide">只需填写一个地址，FlowWeave 按模型自动选择 Claude / GPT 等协议与端点。</small></>}</div>
+    {isApiKeyProvider(form.auth_type) && <section className="model-usage-config" aria-label="余额查询配置">
+      <div className="model-usage-config-heading"><label className="model-usage-toggle"><input type="checkbox" checked={Boolean(form.usage_query)} onChange={event => setForm(old => ({ ...old, usage_query: event.target.checked ? { method: 'GET', url: `${old.base_url.replace(/\/v1\/?$/, '').replace(/\/$/, '')}/key/info`, expression: '$info.max_budget - info.spend', headers: {} } : null }))}/>自定义余额查询</label><small>{form.usage_query ? '按接口返回的 JSON 计算余额' : '使用默认上游 Key 预算查询'}</small></div>
+      {form.usage_query && <>
+        <div className="model-usage-request"><div className="model-usage-method" role="group" aria-label="查询请求方法">{(['GET', 'POST'] as const).map(method => <button type="button" key={method} aria-pressed={form.usage_query?.method === method} onClick={() => setForm(old => ({ ...old, usage_query: { ...old.usage_query!, method } }))}>{method}</button>)}</div><label>余额查询地址<input required type="url" value={form.usage_query.url} placeholder="https://api.example.com/key/info" onChange={event => setForm(old => ({ ...old, usage_query: { ...old.usage_query!, url: event.target.value } }))}/></label></div>
+        <label>余额字段<input required value={form.usage_query.expression} placeholder="$info.max_budget - info.spend" onChange={event => setForm(old => ({ ...old, usage_query: { ...old.usage_query!, expression: event.target.value } }))}/></label>
+        <small>支持 JSON 字段路径、+ - * / 与括号。前加 $ 显示金额，后加 % 将比例显示为百分比。多个余额用分号分隔，可加标签，如「剩余: $data.balance」。</small>
+        <details className="model-usage-advanced"><summary>请求头与数组汇总</summary><label>查询请求头（JSON）<textarea className="model-usage-headers" value={usageHeaders} onChange={event => setUsageHeaders(event.target.value)} placeholder={'{"Authorization": "Bearer {key}"}'}/></label><small>默认复用服务认证，地址和请求头中的 {'{key}'} 使用当前 API Key。密钥请使用占位符。</small><small>数组可写 a.*.used、a[status=active].used，通过 sum()、min()、max() 或 count() 汇总，如「sum(a.*.used)」。取不到的余额显示 —。</small></details>
+      </>}
+      {(form.auth_type === 'API_KEY' || form.usage_query) && <div className="model-usage-preview"><button type="button" className="secondary" disabled={busy || previewingUsage || !form.base_url.trim() || (!form.api_key && !provider?.has_api_key)} onClick={() => void previewUsage()}>{previewingUsage ? <LoaderCircle className="spin" size={13}/> : <CheckCircle2 size={13}/>} {previewingUsage ? '查询中…' : '查询余额'}</button>{usagePreview && (usagePreview.metrics ? <ProviderUsageMetrics metrics={usagePreview.metrics}/> : <span role="status">{usagePreview.status === 'UNAVAILABLE' ? usagePreview.reason : usagePreview.status === 'UNLIMITED' ? `已用 ${budgetNumber(usagePreview.spend ?? 0)}，上游未设置预算上限` : `剩余 ${budgetNumber(usagePreview.remaining ?? 0)}`}</span>)}</div>}
+      {usagePreviewError && <p className="error" role="alert">{usagePreviewError}</p>}
+    </section>}
+    <div className="model-discovery-head"><div><b>可用模型</b><small>{form.auth_type === 'CODEX_OAUTH' ? provider?.oauth_connected ? '已按当前登录账号自动拉取；也可手动刷新' : '登录 Codex 后可按账号自动拉取模型' : '填写连接信息后拉取模型，再选择启用项和默认模型；协议按模型自动判断，可逐个调整'}</small></div>{(isApiKeyProvider(form.auth_type) || (form.auth_type === 'CODEX_OAUTH' && provider?.oauth_connected)) && <button type="button" className="secondary" disabled={busy || !form.base_url.trim() && isApiKeyProvider(form.auth_type)} onClick={() => void discover()}>{busy ? '拉取中…' : form.auth_type === 'CODEX_OAUTH' ? '刷新模型' : '拉取模型'}</button>}</div>
     {isApiKeyProvider(form.auth_type) && discovered.length > 0 && <div className="model-tags discovery-tags">{discovered.map(name => { const selected = form.models.some(item => item.model_name === name); return <button type="button" key={name} className={selected ? 'selected' : ''} aria-pressed={selected} onClick={() => toggle(name)}>{name}</button>; })}</div>}
-    <div className={`provider-model-list ${form.auth_type === 'CODEX_OAUTH' ? 'oauth-model-list' : ''}`}>{form.models.map((model, index) => <div className="provider-model-row" key={model.model_name || index}>{form.auth_type === 'CODEX_OAUTH' ? <span className="synced-model-name"><b>{model.model_name}</b><small>由当前 Codex 账号同步{model.supported_reasoning_efforts?.length ? ` · 支持 ${model.supported_reasoning_efforts.join(' / ')}` : ''}</small></span> : <input aria-label={`模型 ${index + 1}`} required value={model.model_name} placeholder="模型标识" onChange={e => updateModel(index, { model_name: e.target.value })}/>}<label><input type="checkbox" checked={model.enabled} onChange={e => updateModel(index, { enabled: e.target.checked })}/>启用</label><label><input type="radio" name="default-model" checked={model.is_default} onChange={() => updateModel(index, { is_default: true, enabled: true })}/>默认</label>{isApiKeyProvider(form.auth_type) && <button type="button" className="danger model-remove-button" aria-label={`移除模型 ${model.model_name}`} onClick={() => removeModel(index)}><Trash2 size={16}/>删除</button>}</div>)}</div>
+    <div className={`provider-model-list ${form.auth_type === 'CODEX_OAUTH' ? 'oauth-model-list' : 'with-protocol'}`}>{form.models.map((model, index) => <div className="provider-model-row" key={model.model_name || index}>{form.auth_type === 'CODEX_OAUTH' ? <span className="synced-model-name"><b>{model.model_name}</b><small>由当前 Codex 账号同步{model.supported_reasoning_efforts?.length ? ` · 支持 ${model.supported_reasoning_efforts.join(' / ')}` : ''}</small></span> : <input aria-label={`模型 ${index + 1}`} required value={model.model_name} placeholder="模型标识" onChange={e => updateModel(index, { model_name: e.target.value })}/>}{isApiKeyProvider(form.auth_type) && <ModelProtocolSelect model={model} onChange={protocol => updateModel(index, { protocol })}/>}<label><input type="checkbox" checked={model.enabled} onChange={e => updateModel(index, { enabled: e.target.checked })}/>启用</label><label><input type="radio" name="default-model" checked={model.is_default} onChange={() => updateModel(index, { is_default: true, enabled: true })}/>默认</label>{isApiKeyProvider(form.auth_type) && <button type="button" className="danger model-remove-button" aria-label={`移除模型 ${model.model_name}`} onClick={() => removeModel(index)}><Trash2 size={16}/>删除</button>}</div>)}</div>
     {isApiKeyProvider(form.auth_type) && <button type="button" className="ghost" onClick={() => setForm(old => ({ ...old, models: [...old.models, { model_name: '', enabled: true, is_default: old.models.length === 0 }] }))}><Plus size={13}/>手动添加模型</button>}
     {form.auth_type === 'CODEX_OAUTH' && provider?.oauth_connected && !busy && !form.models.length && <p className="model-discovery-empty">当前账号没有返回可用模型，请点击“刷新模型”重试。</p>}
-    {error && <p className="error">{error}</p>}<footer><button type="button" className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={busy || (isApiKeyProvider(form.auth_type) && !form.models.length)}>{busy ? '处理中…' : '保存模型服务'}</button></footer>
+    {error && <p className="error">{error}</p>}<footer><button type="button" className="ghost" onClick={onClose}>取消</button><button className="primary" disabled={busy || (isApiKeyProvider(form.auth_type) && !form.models.length)}>{busy ? '处理中…' : '保存供应商'}</button></footer>
   </form></div>;
 }
 function CodexLoginDialog({ provider, authorization, onClose, onConnected }: { provider: ModelProvider; authorization: CodexDeviceAuthorization; onClose: () => void; onConnected: (status: CodexOAuthStatus) => void }) {
@@ -241,14 +294,14 @@ function CodexLoginDialog({ provider, authorization, onClose, onConnected }: { p
 export function ModelsPage() {
   const dialog = useProductDialog();
   const qc = useQueryClient();
-  const { data: providers = [], isLoading, error: loadError, refetch } = useQuery({ queryKey: ['providers'], queryFn: api.providers });
+  const { data: providers = [], isLoading, error: loadError, refetch } = useQuery({ queryKey: ['model-providers'], queryFn: api.providers });
   const [editing, setEditing] = useState<ModelProvider | null | undefined>();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [testFeedback, setTestFeedback] = useState<Record<string, TestFeedback>>({});
-  const [usage, setUsage] = useState<Record<string, ModelProviderUsage>>({});
+  const [usage, setUsage] = useState<Record<string, { value: ModelProviderUsage; rowVersion: number }>>({});
   const [codexLogin, setCodexLogin] = useState<{ provider: ModelProvider; authorization: CodexDeviceAuthorization }>();
   const [page, setPage] = useState(1);
   const pageSize = 20;
@@ -272,12 +325,17 @@ export function ModelsPage() {
       const message = reason instanceof Error ? reason.message : '连接请求失败';
       setTestFeedback(old => ({ ...old, [providerId]: { state: 'error', message: `连接失败：${message}` } }));
     },
-    onSettled: () => void qc.invalidateQueries({ queryKey: ['providers'] }),
+    onSettled: () => void qc.invalidateQueries({ queryKey: ['model-providers'] }),
+  });
+  const setPrimary = useMutation({
+    mutationFn: ({ id, primary }: { id: string; primary: boolean }) => api.setPrimaryProvider(id, primary),
+    onSuccess: (_value, { primary }) => { setNotice(primary ? '已设为主要供应商，新会话将默认使用它。' : '已取消主要供应商。'); void qc.invalidateQueries({ queryKey: ['model-providers'] }); },
+    onError: reason => setError(reason instanceof Error ? reason.message : '设置主要供应商失败'),
   });
   const readUsage = useMutation({
-    mutationFn: api.providerUsage,
-    onSuccess: (result, providerId) => setUsage(old => ({ ...old, [providerId]: result })),
-    onError: (_reason, providerId) => setUsage(old => ({ ...old, [providerId]: { status: 'UNAVAILABLE', reason: '暂时无法读取上游用量' } })),
+    mutationFn: (provider: ModelProvider) => api.providerUsage(provider.id),
+    onSuccess: (value, provider) => setUsage(old => ({ ...old, [provider.id]: { value, rowVersion: provider.row_version } })),
+    onError: (_reason, provider) => setUsage(old => ({ ...old, [provider.id]: { value: { status: 'UNAVAILABLE', reason: '暂时无法读取上游用量' }, rowVersion: provider.row_version } })),
   });
   const toggle = (id: string) => setSelectedIds(old => { const next = new Set(old); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   const toggleAll = () => setSelectedIds(allSelected ? new Set() : new Set(providers.map(provider => provider.id)));
@@ -287,43 +345,108 @@ export function ModelsPage() {
       const authorization = await api.startCodexOAuth(provider.id);
       setCodexLogin({ provider, authorization });
       window.open(authorization.verification_url, '_blank', 'noopener,noreferrer');
-      await qc.invalidateQueries({ queryKey: ['providers'] });
+      await qc.invalidateQueries({ queryKey: ['model-providers'] });
     } catch (reason) { setError(reason instanceof Error ? reason.message : '无法启动 Codex 登录'); }
   };
   const disconnectCodex = async (provider: ModelProvider) => {
     if (!await dialog.confirm({ title: `断开“${provider.name}”？`, message: '加密保存的 Codex OAuth token 将被永久删除，节点将无法继续使用该服务。', confirmLabel: '断开连接', tone: 'danger' })) return;
-    try { await api.disconnectCodexOAuth(provider.id); await qc.invalidateQueries({ queryKey: ['providers'] }); }
+    try { await api.disconnectCodexOAuth(provider.id); await qc.invalidateQueries({ queryKey: ['model-providers'] }); }
     catch (reason) { setError(reason instanceof Error ? reason.message : '断开失败'); }
   };
   const removeMany = async (ids: string[], label: string) => {
     if (!ids.length) return;
-    if (!await dialog.confirm({ title: `删除${label}？`, message: '模型服务、密钥和模型配置将被永久删除。已有会话会保留，但下次发送前需要选择其他模型；自动运行会按名称顺序选择其他已连接服务的默认模型。', confirmLabel: '确认删除', tone: 'danger' })) return;
+    if (!await dialog.confirm({ title: `删除${label}？`, message: '供应商、密钥和模型配置将被永久删除。已有会话会保留，但下次发送前需要选择其他模型；自动运行会按名称顺序选择其他已连接服务的默认模型。', confirmLabel: '确认删除', tone: 'danger' })) return;
     setDeleting(true); setError(''); setNotice('');
     try {
       const result = await api.deleteProviders(ids);
       setSelectedIds(new Set());
-      const outcomes = [`已删除 ${result.deleted_ids.length} 个模型服务。`];
+      const outcomes = [`已删除 ${result.deleted_ids.length} 个供应商。`];
       if (result.session_reconfigured) outcomes.push(`${result.session_reconfigured} 个会话需要在下次发送前选择其他模型。`);
       if (result.automatic_reconfigured) outcomes.push(`${result.automatic_reconfigured} 个自动运行已改用其他已连接服务的默认模型。`);
       if (result.automatic_needs_model_configuration) outcomes.push(`${result.automatic_needs_model_configuration} 个自动运行没有可用替代服务，需要重新配置模型。`);
       if (result.deleted_ids.length) setNotice(outcomes.join(' '));
-      await qc.invalidateQueries({ queryKey: ['providers'] });
+      await qc.invalidateQueries({ queryKey: ['model-providers'] });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '删除失败');
     } finally {
       setDeleting(false);
     }
   };
-  return <SettingsManagementLayout title="大模型配置" count={providers.length} query={query} onQueryChange={value => { setQuery(value); setPage(1); }} className="models-page"
-    actions={<button className="primary" onClick={() => setEditing(null)}><Plus size={14}/>新增模型服务</button>}
-    selection={<><button className="ghost" disabled={!providers.length || deleting} onClick={toggleAll}><CheckSquare size={13}/>{allSelected ? '取消全选' : '全选'}</button><button className="danger" disabled={!selectedIds.size || deleting} onClick={() => void removeMany([...selectedIds], `选中的 ${selectedIds.size} 个模型服务`)}><Trash2 size={13}/>{deleting ? '删除中…' : `批量删除 (${selectedIds.size})`}</button></>}
+  return <SettingsManagementLayout title="供应商配置" count={providers.length} query={query} onQueryChange={value => { setQuery(value); setPage(1); }} className="models-page"
+    actions={<button className="primary" onClick={() => setEditing(null)}><Plus size={14}/>新增供应商</button>}
+    selection={<><button className="ghost" disabled={!providers.length || deleting} onClick={toggleAll}><CheckSquare size={13}/>{allSelected ? '取消全选' : '全选'}</button><button className="danger" disabled={!selectedIds.size || deleting} onClick={() => void removeMany([...selectedIds], `选中的 ${selectedIds.size} 个供应商`)}><Trash2 size={13}/>{deleting ? '删除中…' : `批量删除 (${selectedIds.size})`}</button></>}
     listKey={`${query}-${page}`}
-    list={isLoading ? <div className="empty compact">加载中…</div> : loadError ? <div className="empty compact error"><span>{loadError.message}</span><button className="secondary" onClick={() => void refetch()}>重试</button></div> : pagedProviders.length ? pagedProviders.map(provider => <SettingsResourceRow key={provider.id} name={provider.name} description={provider.models.find(item => item.is_default && item.enabled)?.model_name ?? '未设置默认模型'} meta={<><em className={provider.connection_state === 'FAILED' ? 'failed' : ''}>{CONNECTION_STATE_LABELS[provider.connection_state] ?? provider.connection_state}</em><span>{provider.auth_type === 'CODEX_OAUTH' ? 'Codex OAuth' : provider.auth_type === 'ANTHROPIC_API_KEY' ? 'Anthropic' : 'API Key'}</span></>} active={activeProvider?.id === provider.id} onSelect={() => setActiveId(provider.id)} checked={selectedIds.has(provider.id)} onToggle={() => toggle(provider.id)}/>) : <div className="empty compact">{query ? '没有匹配的模型服务' : '还没有模型服务'}</div>}
+    list={isLoading ? <div className="empty compact">加载中…</div> : loadError ? <div className="empty compact error"><span>{loadError.message}</span><button className="secondary" onClick={() => void refetch()}>重试</button></div> : pagedProviders.length ? pagedProviders.map(provider => <SettingsResourceRow key={provider.id} name={provider.name} description={provider.models.find(item => item.is_default && item.enabled)?.model_name ?? '未设置默认模型'} meta={<>{provider.is_primary && <em className="provider-primary-badge">主要</em>}<em className={provider.connection_state === 'FAILED' ? 'failed' : ''}>{CONNECTION_STATE_LABELS[provider.connection_state] ?? provider.connection_state}</em><span>{provider.auth_type === 'CODEX_OAUTH' ? 'Codex OAuth' : 'API Key'}</span></>} active={activeProvider?.id === provider.id} onSelect={() => setActiveId(provider.id)} checked={selectedIds.has(provider.id)} onToggle={() => toggle(provider.id)}/>) : <div className="empty compact">{query ? '没有匹配的供应商' : '还没有供应商'}</div>}
     pagination={<Pagination page={page} pageSize={pageSize} total={filteredProviders.length} onPageChange={setPage}/>}
     overlays={<>    {editing !== undefined && <ProviderEditor provider={editing ?? undefined} onClose={() => setEditing(undefined)}/>}
-    {codexLogin && <CodexLoginDialog provider={codexLogin.provider} authorization={codexLogin.authorization} onClose={() => setCodexLogin(undefined)} onConnected={status => { setCodexLogin(undefined); if (status.model_sync_error) setError(`Codex 登录成功，但模型同步失败：${status.model_sync_error}`); else setNotice(`Codex 登录成功，已自动同步 ${status.model_count ?? 0} 个模型。`); void qc.invalidateQueries({ queryKey: ['providers'] }); }}/>}
+    {codexLogin && <CodexLoginDialog provider={codexLogin.provider} authorization={codexLogin.authorization} onClose={() => setCodexLogin(undefined)} onConnected={status => { setCodexLogin(undefined); if (status.model_sync_error) setError(`Codex 登录成功，但模型同步失败：${status.model_sync_error}`); else setNotice(`Codex 登录成功，已自动同步 ${status.model_count ?? 0} 个模型。`); void qc.invalidateQueries({ queryKey: ['model-providers'] }); }}/>}
 </>}>
-    {error && <div className="notice error" role="alert">{error}</div>}{notice && <div className="notice success" role="status">{notice}</div>}
-    {activeProvider ? [activeProvider].map(provider => { const feedback = testFeedback[provider.id]; const testing = feedback?.state === 'testing'; const oauth = provider.auth_type === 'CODEX_OAUTH'; const readingUsage = readUsage.isPending && readUsage.variables === provider.id; return <div className="settings-selected-provider" key={provider.id}><header className="settings-detail-header"><div><h2>{provider.name}</h2><small>{oauth ? 'Codex OAuth · ChatGPT 订阅' : provider.base_url}</small></div><div className="settings-detail-actions"><button className="secondary" aria-label={`编辑模型服务 ${provider.name}`} onClick={() => setEditing(provider)}><Pencil size={14}/>编辑</button><button className="danger" disabled={deleting} aria-label={`删除模型服务 ${provider.name}`} onClick={() => void removeMany([provider.id], `模型服务“${provider.name}”`)}><Trash2 size={14}/>删除</button></div></header><div className="settings-detail-body"><article className="model-config-card settings-model-detail"><div className="model-provider-state"><span className={provider.available_for_nodes ? 'available' : 'unavailable'}>{provider.available_for_nodes ? <ShieldCheck size={13}/> : <ShieldX size={13}/>} {provider.available_for_nodes ? '可用于节点' : oauth ? (provider.oauth_connected ? '暂无可用默认模型' : '需要登录 Codex') : '暂无可用默认模型'}</span><span><Link2 size={12}/>{provider.reference_node_count} 个引用节点</span></div><div className="model-provider-meta"><span>连接状态</span><b className={provider.connection_state === 'CONNECTED' ? 'good' : provider.connection_state === 'FAILED' ? 'bad' : ''}>{CONNECTION_STATE_LABELS[provider.connection_state] ?? provider.connection_state}</b><span>{oauth ? 'Codex 账号' : 'API Key'}</span><b><KeyRound size={12}/>{oauth ? (provider.oauth_connected ? provider.oauth_account_email ?? '已登录' : '未登录') : (provider.has_api_key ? `已配置 ${provider.api_key_hint ?? ''}` : '未配置')}</b><span>默认模型</span><b>{provider.models.find(item => item.is_default && item.enabled)?.model_name ?? '未设置'}</b><span>启用模型</span><b>{provider.models.filter(item => item.enabled).length} 个</b></div><ProviderUsagePanel provider={provider} value={usage[provider.id]} loading={readingUsage} onRefresh={() => readUsage.mutate(provider.id)}/><h3>模型列表（{provider.models.length}）</h3><table className="settings-data-table"><thead><tr><th>模型名称</th><th>启用状态</th><th>默认模型</th></tr></thead><tbody>{provider.models.map(item => <tr key={item.id ?? item.model_name}><td><b>{item.model_name}</b>{Boolean(item.supported_reasoning_efforts?.length) && <small>推理：{item.supported_reasoning_efforts?.join(' / ')}</small>}</td><td>{item.enabled ? '已启用' : '已停用'}</td><td>{item.is_default && item.enabled ? '默认' : '—'}</td></tr>)}</tbody></table><div className="settings-model-actions">{oauth && !provider.oauth_connected ? <button className="secondary" onClick={() => void startCodexLogin(provider)}><LogIn size={14}/> {provider.oauth_device_pending ? '重新开始登录' : '登录 Codex'}</button> : <button className="secondary" disabled={deleting || test.isPending} onClick={() => test.mutate(provider.id)}>{testing ? <LoaderCircle className="spin" size={14}/> : <CheckCircle2 size={14}/>} {testing ? '测试中…' : '测试连接'}</button>}{oauth && provider.oauth_connected && <button className="ghost" onClick={() => void disconnectCodex(provider)}><LogOut size={14}/>断开 Codex</button>}</div>{feedback && <p className={`model-test-result ${feedback.state}`} role={feedback.state === 'error' ? 'alert' : 'status'}>{feedback.message}</p>}</article></div></div>; }) : <div className="empty"><Server size={28}/><b>{query ? '没有匹配的模型服务' : '还没有模型服务'}</b><span>在左侧新增或选择服务，查看连接与模型配置。</span></div>}
+    <Toast kind="error" message={error} onDismiss={() => setError('')}/><Toast message={notice} onDismiss={() => setNotice('')}/>
+    {activeProvider ? [activeProvider].map(provider => {
+      const feedback = testFeedback[provider.id];
+      const testing = feedback?.state === 'testing';
+      const oauth = provider.auth_type === 'CODEX_OAUTH';
+      const readingUsage = readUsage.isPending && readUsage.variables?.id === provider.id;
+      const enabledCount = provider.models.filter(item => item.enabled).length;
+      const protocol = oauth ? 'Codex Responses' : protocolSummary(provider.protocols);
+      return <div className="settings-selected-provider" key={provider.id}>
+        <header className="settings-detail-header">
+          <div><h2>{provider.name}</h2><small title={provider.base_url}>{oauth ? 'Codex OAuth · ChatGPT 订阅' : provider.base_url}</small></div>
+          <div className="settings-detail-actions">
+            {oauth && !provider.oauth_connected
+              ? <button className="secondary" onClick={() => void startCodexLogin(provider)}><LogIn size={14}/>{provider.oauth_device_pending ? '重新开始登录' : '登录 Codex'}</button>
+              : <button className="secondary" disabled={deleting || test.isPending} onClick={() => test.mutate(provider.id)}>{testing ? <LoaderCircle className="spin" size={14}/> : <CheckCircle2 size={14}/>} {testing ? '测试中…' : '测试连接'}</button>}
+            {oauth && provider.oauth_connected && <button className="ghost" onClick={() => void disconnectCodex(provider)}><LogOut size={14}/>断开 Codex</button>}
+            <button className="secondary" aria-pressed={provider.is_primary} aria-label={provider.is_primary ? `取消主要供应商 ${provider.name}` : `设为主要供应商 ${provider.name}`} disabled={deleting || setPrimary.isPending || (!provider.is_primary && !provider.available_for_nodes)} title={!provider.is_primary && !provider.available_for_nodes ? '需先连接成功并设置默认模型' : undefined} onClick={() => setPrimary.mutate({ id: provider.id, primary: !provider.is_primary })}><Star size={14} fill={provider.is_primary ? 'currentColor' : 'none'}/>{provider.is_primary ? '取消主要' : '设为主要'}</button>
+            <button className="secondary" aria-label={`编辑供应商 ${provider.name}`} onClick={() => setEditing(provider)}><Pencil size={14}/>编辑</button>
+            <button className="danger" disabled={deleting} aria-label={`删除供应商 ${provider.name}`} onClick={() => void removeMany([provider.id], `供应商“${provider.name}”`)}><Trash2 size={14}/>删除</button>
+          </div>
+        </header>
+        <div className="settings-detail-body">
+          <article className="model-config-card settings-model-detail">
+            {feedback && <p className={`model-test-result ${feedback.state}`} role={feedback.state === 'error' ? 'alert' : 'status'}>{feedback.message}</p>}
+            <div className="model-provider-state">
+              <span className={provider.available_for_nodes ? 'available' : 'unavailable'}>{provider.available_for_nodes ? <ShieldCheck size={13}/> : <ShieldX size={13}/>} {provider.available_for_nodes ? '可用于节点' : oauth ? (provider.oauth_connected ? '暂无可用默认模型' : '需要登录 Codex') : '暂无可用默认模型'}</span>
+              <span><Link2 size={12}/>{provider.reference_node_count} 个引用节点</span>
+            </div>
+            <div className="settings-model-overview">
+              <section className="settings-model-connection" aria-label="连接配置">
+                <h3>连接配置</h3>
+                <dl className="settings-detail-facts">
+                  <dt>连接状态</dt><dd className={provider.connection_state === 'CONNECTED' ? 'good' : provider.connection_state === 'FAILED' ? 'bad' : ''}>{CONNECTION_STATE_LABELS[provider.connection_state] ?? provider.connection_state}</dd>
+                  <dt>认证方式</dt><dd>{providerAuthOptions.find(option => option.value === provider.auth_type)?.label}</dd>
+                  <dt>支持协议</dt><dd>{protocol}</dd>
+                  <dt>{oauth ? 'Codex 账号' : 'API Key'}</dt><dd className="settings-model-key"><KeyRound size={12}/>{oauth ? (provider.oauth_connected ? provider.oauth_account_email ?? '已登录' : '未登录') : (provider.has_api_key ? `已配置 ${provider.api_key_hint ?? ''}` : '未配置')}</dd>
+                  <dt>默认模型</dt><dd>{provider.models.find(item => item.is_default && item.enabled)?.model_name ?? '未设置'}</dd>
+                </dl>
+              </section>
+              <section className="settings-model-service" aria-label="用量与服务信息">
+                <ProviderUsagePanel provider={provider} value={usage[provider.id]?.rowVersion === provider.row_version ? usage[provider.id].value : undefined} loading={readingUsage} onRefresh={() => readUsage.mutate(provider)}/>
+                <dl className="settings-detail-facts settings-model-timestamps">
+                  <dt>创建时间</dt><dd>{new Date(provider.created_at).toLocaleString('zh-CN')}</dd>
+                  <dt>最近更新</dt><dd>{new Date(provider.updated_at).toLocaleString('zh-CN')}</dd>
+                </dl>
+              </section>
+            </div>
+            <div className="settings-model-table-heading"><h3>模型列表（{provider.models.length}）</h3><span>已启用 {enabledCount} · 已停用 {provider.models.length - enabledCount}</span></div>
+            <div className="settings-model-table-scroll">
+              <table className="settings-data-table settings-model-table">
+                <thead><tr><th>模型名称</th><th>协议</th><th>启用状态</th><th>推理档位</th><th>上下文窗口</th><th>默认模型</th></tr></thead>
+                <tbody>{provider.models.map(item => <tr key={item.id ?? item.model_name}>
+                  <td><b title={item.model_name}>{item.model_name}</b></td>
+                  <td>{PROTOCOL_LABELS[item.effective_protocol ?? effectiveProtocol(item)]}{!oauth && item.protocol && <small>手动指定</small>}</td>
+                  <td><span className={item.enabled ? 'good' : ''}>{item.enabled ? '已启用' : '已停用'}</span></td>
+                  <td>{item.supported_reasoning_efforts?.length ? item.supported_reasoning_efforts.join(' / ') : '未提供'}{item.default_reasoning_effort && <small>默认 {item.default_reasoning_effort}</small>}</td>
+                  <td>{item.context_window ? `${item.context_window.toLocaleString()} tokens` : '未提供'}</td>
+                  <td>{item.is_default && item.enabled ? <span className="settings-model-default">默认</span> : '—'}</td>
+                </tr>)}</tbody>
+              </table>
+              {!provider.models.length && <div className="empty compact">暂无模型，请通过编辑配置模型。</div>}
+            </div>
+          </article>
+        </div>
+      </div>;
+    }) : <div className="empty"><Server size={28}/><b>{query ? '没有匹配的供应商' : '还没有供应商'}</b><span>在左侧新增或选择供应商，查看连接与模型配置。</span></div>}
+
   </SettingsManagementLayout>;
 }

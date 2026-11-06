@@ -454,6 +454,31 @@ def _business_result_envelope(
             if result.get("schema_version") != 1:
                 return None, "业务结果 schema_version 必须为 1"
             return cast(dict[str, Any], result), None
+    # A large file that is one JSON object is cut by the bounded preview, so
+    # its root cannot parse even though the envelope under the key is whole.
+    marker = '"flowweave_business_result"'
+    search_from = 0
+    for _ in range(4):
+        index = content.find(marker, search_from)
+        if index < 0:
+            break
+        search_from = index + len(marker)
+        cursor = search_from
+        while cursor < len(content) and content[cursor] in " \t\r\n":
+            cursor += 1
+        if cursor >= len(content) or content[cursor] != ":":
+            continue
+        cursor += 1
+        while cursor < len(content) and content[cursor] in " \t\r\n":
+            cursor += 1
+        try:
+            value, _ = decoder.raw_decode(content, cursor)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            if value.get("schema_version") != 1:
+                return None, "业务结果 schema_version 必须为 1"
+            return cast(dict[str, Any], value), None
     return None, "缺少完整的 flowweave_business_result JSON 对象"
 
 

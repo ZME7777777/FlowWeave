@@ -151,6 +151,29 @@ function MarkdownSpan({ children, node: _node, 'data-formula-source': source, 'd
 }
 
 type HastNode = { type?: unknown; tagName?: unknown; properties?: Record<string, unknown>; children?: HastNode[]; value?: unknown };
+type MarkdownNode = {
+  type?: string;
+  value?: string;
+  children?: MarkdownNode[];
+  position?: { start?: { offset?: number }; end?: { offset?: number } };
+};
+
+function preserveLiteralTrailingBackslashContinuationsPlugin(source: string) {
+  return () => (tree: MarkdownNode) => {
+    const visit = (node: MarkdownNode) => {
+      if (!node.children) return;
+      node.children = node.children.flatMap(child => {
+        visit(child);
+        const start = child.position?.start?.offset;
+        const end = child.position?.end?.offset;
+        return child.type === 'break' && typeof start === 'number' && typeof end === 'number' && /^\\\r?\n$/.test(source.slice(start, end))
+          ? [{ ...child, type: 'text', value: '\\' }, child]
+          : [child];
+      });
+    };
+    visit(tree);
+  };
+}
 
 function hasClass(node: HastNode, name: string): boolean {
   const className = node.properties?.className;
@@ -187,13 +210,16 @@ function rehypeFormulaMetadata() {
   };
 }
 
-export function ConversationMarkdown({ children, reveal = false, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl }: { children: string; reveal?: boolean; onOpenWorkspaceFile?: (href: string) => boolean; onOpenBrowser?: (href: string) => boolean; onOpenImage?: (src: string, alt?: string) => void; workspaceImageUrl?: (href: string) => string | undefined }) {
+export function ConversationMarkdown({ children, reveal = false, onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl, preserveLiteralTrailingBackslashContinuations = false }: { children: string; reveal?: boolean; onOpenWorkspaceFile?: (href: string) => boolean; onOpenBrowser?: (href: string) => boolean; onOpenImage?: (src: string, alt?: string) => void; workspaceImageUrl?: (href: string) => string | undefined; preserveLiteralTrailingBackslashContinuations?: boolean }) {
   const markdown = useMemo(() => normalizeNestedMarkdownFences(children), [children]);
   const renderOptions = useMemo(() => ({ onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl }), [onOpenWorkspaceFile, onOpenBrowser, onOpenImage, workspaceImageUrl]);
+  const remarkPlugins = useMemo(() => preserveLiteralTrailingBackslashContinuations
+    ? [remarkGfm, remarkMath, preserveLiteralTrailingBackslashContinuationsPlugin(markdown)]
+    : [remarkGfm, remarkMath], [markdown, preserveLiteralTrailingBackslashContinuations]);
   if (!CONVERSATION_MARKDOWN_SYNTAX.test(markdown)) return <p><ConversationTextReveal reveal={reveal}>{markdown}</ConversationTextReveal></p>;
   return <MarkdownRenderOptionsContext value={renderOptions}>
-    <div className={reveal ? 'conversation-text-reveal-block conversation-text-reveal-shimmer' : undefined}>
-      <ReactMarkdown urlTransform={(url, key) => (key === 'src' ? workspaceImageUrl?.(url) : undefined) ?? defaultUrlTransform(url)} remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex, rehypeFormulaMetadata]} components={{ a: MarkdownLink, img: MarkdownImage, pre: MarkdownPre, span: MarkdownSpan, table: MarkdownTable }}>{markdown}</ReactMarkdown>
+    <div className={`conversation-markdown${reveal ? ' conversation-text-reveal-block conversation-text-reveal-shimmer' : ''}`}>
+      <ReactMarkdown urlTransform={(url, key) => (key === 'src' ? workspaceImageUrl?.(url) : undefined) ?? defaultUrlTransform(url)} remarkPlugins={remarkPlugins} rehypePlugins={[rehypeKatex, rehypeFormulaMetadata]} components={{ a: MarkdownLink, img: MarkdownImage, pre: MarkdownPre, span: MarkdownSpan, table: MarkdownTable }}>{markdown}</ReactMarkdown>
     </div>
   </MarkdownRenderOptionsContext>;
 }

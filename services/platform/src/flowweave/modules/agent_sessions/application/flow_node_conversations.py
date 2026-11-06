@@ -16,14 +16,28 @@ from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from flowweave.modules.agent_sessions import public as agent_sessions
-from flowweave.modules.agent_sessions.application import message_submissions, resumable_attachments
+from flowweave.modules.agent_sessions.application import (
+    child_activity,
+    child_sessions,
+    message_submissions,
+    resumable_attachments,
+)
 from flowweave.modules.agent_sessions.application import usage as usage_projection
 from flowweave.modules.agent_sessions.application.activity_reconciliation import (
     read_activity_completion,
 )
+from flowweave.modules.agent_sessions.application.capability_marketplaces import (
+    registered_marketplace_paths,
+)
 from flowweave.modules.agent_sessions.application.capability_versions import (
     current_capabilities,
     validate_skill_upgrade,
+)
+from flowweave.modules.agent_sessions.application.child_relations import (
+    guard_main_route,
+    ordinary_conversation_clause,
+    require_ordinary_binding,
+    require_unlinked_deletion,
 )
 from flowweave.modules.agent_sessions.application.condensation import (
     condensation_task_failure_reason,
@@ -42,6 +56,7 @@ from flowweave.modules.agent_sessions.application.conversations import (
     initial_user_event_id,
     message_payload,
     normalized_first_sentence,
+    project_answered_question,
     project_conversation_references,
     record_message_attachments,
     resolve_conversation_references,
@@ -107,7 +122,11 @@ from flowweave.modules.environments.public import (
 from flowweave.modules.model_providers.public import has_connected_default_model
 from flowweave.modules.sandboxes import public as sandboxes
 from flowweave.modules.tasks.public import enqueue
-from flowweave.modules.users.application.security import current_principal, current_user_id
+from flowweave.modules.users.application.security import (
+    FLOWWEAVE_USER_ID,
+    current_principal,
+    current_user_id,
+)
 from flowweave.runtime.base import (
     RuntimeEventBatch,
     RuntimeHandle,
@@ -168,6 +187,7 @@ class PreparedRunningNodeMessage:
     references: tuple[dict[str, str], ...]
     workspace_references: tuple[dict[str, str], ...]
     annotations: tuple[dict[str, Any], ...]
+    child_references: tuple[tuple[child_sessions.ChildLocator, str], ...] = ()
 
 
 def _observe_task_watchdogs_after_send(
@@ -277,6 +297,8 @@ def _assert_node_session_writable(
             attempt_id=attempt_id,
             binding_id=binding_id,
         )
+        if binding.lifecycle == "DELETE_PENDING":
+            raise DomainError("AGENT_CONVERSATION_DELETE_PENDING", "会话正在删除，无法交互", 409)
         if binding.node_attempt_id is None:
             attempt = _attempt(db, attempt_id)
             run = db.get(FlowRun, flow_run_id)
@@ -502,6 +524,8 @@ def _binding(
     query = select(AgentConversationBinding).where(
         AgentConversationBinding.id == binding_id,
         AgentConversationBinding.host_kind == _FLOW_NODE,
+        AgentConversationBinding.owner_user_id == current_user_id(default=FLOWWEAVE_USER_ID),
+        ordinary_conversation_clause(),
     )
     if lock:
         query = query.with_for_update()
@@ -556,10 +580,17 @@ def _binding_for_attempt(
 
 
 def authorize_node_message_submission(
-    db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str,
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
 ) -> None:
     binding = _binding_for_attempt(
-        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id,
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        binding_id=binding_id,
     )
     if binding.owner_user_id != current_user_id():
         raise not_found("flow_run_conversation_binding", binding_id)
@@ -602,6 +633,8 @@ def _node_session_dict(db: Session, item: AgentConversationBinding) -> dict[str,
     session model merely because its host lineage differs.
     """
 
+    from flowweave.modules.agent_sessions.application import child_deletion
+
     work_directory_id = (
         db.scalar(
             select(AgentWorkDirectoryVersion.work_directory_id).where(
@@ -613,6 +646,8 @@ def _node_session_dict(db: Session, item: AgentConversationBinding) -> dict[str,
     )
     return {
         "id": item.id,
+        "deletion": child_deletion.projection(db, item.id),
+        "child_summary": child_activity.summaries(db, [item])[item.id],
         "display_title": item.display_title,
         "title_state": item.title_state,
         "model_provider_id": item.model_provider_id,
@@ -640,7 +675,7 @@ def _node_session_dict(db: Session, item: AgentConversationBinding) -> dict[str,
         # This is deliberately per-conversation: a terminal node source is
         # read-only while its detached native Fork is a normal writable
         # conversation.
-        "write_available": _node_session_write_available(db, item),
+        "write_available": item.lifecycle == "ACTIVE" and _node_session_write_available(db, item),
         "pinned": item.pinned,
         "unread": item.unread,
         "unread_origin": item.unread_origin,
@@ -707,6 +742,8 @@ def _node_session_page_dicts(
     loads.  The selected Conversation obtains its exact readiness from the
     isolated Runtime-read endpoint; other rows remain explicitly unknown.
     """
+    from flowweave.modules.agent_sessions.application import child_deletion
+
     usage_by_binding = usage_projection.for_scope(
         db, field="binding_id", ids=(item.id for item in items)
     )
@@ -747,9 +784,12 @@ def _node_session_page_dicts(
                     "digest": capability.digest,
                 }
             )
+    child_summaries = child_activity.summaries(db, items)
     return [
         {
             "id": item.id,
+            "deletion": child_deletion.projection(db, item.id),
+            "child_summary": child_summaries[item.id],
             "display_title": item.display_title,
             "title_state": item.title_state,
             "model_provider_id": item.model_provider_id,
@@ -763,7 +803,8 @@ def _node_session_page_dicts(
             # The sidebar uses this bounded DTO, rather than the selected
             # session detail. Keep the detached Fork's independent write and
             # delete permission visible there as well.
-            "write_available": _node_session_write_available(db, item),
+            "write_available": item.lifecycle == "ACTIVE"
+            and _node_session_write_available(db, item),
             "execution_status": "unknown",
             "pinned": item.pinned,
             "unread": item.unread,
@@ -888,7 +929,8 @@ def list_node_session_views(
                     AgentConversationBinding.conversation_scope_id == attempt_id,
                 ),
             ),
-            AgentConversationBinding.lifecycle == "ACTIVE",
+            AgentConversationBinding.lifecycle.in_(("ACTIVE", "DELETE_PENDING")),
+            ordinary_conversation_clause(),
             ~AgentConversationBinding.create_idempotency_key.like("gate-sidecar:%"),
         )
         .order_by(
@@ -906,6 +948,7 @@ def node_session_activity(
     flow_run_id: str,
     attempt_id: str,
     active_binding_id: str | None = None,
+    active_child_id: str | None = None,
 ) -> dict[str, Any]:
     """Map one native running snapshot to authorized node-session binding IDs."""
 
@@ -927,14 +970,20 @@ def node_session_activity(
                         AgentConversationBinding.conversation_scope_id == attempt_id,
                     ),
                 ),
-                AgentConversationBinding.lifecycle == "ACTIVE",
+                AgentConversationBinding.lifecycle.in_(("ACTIVE", "DELETE_PENDING")),
+                ordinary_conversation_clause(),
                 ~AgentConversationBinding.create_idempotency_key.like("gate-sidecar:%"),
             )
         )
     )
+    deleting = [item for item in bindings if item.lifecycle == "DELETE_PENDING"]
+    bindings = [item for item in bindings if item.lifecycle == "ACTIVE"]
     if not bindings:
         return {
-            "conversations": [],
+            "conversations": [_node_session_dict(db, item) for item in deleting],
+            "deleting_binding_ids": [item.id for item in deleting],
+            "child_activity_parent_binding_ids": [],
+            "child_activity": [],
             "running_binding_ids": [],
             "condensing_binding_ids": [],
             "condensation_failed_binding_ids": [],
@@ -1050,12 +1099,33 @@ def node_session_activity(
         for item in bindings
         if latest_condensation_task.get(item.id, (None, None, None))[1] == TaskState.DEAD
     ]
-    activity_binding_ids = running_binding_ids | set(condensing_binding_ids)
+    child_summaries, child_states = child_activity.reconcile(
+        db,
+        bindings,
+        native_activity,
+        active_binding_id=active_binding_id,
+        active_child_id=active_child_id,
+    )
+    child_activity_parent_ids = {
+        binding_id
+        for binding_id, summary in child_summaries.items()
+        if summary["running"] or summary["unread"] or summary["condensing"] or summary["pending"]
+    }
+    activity_binding_ids = (
+        running_binding_ids | set(condensing_binding_ids) | child_activity_parent_ids
+    )
     activity_bindings = [
         item for item in bindings if item.id in activity_binding_ids or item.unread
-    ]
+    ] + deleting
+    child_summaries.update(child_activity.summaries(db, deleting))
     return {
-        "conversations": [_node_session_dict(db, item) for item in activity_bindings],
+        "conversations": [
+            {**_node_session_dict(db, item), "child_summary": child_summaries[item.id]}
+            for item in activity_bindings
+        ],
+        "deleting_binding_ids": [item.id for item in deleting],
+        "child_activity_parent_binding_ids": sorted(child_activity_parent_ids),
+        "child_activity": child_states,
         "running_binding_ids": [item.id for item in running_bindings],
         "condensing_binding_ids": condensing_binding_ids,
         "condensation_failed_binding_ids": condensation_failed_binding_ids,
@@ -1104,7 +1174,8 @@ def list_node_session_page(
                 AgentConversationBinding.conversation_scope_id == attempt_id,
             ),
         ),
-        AgentConversationBinding.lifecycle == "ACTIVE",
+        AgentConversationBinding.lifecycle.in_(("ACTIVE", "DELETE_PENDING")),
+        ordinary_conversation_clause(),
         ~AgentConversationBinding.create_idempotency_key.like("gate-sidecar:%"),
     )
     if work_directory_id is None:
@@ -1157,6 +1228,16 @@ def list_node_session_page(
 def get_node_session_view(
     db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
 ) -> dict[str, Any]:
+    agent_sessions.resolve_flow_node_session_host(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, require_start_permission=False
+    )
+    guard_main_route(
+        db,
+        host_kind=_FLOW_NODE,
+        host_id=flow_run_id,
+        binding_id=binding_id,
+        conversation_scope_id=attempt_id,
+    )
     item = _binding_for_attempt(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
     )
@@ -1230,7 +1311,8 @@ def list_conversations(db: Session, attempt_id: str) -> list[dict[str, Any]]:
         .where(
             AgentConversationBinding.host_kind == _FLOW_NODE,
             AgentConversationBinding.flow_run_id == run.id,
-            AgentConversationBinding.lifecycle == "ACTIVE",
+            AgentConversationBinding.lifecycle.in_(("ACTIVE", "DELETE_PENDING")),
+            ordinary_conversation_clause(),
             ~AgentConversationBinding.create_idempotency_key.like("gate-sidecar:%"),
         )
         .order_by(
@@ -1258,7 +1340,8 @@ def list_node_conversations(
         .where(
             AgentConversationBinding.host_kind == _FLOW_NODE,
             AgentConversationBinding.flow_run_id == flow_run_id,
-            AgentConversationBinding.lifecycle == "ACTIVE",
+            AgentConversationBinding.lifecycle.in_(("ACTIVE", "DELETE_PENDING")),
+            ordinary_conversation_clause(),
             ~AgentConversationBinding.create_idempotency_key.like("gate-sidecar:%"),
         )
         .order_by(
@@ -1309,7 +1392,8 @@ def list_flow_run_conversations(db: Session, flow_run_id: str) -> list[dict[str,
         .where(
             AgentConversationBinding.host_kind == _FLOW_NODE,
             AgentConversationBinding.flow_run_id == flow_run_id,
-            AgentConversationBinding.lifecycle == "ACTIVE",
+            AgentConversationBinding.lifecycle.in_(("ACTIVE", "DELETE_PENDING")),
+            ordinary_conversation_clause(),
             ~AgentConversationBinding.create_idempotency_key.like("gate-sidecar:%"),
         )
         .order_by(
@@ -1473,6 +1557,7 @@ def _create_native_conversation(
         host_root=host_root,
         runtime_root=runtime_root,
         runtime_server_identity=server_identity,
+        protocol_profile=environment.runtime_protocol_profile,
         llm_timeout_policy=llm_timeout_policy_for_flow_run_protocol_profile(
             environment.runtime_protocol_profile
         ),
@@ -1486,6 +1571,20 @@ def _create_native_conversation(
         ),
         load_memory=memory_enabled,
     )
+    from flowweave.modules.agent_sessions.application.child_parent import attach_parent_capability
+
+    if environment.runtime_protocol_profile in {"OH_FW_V3", "OH_FW_V4", "OH_FW_V5"}:
+        agent_spec = attach_parent_capability(
+            db,
+            item,
+            agent_spec,
+            profile=environment.runtime_protocol_profile,
+            identity=server_identity,
+            generation=connection.generation,
+            runtime_image_digest=environment.image_digest,
+            runtime_manifest=snapshot.runtime_manifest_json or {},
+            expected_manifest_digest=snapshot.runtime_manifest_hash,
+        )
     request = build_runtime_request(
         db,
         flow_run_id=run.id,
@@ -1513,6 +1612,8 @@ def _create_native_conversation(
         runtime_base_url=f"http://{connection.resource_name}:8000",
         conversation_secrets={**request.conversation_secrets, **conversation_secrets},
     )
+    if environment.runtime_protocol_profile in {"OH_FW_V4", "OH_FW_V5"}:
+        db.commit()
     handle = get_runtime().create_conversation(request)
     if handle.conversation_id != item.openhands_conversation_id:
         raise DomainError("AGENT_CONVERSATION_IDENTITY_DRIFT", "会话身份校验失败", 409)
@@ -1693,6 +1794,7 @@ def _node_bootstrap_command(
     )
     if binding is None:
         return None, None
+    require_ordinary_binding(db, binding)
     if (
         binding.host_kind != _FLOW_NODE
         or binding.flow_run_id != flow_run_id
@@ -1770,6 +1872,7 @@ def _activate_node_bootstrap(
         "conversation": _node_session_dict(db, binding),
         "accepted": True,
         "cursor": initial_event_id,
+        "event_id": initial_event_id,
     }
 
 
@@ -1874,6 +1977,7 @@ def _create_or_reload_node_bootstrap(
         host_root=host_root,
         runtime_root=runtime_root,
         runtime_server_identity=server_identity,
+        protocol_profile=environment.runtime_protocol_profile,
         llm_timeout_policy=llm_timeout_policy_for_flow_run_protocol_profile(
             environment.runtime_protocol_profile
         ),
@@ -1887,6 +1991,20 @@ def _create_or_reload_node_bootstrap(
         ),
         load_memory=memory_enabled,
     )
+    from flowweave.modules.agent_sessions.application.child_parent import attach_parent_capability
+
+    if environment.runtime_protocol_profile in {"OH_FW_V3", "OH_FW_V4", "OH_FW_V5"}:
+        agent_spec = attach_parent_capability(
+            db,
+            binding,
+            agent_spec,
+            profile=environment.runtime_protocol_profile,
+            identity=server_identity,
+            generation=connection.generation,
+            runtime_image_digest=environment.image_digest,
+            runtime_manifest=snapshot.runtime_manifest_json or {},
+            expected_manifest_digest=snapshot.runtime_manifest_hash,
+        )
     request = build_runtime_request(
         db,
         flow_run_id=run.id,
@@ -1914,6 +2032,8 @@ def _create_or_reload_node_bootstrap(
         runtime_base_url=f"http://{connection.resource_name}:8000",
         conversation_secrets={**request.conversation_secrets, **conversation_secrets},
     )
+    if environment.runtime_protocol_profile in {"OH_FW_V4", "OH_FW_V5"}:
+        db.commit()
     created = runtime.create_conversation(request)
     if created.conversation_id != binding.openhands_conversation_id:
         raise DomainError("AGENT_CONVERSATION_IDENTITY_DRIFT", "会话身份校验失败", 409)
@@ -2007,6 +2127,7 @@ def bootstrap_node_conversation(
                 "conversation": _node_session_dict(db, binding),
                 "accepted": True,
                 "cursor": binding.initial_user_event_id,
+                "event_id": binding.initial_user_event_id,
             }
         if command.state == "AMBIGUOUS":
             try:
@@ -2323,7 +2444,9 @@ def _capture_binding_usage(db: Session, binding: AgentConversationBinding) -> No
 
     try:
         batch = get_runtime().read_active_events(_handle(db, binding.id))
-        usage_projection.capture(db, binding, batch.usage)
+        usage_projection.capture(
+            db, binding, batch.usage, stored_event_count=batch.stored_event_count
+        )
     except Exception:
         # Runtime replacement or a transient transport failure must not make
         # a read-only locator unavailable. The next event read retries it.
@@ -3057,6 +3180,36 @@ def send_node_question(
     return send_flow_run_question(db, flow_run_id, binding_id, payload, idempotency_key, actor)
 
 
+def prepare_child_result_references(
+    db: Session,
+    binding: AgentConversationBinding,
+    references: tuple[dict[str, str], ...],
+) -> tuple[tuple[dict[str, str], ...], tuple[tuple[child_sessions.ChildLocator, str], ...]]:
+    local: list[dict[str, str]] = []
+    child: list[tuple[child_sessions.ChildLocator, str]] = []
+    for reference in references:
+        source_id = reference.get("source_binding_id")
+        if source_id and source_id != binding.id:
+            locator = child_sessions.parent_reference_locator(db, binding, source_id)
+            child.append((locator, reference["event_id"]))
+        else:
+            local.append(reference)
+    return tuple(local), tuple(child)
+
+
+def read_child_result_references(
+    references: tuple[tuple[child_sessions.ChildLocator, str], ...],
+) -> tuple[dict[str, str], ...]:
+    return tuple(
+        {
+            "event_id": event_id,
+            "source_binding_id": locator.binding_id,
+            "content": child_sessions.result_reference(locator, event_id)["content"],
+        }
+        for locator, event_id in references
+    )
+
+
 def prepare_running_node_message(
     db: Session,
     *,
@@ -3109,6 +3262,7 @@ def prepare_running_node_message(
         # behavior, but replay this validation error if the runtime proves
         # idle and the rebind is actually required.
         provider_error = exc
+    local_references, child_references = prepare_child_result_references(db, binding, references)
     return PreparedRunningNodeMessage(
         flow_run_id=flow_run_id,
         attempt_id=attempt_id,
@@ -3119,7 +3273,8 @@ def prepare_running_node_message(
         provider_error=provider_error,
         content=content,
         attachments=attachments,
-        references=references,
+        references=local_references,
+        child_references=child_references,
         workspace_references=resolved_workspace_references,
         annotations=annotations,
     )
@@ -3142,7 +3297,9 @@ def dispatch_running_node_message(
         if prepared.provider is not None:
             runtime.switch_model(prepared.handle, prepared.provider)
         compacted = _condense_before_node_message(runtime, prepared.handle)
-    references = resolve_conversation_references(runtime, prepared.handle, prepared.references)
+    references = resolve_conversation_references(
+        runtime, prepared.handle, prepared.references
+    ) + read_child_result_references(prepared.child_references)
     prompt, image_urls = message_payload(
         prepared.content,
         prepared.attachments,
@@ -3168,7 +3325,9 @@ def dispatch_running_node_message(
     except DomainError as exc:
         if exc.status >= 500:
             raise DomainError(
-                "AGENT_MESSAGE_DELIVERY_AMBIGUOUS", "消息发送结果不确定，请先刷新会话", 504
+                "AGENT_MESSAGE_DELIVERY_AMBIGUOUS",
+                "消息发送结果不确定，请先刷新会话",
+                504,
             ) from exc
         raise
 
@@ -3206,6 +3365,16 @@ def finalize_running_node_message(
         attempt_id=prepared.attempt_id,
         binding=binding,
     )
+    for locator, _ in prepared.child_references:
+        try:
+            child_sessions.revalidate(db, locator)
+        except DomainError:
+            raise DomainError(
+                "AGENT_MESSAGE_DELIVERY_AMBIGUOUS",
+                "消息已原生送达，但结果引用权限已变化，请刷新",
+                504,
+                {"outcome_unknown": True},
+            ) from None
     if result.cursor:
         record_message_attachments(
             db, binding, result.cursor, prepared.content.strip(), prepared.attachments
@@ -3219,6 +3388,7 @@ def finalize_running_node_message(
     return {
         "accepted": True,
         "cursor": result.cursor,
+        "event_id": result.cursor,
         "compacted": compacted,
         "queued_during_turn": queued_during_turn,
     }
@@ -3270,7 +3440,10 @@ def send_node_message(
         binding_id=binding_id,
     )
     runtime = get_runtime()
-    references = resolve_conversation_references(runtime, handle, references)
+    references, child_references = prepare_child_result_references(db, binding, references)
+    references = resolve_conversation_references(
+        runtime, handle, references
+    ) + read_child_result_references(child_references)
     prompt, image_urls = message_payload(
         content, attachments, references, workspace_references, annotations
     )
@@ -3309,6 +3482,7 @@ def send_node_message(
     return {
         "accepted": True,
         "cursor": result.cursor,
+        "event_id": result.cursor,
         "compacted": compacted,
         "queued_during_turn": queued_during_turn,
     }
@@ -3667,6 +3841,31 @@ def cancel_resumable_node_attachment_upload(
     resumable_attachments.close_upload(db, upload, status="CANCELLED")
 
 
+def node_capability_marketplace_paths(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+) -> tuple[Path, Path, str]:
+    attempt = _attempt(db, attempt_id)
+    _, _, snapshot = _attempt_context(db, attempt)
+    host_root = _node_capability_root(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        manifest_digest=snapshot.runtime_manifest_hash,
+        relative_parts=("conversations", binding_id),
+    )
+    runtime_root = Path(
+        sandboxes.openhands_flow_run_capability_path(
+            snapshot.runtime_manifest_hash, "conversations", binding_id
+        )
+    )
+    marketplace_name = agent_workspace_capability_marketplace_name(binding_id)
+    return host_root, runtime_root, marketplace_name
+
+
 def register_node_conversation_capabilities(
     db: Session,
     *,
@@ -3745,21 +3944,15 @@ def register_node_conversation_capabilities(
     runtime = get_runtime()
     if not runtime.can_accept_input(handle):
         raise DomainError("AGENT_CONVERSATION_RUNNING", "会话运行中，完成当前回复后再加载能力", 409)
-    attempt = _attempt(db, attempt_id)
-    _, _, snapshot = _attempt_context(db, attempt)
-    host_root = _node_capability_root(
-        db,
-        flow_run_id=flow_run_id,
-        attempt_id=attempt_id,
-        manifest_digest=snapshot.runtime_manifest_hash,
-        relative_parts=("conversations", binding.id),
+    host_root, runtime_root, marketplace_name = registered_marketplace_paths(
+        handle,
+        *node_capability_marketplace_paths(
+            db,
+            flow_run_id=flow_run_id,
+            attempt_id=attempt_id,
+            binding_id=binding.id,
+        ),
     )
-    runtime_root = Path(
-        sandboxes.openhands_flow_run_capability_path(
-            snapshot.runtime_manifest_hash, "conversations", binding.id
-        )
-    )
-    marketplace_name = agent_workspace_capability_marketplace_name(binding.id)
     position = max((reference.position for reference in existing), default=-1)
     loaded: list[str] = []
     failure: dict[str, str] | None = None
@@ -3886,12 +4079,17 @@ def decide_node_confirmation(
 
 def delete_node_conversation(
     db: Session, *, flow_run_id: str, attempt_id: str, binding_id: str
-) -> None:
-    _assert_node_session_writable(
-        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
-    )
+) -> dict[str, Any] | None:
     binding = _binding_for_attempt(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, lock=True
+    )
+    from flowweave.modules.agent_sessions.application import child_deletion
+
+    child_deletion.family(db, binding)
+    if binding.lifecycle == "DELETE_PENDING":
+        return child_deletion.request(db, binding)
+    _assert_node_session_writable(
+        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
     )
     handle = _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
     readiness = get_runtime().input_readiness(handle)
@@ -3909,6 +4107,10 @@ def delete_node_conversation(
             "会话正在运行，请先停止当前回复后再删除",
             409,
         )
+    deletion = child_deletion.request(db, binding)
+    if deletion is not None:
+        return deletion
+    require_unlinked_deletion(db, binding.id)
     get_runtime().delete_conversation(handle)
     context = sandboxes.node_attempt_workspace_context(
         db, flow_run_id=flow_run_id, node_attempt_id=attempt_id
@@ -3947,6 +4149,13 @@ def delete_flow_node_conversation_for_record_cleanup(
     )
     if expected_node_run_id is not None and binding.node_run_id != expected_node_run_id:
         raise not_found("flow_run_conversation_binding", binding_id)
+    from flowweave.modules.agent_sessions.application import child_deletion
+
+    if child_deletion.cleanup_record_family(
+        db, binding, allow_inactive_runtime=allow_inactive_runtime
+    ):
+        return
+    require_unlinked_deletion(db, binding.id)
     try:
         get_runtime().delete_conversation(_handle(db, binding.id))
     except DomainError as exc:
@@ -3998,7 +4207,10 @@ def rerun_node_message(
     if parent_id is not None and not isinstance(parent_id, str):
         raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "消息事件身份无效", 409)
     validate_attachment_owners(binding.id, attachments)
-    resolved_references = resolve_conversation_references(runtime, handle, references)
+    references, child_references = prepare_child_result_references(db, binding, references)
+    resolved_references = resolve_conversation_references(
+        runtime, handle, references
+    ) + read_child_result_references(child_references)
     resolved_workspace_references = agent_workspace_host.validate_flow_run_workspace_references(
         db,
         flow_run_id,
@@ -4024,7 +4236,11 @@ def rerun_node_message(
     binding.last_connected_at = activity_at
     binding.updated_at = activity_at
     finish(db)
-    return {"accepted": True, "cursor": result.cursor}
+    return {
+        "accepted": True,
+        "cursor": result.cursor,
+        "event_id": result.cursor,
+    }
 
 
 def fork_node_conversation(
@@ -4043,6 +4259,9 @@ def fork_node_conversation(
     source = _binding_for_attempt(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id, lock=True
     )
+    from flowweave.modules.agent_sessions.application.child_parent import require_forkable_parent
+
+    require_forkable_parent(source)
     existing = db.scalar(
         select(AgentConversationBinding).where(
             AgentConversationBinding.create_idempotency_key == idempotency_key
@@ -4061,8 +4280,6 @@ def fork_node_conversation(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
     )
     runtime = get_runtime()
-    if not runtime.can_accept_input(source_handle):
-        raise DomainError("AGENT_CONVERSATION_BUSY", "请在当前回复完成或暂停后分叉会话", 409)
     source_identity = runtime.reload_conversation(source_handle)
     if not source_identity.event_id:
         raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "当前会话缺少可分叉的事件身份", 409)
@@ -4658,9 +4875,7 @@ def control_goal(
         lock=True,
     )
     runtime = get_runtime()
-    handle = _node_handle(
-        db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
-    )
+    handle = _node_handle(db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id)
     if action == "START":
         runtime.start_goal(handle, objective or "", max_iterations)
     elif action == "STOP":
@@ -4691,6 +4906,7 @@ __all__ = (
     "control_goal",
     "create_conversation",
     "create_flow_run_conversation",
+    "project_answered_question",
     "create_node_conversation",
     "bootstrap_node_conversation",
     "flow_run_runtime_stream_details",

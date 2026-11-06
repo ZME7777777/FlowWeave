@@ -1,11 +1,12 @@
 # FlowRun OpenHands Runtime 重构进度
 
 > 创建日期：2026-08-21
-> 状态：`UPSTREAM BASELINE ADOPTION COMPLETE`
+> 状态：`CHILD CONVERSATIONS COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`CASE-05`
+> 下一可执行切片：`NONE`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
+> 子会话设计：`docs/agent-child-conversations-design.md`
 
 ## 1. 跟踪边界
 
@@ -16,7 +17,7 @@
 “当前行为”的审计对象；是否保留必须重新按照本设计、固定 OpenHands 源码和真实运行证据判断。
 
 OpenHands `baseline` 是持续合并上游 `main` 后承载 FlowWeave Runtime 扩展的基线分支。当前上游锚点为
-`f0206428306db687ac9c8d833ece4fb82b015eba`，四个发布包版本均为 `1.54.0`；每个切片的实际 Runtime
+`ce5716a3c0a955a85bb0cc4dcfaa94d5fefcda50`，四个发布包版本均为 `1.58.2`；每个切片的实际 Runtime
 源码身份由对应的固定 `baseline` commit、归档 SHA-256 与 source lock 共同决定。
 此前完成记录中的旧版本号继续表示当时实际验收的历史基线，不做追溯改写。
 
@@ -91,6 +92,1950 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 放到 FR-12；普通切片即使涉及安全或迁移，也只实现代码并做基础语法检查。
 
 ## 6. 任务清单
+
+### CLI-SKILL-SYNC 当前平台 CLI 与 Skills 对齐 — DONE
+
+2026-11-06。按当前公开路由与请求 schema 复核 npm CLI 和全部 FlowWeave
+skills。补齐用户技能／插件市场来源、会话能力批量注册与 Skill 升级、认证同步、
+原生上下文与压缩、归档／恢复／未读、自动化运行会话与失败 occurrence 删除、
+主要供应商、Case 复制／导入导出／提前结论确认、逐步记录配置与运行端口快捷入口。
+新增跨 Agent Workspace 和 FlowRun 节点宿主的 `child` 命令域及
+`flowweave-agent-children` skill。
+
+修正 README 和测试中仍使用来源 binding 的旧 Agent 自动化载荷，统一说明北京时间
+Cron、独立模板、工作区／会话模式及更新时不可变工作区字段。更新现有 7 个 skills，
+删除旧内置 Case MCP 手工配置说明，补充受管自动安装和可配置能力候选边界、目录递归
+删除与保留文件模式。对 npm 客户端和开发用 Python 同名入口明确区分，已安装旧 npm
+版本缺少快捷命令时沿用公开通用 API。同步本机的 8 个新增／修改 skills，原副本保留于
+忽略目录 `.tmp/skill-sync-before/`。本切片交付 CLI 源码与 skills，npm 发行待单独发布。
+
+验证通过 CLI 20 项测试、58 组 dry-run 请求与当前公开路径／方法／必需 query／JSON
+schema 的本地匹配、全部 15 个 skills 的 `quick_validate`、JS 语法与
+`git diff --check`。契约探针只加载路由生成本地 OpenAPI，未启动业务服务。
+Alembic 唯一 head 为 `0202_add_oh_fw_v5_protocol_profile`，当前无 `CURRENT` 切片。
+
+按用户确认，本轮工作已收尾，当前执行切片与下一可执行切片均为 `NONE`。
+
+### OPS-CAPABILITY-SYNC-RELEASE 技能同步修复发布验收 — DONE
+
+2026-11-06。用户授权提交并部署技能同步修复。发布版本为
+cc4959c386e680d5ab8ddb4aea39571b41a5d8ad，包含 FIX-CAPABILITY-SYNC，
+及其前一条已提交的 FIX-SEND-RECOVERY。发布前四个服务实际运行版本均为
+98c32172193b9d633a42c0d102db078748931548。子会话补充排查的 15 项本地
+回归通过，覆盖两宿主的动态加载、升级、部分重试、权限隔离及父能力分叉门禁。
+
+platform／web 正式预检、受管最小上下文和 linux/amd64 镜像构建通过。
+平台源码包 SHA-256 为 27b54f11e27ba864e52e663855990d83b63c9bcec427c83527402b204b8f7cd0，
+Web 源码包为 e324d2903734ad541043ef2c49334e33fc0f23b46c521c79d7925a5d4d54c52c。
+平台镜像为 sha256:df377d0cb735686b6116127e8280de0e47d928bbb762365c46e3501515866b07，
+Web 镜像为 sha256:1e295657217a837ddde832966efeca201ffc1bec7f81a60cbe05c7c0dfe43b42。
+
+迁移命令成功，数据库 head 为 0202_add_oh_fw_v5_protocol_profile。
+api、stream-api、worker、web 实际镜像 revision 全部为发布提交且健康，
+api／stream-api 的 health 和 readiness 通过。六个受影响平台源码文件在三个
+平台容器中的 18 份 SHA-256 与固定发布上下文逐一匹配。
+
+公网首页、Agent 深层路由、定时任务及根应用返回成功，126 个 JS／CSS 资源
+SHA-256 与实际 Web 镜像一致，认证边界返回 401。全新浏览器验证两个应用
+登录页及 Agent 深层路由通过，FlowWeave 请求使用部署前缀，页面错误为 0。
+取回实际 Web 镜像静态资源后，以隔离 API 夹具运行技能同步四项浏览器回归，
+覆盖成功、失败重试、旧版不在目录、28 技能滚动与跨筛选全部同步，全部通过。
+此功能验收使用发布资源与受控接口，线上既有会话的真实同步仍由用户操作确认。
+
+两种范围均完成 remote-release-finish，保留三份成功上下文、24 小时内受管
+上下文及受管回滚镜像。44 个非目标容器镜像与启动时间、服务器配置哈希核对通过。
+收尾后再次确认四服务版本、健康和成功发布记录。下一可执行切片沿用 OPS-84。
+
+
+### FIX-CAPABILITY-SYNC 会话技能同步与继承市场定位 — DONE
+
+依赖 FIX-SEND-RECOVERY DONE。修复原生分叉会话继承来源能力市场后，平台仍按新 binding
+生成市场名称导致动态加载 404 的问题。读取正式会话配置，仅使用相同受控能力根目录中的
+规范市场注册，区分能力加载失败与会话缺失。会话配置固定技能升级前后位置，可更新技能
+靠前，增加全部技能同步暂存，选择新版后显示待保存。覆盖 Workspace 与 Flow Node。
+
+2026-11-06。运行日志确认原生会话 GET 成功、动态加载因能力市场未注册返回 404。
+正式源码证明分叉继承来源市场注册，旧加载路径却使用新 binding 名称。现在从正式
+ConversationInfo 读取注册并核对规范 UUID、同一受控能力根与 auto_load=false，既有
+分叉无须新建即可使用继承市场。加载器 404 通过会话读取区分资源缺失，400 加载拒绝
+使用通用安全提示，不把全部加载错误转成会话不存在或市场缺失。
+
+可更新技能稳定置顶，同名技能替换版本保持行顺序及滚动位置。全部同步覆盖当前会话
+所有可更新技能，包括被搜索或组合隐藏的项，统一保存后生效，暂存状态改为已选择／
+待保存。更新旧浏览器夹具以使用正式用户可配置能力入口及当前组合筛选器。
+
+验证。两宿主、普通／分叉、成功／失败／运行中 12 项数据库回归通过；加载错误分类与
+注册路径隔离 9 项通过；原生市场加载和有序部分批次 2 项既有回归通过。4 项浏览器
+回归通过，覆盖取消、重试、旧版不在目录、28 技能滚动及跨筛选全部同步和窄屏按钮。
+Web typecheck、定向 ESLint、受影响 Python Ruff 与 git diff --check 通过。
+Python 定向 Pyright 与原 HEAD 隔离源码对比均为 152 条既有诊断，无新增诊断。
+Alembic 唯一 head 仍为 0202_add_oh_fw_v5_protocol_profile，无迁移。下一切片沿用 OPS-84。
+本片完成源码及本地验证，发布验收见 OPS-CAPABILITY-SYNC-RELEASE。
+
+
+### FIX-SEND-RECOVERY 消息提交确认前的浏览器恢复 — DONE
+
+依赖 FIX-ASK-USER-EVENTS DONE。发送前持久化完整消息快照，输入框立即清空，
+正式提交回执确认后清理恢复副本。刷新或请求失败恢复文本、附件、引用和注释，
+保留发送后新草稿。原消息重试沿用 submission ID，复用服务端提交防重。
+覆盖普通发送、运行中立即发送／调整方向、队列出队与新会话首条消息。
+仅调整浏览器恢复与已有 bootstrap 幂等核对，不改 OpenHands 生命周期。
+
+2026-11-06。恢复副本与当前 Composer 草稿共用带宿主／工作区／binding 的本地存储，
+清空发送框保留待确认副本，成功回执的正式 event_id 或已持久化容量错误 cursor 才确认
+送达。恢复内容和已恢复标记原子保存，多次刷新不会重复追加；请求失败只恢复本次
+提交，发送后新写的草稿一同保留。原消息按完整载荷匹配原 submission ID，包含附件、
+会话／文件引用、注释及 answered_question，继续复用服务端提交栅栏。结果不确定时
+显示核对提示，保留草稿供用户检查历史后决定重试；浏览器不会自动重新发送普通消息。
+
+运行中立即发送、队列调整方向和后台出队复用恢复机制，后台 POST 失败停止自动重发，
+重新打开对应会话可恢复。首条消息在 HTTP 前持久化既有 bootstrap 幂等句柄，网络错误／
+超时进入有界核对。回执到达及 pagehide／beforeunload 时保存当前草稿，避免延迟保存被
+刷新打断。本地恢复写入失败则保留原输入并提示处理存储，取消／明确失败后转回草稿。
+
+验证。新增八项及邻接三项定向 E2E 共 11 项通过，覆盖 idle／running 刷新、重复刷新、
+相同提交 ID、完整上下文重试、成功清理与下一条草稿、断网、存储失败、首条消息恢复和
+旧 binding 隔离。扩展回归 27 项通过，含九种正式消息身份／传输时序、取消提交四种结果、
+运行中立即发送、草稿附件保留及首条消息路由。扩展的 11 项失败全部在修改前 HEAD
+62f2029e 的隔离工作树逐项复现，涉及旧 readiness 读取断言、侧边引用 DOM、两宿主的
+陈旧窗口／导航返回和新会话目标模式入口，保留为既有问题。
+
+Web typecheck、定向 ESLint（0 errors，保留既有 bootstrap hook 依赖 warning）、
+git diff --check 与 CURRENT 唯一性通过；Alembic 唯一 head 为
+0202_add_oh_fw_v5_protocol_profile。下一可执行切片沿用 OPS-84。
+
+### OPS-TODAY-20261106 今日提交统一发布验收 — DONE
+
+2026-11-06。用户要求将今日提交统一部署并核对显示版本遗漏。发布前 api、stream-api、
+worker、web 的实际镜像 revision 均为 441fe1d4b32d425bfa54912fc60f610adeb01f9e，
+缺少后续 Case 与侧边聊天／ask_user 修复。统一发布 commit 为
+98c32172193b9d633a42c0d102db078748931548，包含北京时间当日 14 个祖先提交。
+
+platform／web 正式预检及受管最小上下文通过。平台归档 SHA-256 为
+400f09c351985116b01c0da57090446b44c65c759e6e5a354dc1484d7025e6a2，Web 归档为
+4b7648790265ad4069c41ed5720b17caf892e68be2a293070851453f6ee088d2。linux/amd64
+平台镜像为 sha256:077293c8550b230e82e6aac045eb2e400bcf71fcca91ba9bd310ac992a768e6f，
+Web 镜像为 sha256:bea5cd238409ca67335f0485aefaca4832de8880869120173f320c979f612cf9。
+迁移退出码 0，数据库 head 为 0202_add_oh_fw_v5_protocol_profile。四个服务实际 revision
+全部一致且 healthy，api／stream-api 的 health 与 readiness 通过。今天涉及的 16 个
+平台源码文件在 api／stream-api／worker 三个容器内均逐文件 SHA-256 匹配发布提交。
+
+公开 HTML／JS／CSS 共 127 个文件 SHA-256 与 Web 镜像一致。全新浏览器首页、Agent
+深层路由、定时任务页与根登录页均返回 200，JavaScript 错误和错误根 API 请求为 0。
+实际发布静态资源配合隔离 API 夹具复测提问卡片及侧边聊天 11 项通过；原报错会话的
+pending-question 只读请求成功且 pending=false。Case 协调提示与运行端口本地 5 项通过。
+
+本次相对已部署提交的 source lock 与 Provider 代码一致。实际 Agent Runtime 四包
+1.58.2、server_info／provenance commit 805bb3fe0a57cdc3e383e26019fa216a6892e608
+及归档哈希与本次 source lock 匹配。43 个非目标容器的镜像与启动时间、服务器配置
+哈希核对通过。platform／web 均完成 remote-release-finish，保留三份成功上下文、
+24 小时内受管上下文及受管回滚镜像；收尾后再次验证服务版本、源码哈希与健康通过。
+
+### FIX-ASK-USER-EVENTS 待回答问题事件触发与长历史分页 — DONE
+
+2026-11-06。依赖 FIX-SIDEBAR-LATEST DONE。pending-question 从正式 HEAD 开始复用
+倒序事件窗口，沿 parent_id 跨页寻找最近 ask_user 或用户答复，找到后立即停止；共享
+8 秒读取期限与最多 8 页预算，保留事件身份、缺失锚点和循环检测。返回当前正式 HEAD
+作为 cursor，避免只读取最早 100 条历史后误报当前叶子缺失。
+
+Web 以最近未回答的正式 ask_user 事件 ID 触发并缓存卡片读取，普通工具／回复事件不
+触发查询。首次恢复等待输入但当前事件窗口缺少问题时允许一次读取；正式用户答复
+清除卡片，新 ask_user 使用新查询身份。活动列表后台探针仅检查原生
+waiting_for_user_input，会话完成／空闲等状态不再逐条查询问题历史。
+
+验证。定向后端 10 项通过，覆盖最新问题、跨页问题、已回答、非活动分支、空会话、删除、
+循环、页数／期限及后台探针门控；邻接事件分页／确认回归共 18 项通过。提问卡片 E2E
+10 项通过，普通运行推进 35 秒及新事件后问题查询数为 0，同一问题查询一次，正式答复
+关闭、新问题重新读取，等待恢复与跳过／重开通过。Web typecheck、修改源文件 Ruff、
+diff 检查通过；ESLint 保留既有 bootstrap 依赖 warning。扩展 OpenHands 适配器测试
+275 项通过、2 项超时；用提交前源码执行相同范围确认该两项失败原已存在（266 通过、
+2 失败）。测试文件既有行长告警保留。Alembic 唯一 head 为
+0202_add_oh_fw_v5_protocol_profile，当前 NONE，下一可执行切片沿用 OPS-84。
+
+### FIX-SIDEBAR-LATEST 侧边聊天最新能力继承与恢复查询收敛 — DONE
+
+2026-11-06。按本次用户要求，临时侧边聊天按主会话当前能力的类型和名称，解析当前用户
+可见的最新 PUBLISHED 版本并冻结到新 binding。解析不依赖旧版本记录仍存在，缺少可用
+版本时保留能力名称并返回明确错误。平台内置历史 MCP 继续由引用生命周期装配。
+
+恢复查询仅依赖宿主工作区、主 binding 和已恢复的临时 binding 标识，草稿文本、附件和
+发送失败恢复不再重复触发 GET sidebar。该读取用于找回一小时 TTL 内的临时聊天。
+整会话引用继续只提供元数据与受限 MCP 授权，Agent 按需读取历史；pending-question 是
+主会话 ask_user 卡片的独立读取，其长历史分页 502 已定位，待独立切片修复。
+
+验证。真实隔离 PostgreSQL 下三种旧能力状态（PUBLISHED、RETIRED、记录缺失）均通过
+创建入口验证，检查最新版本冻结与主会话历史引用授权。侧边聊天隔离／连续输入不增加
+恢复请求及定时文件中侧栏草稿用例共两项 E2E 通过。Web typecheck、修改源文件 Ruff、
+diff 检查通过；测试文件原有六处行长告警保留。Alembic 唯一 head 为
+0202_add_oh_fw_v5_protocol_profile。下一可执行切片沿用 OPS-84。
+
+### OPS-MERGED-RELEASE-20261106 远程增量合并与服务器发布 — DONE
+
+2026-11-06。按用户授权合并 origin/feat/refactor 的四项增量，远程锚点 9a6a7efd，
+本地锚点 2686f237。ConversationSurface 的冲突同时保留历史编辑权限门控、模型变更
+分隔与子会话引用，加入 240px 自适应编辑框及运行中从已完成历史回复分叉的入口。
+Case 未提交工作树改动另行保护，发布输入仅为本次已提交合并版本。
+
+合并检查。Web typecheck、历史编辑与 Markdown 两项浏览器测试、八项 Runtime
+分叉定向测试及 diff 检查通过。Alembic 唯一 head 为 0202_add_oh_fw_v5_protocol_profile。
+受影响 Python 源码 Ruff 通过，test_openhands.py 保留三处既有 E501；新增分叉用例
+不涉及这些行。正式 runtime／platform／web 预检通过。
+
+发布验收。用户明确选择 441fe1d4b32d425bfa54912fc60f610adeb01f9e，构建输入固定
+为该提交的归档。构建期间另一发布将平台与 Web 推进至 700e25d4，待其完成后按用户
+选择切回 441fe1d4，并保留 700e25d4 的平台／Web 回滚镜像。迁移退出码为 0，
+生产 Alembic head 为 0202_add_oh_fw_v5_protocol_profile。api、stream-api、worker、
+runtime-provider 和 web 均核对为本次提交的 linux/amd64 镜像且 healthy。
+平台镜像为 sha256:178c3024b605baf6e7e35145e37b31bdf3b6999ca69c378c7ed64158e582a122，
+Web 镜像为 sha256:9178a25c84c390a7a9c4cb01905a443a0558cb7958eea994f3079860b1a399ce。
+
+Runtime 镜像从同一提交的最小输入在本机构建 linux/amd64，经契约、安全与浏览器工具
+检查后传输，并在服务器复核层、配置、provenance 和契约。构建镜像为
+sha256:f2bf95fd314a53e942fb5d019159cc6c7891d7fb5959a97589cce0cbdc05deb1。
+正式 replacement 完成，Agent Workspace generation 为 61、ACTIVE 且可写。
+该工作区的 V5 parent manifest 冻结镜像为
+sha256:7ed73c052537ba2f40c847e5f936bc37bcf86d2a7ab080e25cf7109f2f244c02，
+新 generation 按正式冻结契约使用此镜像，新构建镜像已用于后续分配的受管 tag。
+实际运行镜像四包均为 1.58.2，server_info 与 provenance 的源码提交均为
+805bb3fe0a57cdc3e383e26019fa216a6892e608，归档校验值为
+eaf4322c182d2ea80202840b43834cb72697371e479eca91aaf03dc458adb208，符合本次 source lock。
+实际运行容器契约检查通过。原生状态备份在服务器内完成并校验，369 个原生会话的
+恢复核对覆盖原 conversation ID 集合、两个正式事件 ID／内容哈希和全部持久挂载。
+
+公开前缀首页、Agent 深层路由与定时任务页在全新浏览器上下文返回 200，
+JavaScript 错误和错误根路径 API 请求均为 0，根登录页返回 200。四份公开静态资源
+SHA-256 与服务器镜像一致。通过线上静态资源及隔离 API 夹具复测历史消息编辑与
+完整 Markdown 展示，两项通过。Compose／环境配置哈希核对通过，41 个非目标容器
+的镜像与启动时间核对通过。平台／Web 均完成 remote-release-finish 并记录 succeeded，
+按受管策略保留三份成功上下文、24 小时内上下文及回滚镜像。Case 暂存的七个文件
+与 700e25d4 提交内容逐一相符，任务专用保护 stash 已移除。
+
+### FIX-MERGE-REGRESSIONS 历史编辑恢复与合并遗漏复核 — DONE
+
+2026-11-06。依赖 FR-734 DONE。按用户要求复核合并提交 829afbb8 的两个父版本、
+冲突解决差异及当前实现，恢复所有已渲染用户消息的编辑入口。保留 onRewrite 宿主
+权限门控，沿用正式消息重写、附件引用和旧分支迟到事件处理。
+
+同一合并遗漏了 Runtime source-build 依赖组、构建工具锁文件元数据和既有依赖约束，
+导致 Dockerfile 的 frozen sync 在安装前拒绝缺失依赖组；恢复两侧构建配置的一致性。
+定时会话 E2E 文件被追加了 70 个重复用例、重复辅助声明及一项已有新版本替代的
+旧 Git 身份编辑用例，导致整份测试无法解析；保留前半部更新后的用例和独有子会话
+路由覆盖，移除追加副本。更新所选回归用例的用户可配置能力接口夹具、内置 MCP
+隔离、已同步认证计数、跨平台光标定位和松手后吸附的拖拽断言。
+
+复核范围含冲突解决涉及的 38 个文件，以及两侧 Python 入口删除、前端会话事件
+缓存／文件链接提取、配置与 Runtime 来源差异。后台父子清理进度已有任务投影承接；
+侧边聊天创建前乐观消息的合并遗漏已在 FR-729 修复。
+
+验证。历史编辑用例先复现 2 个编辑按钮实际仅 1 个，再恢复通过，并增加实际点击更早
+消息的入口验证。38 项不同浏览器用例通过，其中定时／配置／工具／子路由 23 项、
+侧边聊天／文件预览／未读／后台删除 14 项、历史编辑 1 项。定时文件已可正常发现
+163 项用例；首轮 6 项旧夹具／断言失败，更新后其中 4 项通过，剩余工具恢复入口和
+旧认证计数文案两项再次修正后通过。没有将旧断言对应的设计变更认定为产品回退。
+
+Runtime 修复前实际 frozen sync dry-run 报 source-build 未定义，补全项目与 lock
+metadata 后通过；离线 lock check、定向架构测试 1 项和 Ruff 通过。Web typecheck、
+production build、定向 ESLint（0 error）与 diff 检查通过，保留既有 Fast Refresh
+两项 warning 及构建大 chunk 提示。Alembic 唯一 head 为 0202_add_oh_fw_v5_protocol_profile，
+CURRENT 唯一性通过。Runtime 验收范围为依赖同步 dry-run 与静态构建契约，实际镜像
+重建及线上发布验收待另行执行；下一可执行切片沿用 OPS-84。
+
+### FR-734 子会话能力注册与上下文统计 — DONE
+
+2026-11-06。子会话复用主会话能力配置，从当前用户有权访问的仓库追加 SKILL／MCP／PLUGIN，
+支持 Skill 升级、MCP 检测与部分成功后的重试。Context／Agent／Hook 保持创建时冻结。
+两宿主共用直属子会话授权入口，继承原生 Marketplace，以子 binding 命名空间隔离物化包。
+同一子会话注册串行执行，共享市场清单加锁合并，Runtime I/O 不占用 DB 连接。
+MCP 认证通过原生 Secret Registry 或请求传递，检测认证不进入物化文件。
+子发送框复用主会话 Token／活动 View 事件指示器，独立读取子 `/context`，支持压缩后下降、
+未知状态与标签隔离；窄侧栏同时显示两项统计。
+
+验证。后台共 185 项用例通过，其中全量回归 181 项通过，1 项测试数据库清理超时后复测通过，
+另通过并发 Marketplace 与两个普通会话原生加载入口用例。前端 32 项用例通过，其中 4 项
+页面打开超时后单独复测通过。Web typecheck、production build、定向 ESLint、Python Ruff／
+格式检查通过，新增应用模块／路由／HTTP 调度的定向 Pyright 无诊断。共享 workspace.py
+既有 17 项类型诊断、主工作台既有 Hook 依赖警告和 CSS／chunk 构建提示保留。
+原生加载由模拟 Runtime 验证，SDK 正式加载契约按固定 baseline 源码核对。
+2026-11-06 发布完成。代码 commit `118e57253bcb31d751832251532f31badaf470d6`，
+Platform＋Web 从相同 commit 的受管最小上下文构建并发布，包含此前 FR-733 配置与认证展示修正。
+平台镜像 `sha256:50e4b7f0cac6b5512ba5633134447069f1663cb74c6e7d27afead68d8b9f1616`，
+Web 镜像 `sha256:4163e05c62e9e91f47df1b244989c0cf483c5f77602b55787099988920c0475c`，
+均核对 linux/amd64 与 OCI revision。正式迁移退出码 0，API／stream-api／Worker／Web
+健康及版本核对通过，两个新增能力入口在 API 与 stream-api 镜像中均已确认。
+线上构建产物的 8 项浏览器回归通过，覆盖两宿主的能力追加／Skill 升级、认证配置、all
+筛选与子上下文统计；这些用例使用隔离 API 夹具，原生动态加载仍由模拟 Runtime 验证。
+另完成真实公开登录页、Agent 深层路由、根应用、API 前缀与未登录认证拦截验证，以及 6 项
+公开静态资源 SHA-256 核验。页面无 JavaScript 错误，截图已检查。服务器配置哈希和 43 个
+非目标容器的 image／StartedAt 核对一致；回滚镜像及服务日志已保留。
+Platform 与 Web 的正式 remote-release-finish 均通过，按既定保留规则完成受管发布资产收尾。
+
+### FR-733 父子配置 all 一致与认证继承展示 — DONE
+
+2026-11-06。修复普通会话 all 隐藏已装配 Context／Agent／Hook、子会话 all 却
+展示它们的筛选差异，按实际绑定显示全部已装配类型，冻结项保持只读。
+子认证读取正式原生 ConversationInfo.secret_registry.secret_sources，以完整变量
+集合核对平台认证，返回安全的 inherited_from_binding_id 供界面展示“已继承”。
+既有子会话没有版本记录时不推断 CURRENT，不复制父当前版本或解密比较秘密，
+仅显式同步成功后记录当前版本并显示“已同步”。原生缺少变量或凭据仅部分存在时
+继续显示未记录／新增。该修正兼容既有子会话，无迁移或 SDK／协议来源变更。
+
+验证。两宿主与 V4／V5 的认证定向测试 8 passed，覆盖继承变量、部分／缺失变量、
+脱敏、无虚假版本记录及同步后 CURRENT。四项浏览器用例通过，覆盖父 all／只看
+已选／类型切换以及两宿主子继承状态、同步、换模和确认入口。前端首轮新增父
+配置夹具误拦截文档路由，已限制为 API 路径后四项复测通过。Web typecheck、
+production build、定向 ESLint、Python Ruff／格式及 diff 检查通过，保留既有
+构建 chunk 提示与 LDAP 依赖弃用告警。截图核验通过，尚未部署。
+
+子会话新增能力仍为首版只读边界，已向用户询问允许范围，后续接入待范围选择，
+本片不将该新增入口记为完成。
+
+### FR-731 子会话预览、详情标签与全屏交互 — DONE
+
+依赖 FR-730 DONE。按最新交互要求，悬浮卡只预览前两项，超过两项通过“查看全部”
+进入右侧唯一子会话详情标签，详情复用来源列表样式，不在卡内分页。子会话图标改为
+双对话气泡，并保留运行、异常和未读投影。子标签支持双击、全屏按钮与拖动展开，
+从全屏详情打开具体子会话继续保持全屏；切到父标签时子视图退出前台交互。
+验证两宿主的预览、完整列表、目标打开、草稿／历史及配置 Escape 优先级。
+
+完成（2026-11-05）。悬浮卡预览前两项并按来源样式提供“查看全部”，完整列表进入
+父 scope 内唯一详情标签，行点击打开真实子会话。图标采用双对话气泡与淡紫色背景，
+继续显示正式活动与未读。移除子标签双击、顶部按钮和拖动展开的全屏限制，并保留
+全屏中从详情打开子会话的布局。子视图前台激活、快捷键与活动选择同步排除父全屏
+标签；Escape 尊重弹窗已消费事件。冻结协议、执行逻辑和后台接口不在此片范围。
+
+验证。子会话浏览器首轮 24 passed／2 failed，失败为旧图标断言；修正断言及详情
+打开后显式恢复悬浮卡的测试操作，四项预览／详情／全屏用例复测全部通过，26 项
+不同子会话用例完成验证。普通工具双击全屏、全屏布局与来源摘要三项定向回归通过，
+沿用 FR-730 的 AST 临时提取方式绕过原 schedules spec 重复声明。Web typecheck、
+production build、定向 ESLint（0 error）及 diff 检查通过；保留既有 bootstrap
+Hook 依赖警告与构建 chunk 提示。两宿主 1024／1440 预览、完整详情与子全屏截图
+核验通过。本片 Web 已按下述记录完成发布。
+
+#### FR-731 与侧边聊天图标 Web 发布验收
+
+2026-11-06。发布 `789e21a71dd99adca516a3d52ea7e3ceb78943bd`，包含 FR-731
+及侧边聊天入口、标签和选中文本菜单的加号气泡图标。正式 Web 预检、最小上下文
+准备与 linux/amd64 镜像构建通过，源码归档 SHA-256 为
+`cdd6f542cb293767cc3c41fd974fd9a22dcc0ee267447fbcb2758e2cd7af74f3`，
+运行 Web 镜像为
+`sha256:6f51d017b5e818893eba25a93062d5bec81a6848c50b10245715d2d3740003e1`。
+
+旧镜像回滚标签和服务日志保留，仅重建 Web。实际 revision、架构、HTTP 入口、
+API／stream-api 健康与 readiness 通过。两项公网 HTML 和六项入口／工作台资源
+SHA-256 与运行镜像一致，包含完整子会话列表及 MessageCirclePlus／MessagesSquare
+图标，卡内分页样式已移除。服务器配置及其余 37 个容器镜像／启动时间核验通过。
+
+服务器网络中的全新 Chromium 验证平台登录页、Agent 深层路由及根登录页通过，
+根路径 API 请求和 JavaScript 错误为 0。线上静态资源配合隔离 API 夹具的五项
+浏览器用例全部通过，覆盖两宿主的两项预览／完整详情、子标签全屏／草稿／历史／
+配置 Escape 与侧边聊天入口／标签图标。本地首轮验收因临时 SSH 通道结束而连接
+失败，保留通道后重跑通过；临时浏览器和通道均已关闭。
+
+remote-release-finish 成功，无过期上下文候选；按受管规则回收一个过期 Web 回滚
+标签并保留最新回滚镜像。收尾后实际版本、平台健康、服务器配置及其余 37 个容器
+复核通过。本记录仅覆盖 Web 发布，FR-732 后台发布状态仍见其自身记录。
+
+### FR-732 移除 FlowWeave 子会话调用指导注入 — DONE
+
+依赖 FR-730 DONE。用户要求删除与 OpenHands 工具描述重复的 FlowWeave 提示词。
+父能力装配不再追加 CHILD_USAGE_GUIDANCE，传入 AgentContext 完整保留；调用指导
+由 OpenHands 工具自身描述提供。历史 V3／V4／V5 Manifest 的 usage_guidance 仅为
+冻结摘要兼容而保留，不再从该入口进入模型系统上下文。已有 OpenHands 会话的
+持久化上下文沿用其原生命周期，新创建会话在本次代码发布后使用新装配逻辑。
+
+验证（2026-11-05）。两宿主、三种协议、空／非空原有系统后缀及父能力冻结／授权
+定向测试 32 passed，Ruff 检查与格式检查通过；三种 Manifest 的完整内容及 digest
+与修改前逐项一致。唯一 Alembic head 为 0202_add_oh_fw_v5_protocol_profile。
+本片源码、测试和验收记录独立提交，后台仍待部署。并行 FR-731 的 Web 范围
+发布不代表本片后台已经发布。
+
+### FR-730 子会话悬浮卡列表与共享配置弹窗 — DONE
+
+依赖 FR-729 DONE。子会话直接在悬浮卡中按来源列表样式展示，标题与状态同列，
+每页两项并提供卡片内分页；随悬浮卡显隐与宽度缩放，不引入滚动或额外列表弹窗。
+子会话配置复用正式会话配置弹窗，冻结能力只读，认证同步只调用当前子会话入口。
+核对父模型当前 Task／子会话指导，保留已冻结工具和 Runtime 协议。
+验收覆盖两宿主的标签、列表、长标题、配置、关闭、认证和普通配置回归。
+
+完成（2026-11-05）。移除子列表浮层，卡片内展示标题、状态与未读，按两项分页，
+支持长标题截断及显隐后页码保留。抽出既有 CapabilityManager 和宿主上下文供主／子
+共用，原导出入口保持兼容。子配置仅显示冻结能力，支持能力搜索／类型筛选；认证
+沿用现有自定义复选交互，按 parent＋child 隔离读取与同步，已同步项锁定，运行中
+禁止同步。只对冻结能力 ID 补充目录展示信息，不展示新增能力或最新 Skill 升级。
+
+验证。子会话定向浏览器 23 passed，补充目录含最新／无关能力后的两宿主配置复测
+2 passed；覆盖列表分页、长标题、卡片显隐、独立标签／草稿、认证／换模／确认、
+Escape／外部关闭及删除恢复。普通／定时会话的共享配置与来源定向回归 6 项通过，
+含认证全选、列表／footer 几何、能力／认证行样式及配置保存。原 schedules spec 有
+已提交的重复顶层声明，直接运行解析失败；上述 6 项由 TypeScript AST 提取到
+.tmp/fr730 后运行，修正临时夹具的 user-configurable-capabilities 路由、已同步项
+统计及创建草稿能力弹窗的认证入口，原测试文件保持原状。临时首轮 2 passed／
+4 failed，适配后 5 passed，最后一项布局复测 1 passed，未记为原文件全量通过。
+
+Web typecheck、production build、定向 ESLint（0 error）与 diff 检查通过；原
+Workbench 的 bootstrap Hook 依赖警告及构建大 chunk 提示仍存在。1024／1440 卡片
+及两宿主配置截图核验通过。唯一 Alembic head 为 0202_add_oh_fw_v5_protocol_profile，
+CURRENT 唯一性与 FR-729 依赖核对通过。本片只含 Web 与必要设计／进度文档，
+已完成下述 Web 发布；后续任务仍按原 OPS-84 记录执行。
+
+#### FR-730 Web 发布验收
+
+2026-11-05。发布代码 `d7fccf0fb5b61286de22c956bd502c5f9750f525`，通过正式 Web
+预检及 commit-bound 最小上下文构建。源码归档 SHA-256 为
+`2d3528a5a6db6c5ffe891ae21c7e60d2330d42b1a71dc88b61724be37d202b66`，
+linux/amd64 Web 镜像为
+`sha256:d5e87c62114f14cda5d828b88c8211e3c3ff25a4487feb95d4bbdb22d04908f0`。
+
+更新前保留旧 Web 镜像回滚标签及服务日志，仅重建 Web；revision、架构、容器
+HTTP 入口和 API／stream-api 健康／readiness 通过。服务器配置哈希及其余 37 个
+运行容器的镜像／启动时间核验通过。公网首页、Agent 深层路由为 200，未认证 API
+为 401，根应用正常；两项 HTML 及六项入口／工作台静态资源 SHA-256 与运行镜像
+一致，实际资源包含卡内子列表和共享配置弹窗。
+
+本机直连公网入口返回 502，服务器网络访问同一入口正常；改用通过服务器网络的
+全新 Chromium 完成平台登录页、Agent 深层路由、根登录页及部署前缀检查，根路径
+API 请求和 JavaScript 错误均为 0。实际线上静态资源配合隔离 API 夹具完成三项
+浏览器验收，覆盖卡片分页／长标题／显隐与两宿主冻结能力、认证同步、配置关闭；
+3 passed。该交互验收使用夹具，未改写真实用户会话。临时浏览器及网络通道已关闭。
+
+remote-release-finish 成功，按受管规则回收三份过期上下文和一个过期 Web 回滚
+标签，保留最近三份成功上下文、24 小时内及被引用资产和最新回滚镜像。收尾后
+再次核验实际 Web 版本、平台健康、服务器配置及 37 个其他容器通过。
+
+### FR-729 feat 集成与当前分支发布 — DONE
+
+依赖 FR-717、FR-728 DONE。用户明确授权将 feat/refactor 的已提交内容及远端新增提交
+合入 codex/child-conversations，并从当前分支发布。feat 工作树未提交的 Case 改动不在范围内。
+
+集成保留双方会话功能，合并两条 Alembic 图，新增 OH_FW_V5 明确绑定已部署的
+805bb3fe0a57cdc3e383e26019fa216a6892e608 及其归档。V3/V4 来源与已冻结父能力保持。
+后台批量删除等待父子清理任务完成；有父子会话的工作区先通过会话删除入口完成清理，
+之后才能删除工作区目录。发布使用当前分支已提交版本，复用已验证 Runtime，配置新会话
+子能力入口并完成服务健康、版本、路由与实际子会话验收。
+
+实现与发布准备（2026-11-05）。本地 feat 合并提交 829afbb8，远端增量
+58b591d2 合并提交 294fd6a7。新增 0201 merge 与 0202 V5 allow-list 迁移。
+139 项旧子契约、12 项新增协议／迁移／发布保留验证通过。后台首轮 568 passed，
+定向修正后 25 passed，V5 扩展矩阵另有 232 passed，失败项已在定向复测收口。
+子会话浏览器 21 passed 加最后两项复测 2 passed。固定 805bb 源码两宿主真实 HTTP
+测试 2 passed。线上现有镜像执行本次 contract_check.py 通过，四包与源码身份吻合。
+Web typecheck 和生产构建通过，受影响 Python Ruff 通过。
+
+扩展检查未全通过。普通会话／架构全量检查 170 passed、112 failed，包含缺少
+Node Attempt 的旧 locator 调用、直接应用测试缺少用户上下文和历史架构规则。Python
+全量严格类型检查也未通过。它们未计为本次通过门禁，原始结果位于忽略的本地验证目录。
+浏览器宽范围首轮 95 passed，失败中的旧文案、右键菜单、门户弹层和虚拟列表用例已按
+现行界面调整。宽范围定向续跑仍有 13 failed、2 passed，未计为通过。
+临时侧边聊天的创建前乐观消息在合并后漏显，已恢复并通过取消／即时与延迟 hydration／
+隐藏保留四项验证。子会话的最终定向结果为 23 项全部通过。
+
+发布完成。代码 commit 309aa05ae1596256a67f20dcc27f2a79a9fb647e，API／stream-api／Worker
+镜像 sha256:98ea2960cd07299a6b2ef31fe4b8dbd4e6f29c8851bcbf4b59fa6e4dff004cf0，
+Web 镜像 sha256:b269ad5857b333eb7266688181a085e1380ca1216a58ce6a89a92f463cae34d7。
+四服务 revision 与 linux/amd64 校验、health/readiness 和数据库 0202 head 通过。
+Runtime Provider 代码相对线上版本无差异，本次按 platform／web 范围发布。Agent Workspace
+继续使用已验证的 805bb 源码镜像，历史 1.54 FlowRun 按原冻结版本运行。
+
+服务端为配置创建权限保持的备份后，仅补充三服务的子入口与新普通会话 OH_FW_V5 配置。
+使用当前 CLI 已登录用户和线上 gpt-5.6-luna，经正式平台接口创建验收父会话、由模型
+原生创建一子、list/read/wait 取回正式子回复，父 FinishAction 含验收标记。用户随后向同一
+子会话续聊并取得正式 MESSAGE。仅本次创建的验收父子由正式 family 删除任务清理完成，
+两端读取均为 404。公网深层路由与登录页、部署前缀、JavaScript 无错误验证通过。
+两个发布范围均完成 remote-release-finish，保留每范围最近三份成功上下文及引用资产。
+
+feat/refactor 本地指针仍为 d3262537，远端增量固定 58b591d2。所有集成修复提交位于
+codex/child-conversations，未提交的 Case 工作树改动未纳入发布。
+
+### FR-702 原生子会话产品与接入契约冻结 — DONE
+
+依赖：FR-701 DONE。按用户确认在独立工作树开展子会话接入；Git Worktree 产品能力取消。
+冻结两宿主 shared 原生子会话、悬浮卡入口、每个子会话按标题独立右侧标签、用户续聊、
+父 Agent 正式交互、绑定级凭据、关闭保留、未读与删除恢复契约；将上游全量合入和后续
+实现拆成独立切片，不以设计完成声称功能已上线，不部署。
+
+完成（2026-10-26）：创建并附加独立工作树，分支 `codex/child-conversations`。
+新增 `docs/agent-child-conversations-design.md`，并同步架构设计第 18 节；明确一律 shared、
+普通入口隐藏、每子一个标题标签、续聊／父工具、正式身份、预留后运行、重签绑定级凭据、
+关闭保留、父删除及 replacement。原生尚缺的幂等／治理接入点与父管理工具单独标明，
+不得用现有临时聊天或平台执行器代替。后续 FR-703–FR-717 分别覆盖合并、Runtime、
+后台、前台和实际验收，完整上游目标固定为 `ce5716a3c`，本片不执行 SDK merge。
+
+验收：固定目标相对当前上游锚点的 132 个提交、四包 1.58.2 与当前 source lock／baseline
+文件树一致性复核通过；设计内链接、16 个新增编号唯一性、依赖存在／无向后循环及
+CURRENT 唯一性检查通过。历史重复编号 FR-506／528／553 保持原状，未混入清理。
+独立工作树的 Alembic heads 为唯一 `0174_agent_workspace_user_defaults`，
+`git diff --check` 通过。仅文档变更，未运行业务测试、镜像构建、迁移实跑或 E2E，
+未修改 source lock／数据库／API／Web／SDK，未部署。提交后停止，下一可执行 FR-703。
+
+### FR-703 固定 upstream main 完整合入 SDK baseline — DONE
+
+依赖：FR-702 DONE。以设计固定的 `ce5716a3c0a955a85bb0cc4dcfaa94d5fefcda50`
+完整合入 SDK baseline，保留 FlowWeave 扩展和已撤回浏览器改动的历史，逐项处理冲突。
+不 cherry-pick 子会话提交，不开放 Worktree 产品功能，不部署。
+
+完成（2026-10-26）：SDK baseline 原 HEAD `2c8025ff1` 完整合入固定 upstream
+`ce5716a3c0a955a85bb0cc4dcfaa94d5fefcda50`，产生独立双父 merge commit
+`ecf0aec091463fb242b0c5ab59d155c65d96ded8`，四包源码及本地依赖身份为 1.58.2。
+五个冲突文件逐块合并：保留后台／生命周期／交互执行器、当前 View 指标、动态凭据
+上下文和读取容量测试，同时保留上游标题 prompt、FileUploadResult、正式结束生命周期、
+丢失租约元数据保护、事件追加时钟／失败诊断及 condenser 409。原生新 child finalize 与
+Goal reload 对账进入既有生命周期执行器，避免重新引入默认线程池饥饿。
+
+验收：13 个核心模块共 550 个不同用例，初次剩余的一项标题 Laminar 测试在修正后台
+执行器夹具后定向通过；另有 9 项原生 child 工具测试、13 项真实 TCP 用例通过，共
+572 个不同用例。TCP 使用真实 Uvicorn／HTTP／WebSocket 和受控 LLM，覆盖默认后台池
+饱和下正式读取、暂停／原 ID 恢复、WebSocket 绑定与正式事件读取及原生 child，不等同真实模型或镜像验收。
+新增四项参数化回归验证默认 executor 饱和时 shared 子创建及 reload 可用，live／reloaded
+两路径均通过。标题后台夹具和 trace probe 适配了原生 save_meta／后台执行器；暂停夹具
+只在 close 屏障内断言禁止 hydration，消除 gate 释放后已恢复请求的合法调度竞态。
+
+1442 个受控跟踪 Python 文件 AST 解析通过，手工冲突／测试适配文件的 pre-commit
+格式、Ruff、PEP8、Pyright、动态属性、导入和工具注册检查通过。全量 source diff（排除
+上游 `.pr` 证据目录）及相对固定 upstream 的扩展 diff 检查通过；完整上游 diff 的空白
+检查仍指出原样引入的 `.pr/intent-ledger.md` 尾空格与 `.pr/intent-runtime-overlay.md`
+结尾空行，不修改上游证据文档掩盖告警。相对 upstream 只保留原 20 个扩展路径及一处
+必要标题 trace 测试适配，SDK 工作树干净，两个精确 parent 已核对，未推送。
+
+测试临时目录放在本工作树 `.tmp/fr703`，设置 Git discovery ceiling 防止非 Git 场景误识别
+外层 FlowWeave 仓库；此前因此产生的三项环境失败不计作产品故障或通过。忽略的 SDK
+build 副本影响全局动态属性扫描，验证时只临时移至 `.tmp`，完成后原样恢复，未提交生成物。
+FlowWeave source lock／归档／依赖锁仍为原 1.54.0，本片不构建镜像、不运行迁移／Web E2E、
+不开放子工具或 Worktree、不部署。Alembic 唯一 head 仍为 0174；后续 FR-704 负责完整
+扩展／实际契约回归和来源依赖冻结，不能把本次源码合并当作 Runtime 已升级。
+
+### FR-704 上游合并回归与 Runtime 来源依赖身份 — DONE
+
+依赖：FR-703 DONE。验证全部 FlowWeave 扩展、受影响原生回归和实际可执行契约，
+核对 Profile／Settings schema、四包、来源归档及自有 Docker／依赖链；正式冻结身份。
+
+完成（2026-10-26）：固定来源为 `ecf0aec091463fb242b0c5ab59d155c65d96ded8`，
+upstream anchor 为 `ce5716a3c0a955a85bb0cc4dcfaa94d5fefcda50`，四包 1.58.2；
+归档 SHA-256 为 `5e4a53a2fab54bd3435b7ea29d6c6ea98fc181c3d0f2299cf85a7414a658d927`。
+来源锁、provenance、平台身份、插件 resolver 与构建路径同步；旧归档保留。通过正式
+fetch_source 校验并解包归档，独立 frozen 环境安装四包后完整可执行 contract 通过。
+Profile 4、Settings 9 及退役开关不能重新启用工具的迁移探针通过；平台自有 Profile 2
+输入继续由原生迁移，未重写既有能力、Snapshot 或 V1／V2 adapter。
+
+依赖链保留固定 upstream 的安全约束及具名截止时间，新增 first-party 精确截止时间，
+第三方七天观察期保持。上传时间核对确认，本次七天内第三方变更仅有固定 upstream
+已有的 certifi CA distrust 例外；未添加新的第三方例外。源码构建工具 setuptools 84.0.0／
+wheel 0.48.0 纳入同一依赖锁，四包以 --no-build-isolation 安装，避免构建期再解析工具。
+uv frozen lock、独立环境 pip check 通过。完整依赖与构建工具发布时间审计在忽略的
+`.tmp/fr704/`，正式来源归档进入 vendor，不提交测试缓存或临时环境。
+
+自有 Dockerfile 同步固定 Node 24.22.1、Python 3.13.15、uv 0.13.5、npm 11.21.0，
+保留原 OpenSandbox 与 Docker CLI 基础输入；采用固定 upstream 的 pip 26.2.2 vendoring
+修复和 Debian 20261021 快照／CA 信任边界。各新增语言／构建基础镜像均锁定 digest。
+系统和 Runtime venv 安装同一修复 wheel，移除 Debian 的旧 pip 命令包；新增离线探针
+验证 pip urllib3 2.8.0、msgpack 1.2.1、移除 pkg_resources，系统／certifi／pip 三类 CA
+均不再信任退役根。自有固定镜像未安装 OpenVSCode，相关 upstream 构建修复由原生 builder
+源码保留；未引入 Worktree 或新的默认 Tool。
+
+实际 linux/amd64 验收镜像构建成功，本地 OCI index digest 为
+`sha256:d23a80d81fa87ff919a6e17656d283c45b4eeb9d2b8a45cf936ce81dd9ccb5e8`，
+平台 manifest 为 `sha256:ede6ff179aef785b8775fb05e1a65ee8a8fd0c21980fd6447ec288908ae4658c`。
+镜像内完整 contract、原生 Chromium 可用性和已知安全修复探针通过。随后在不挂载宿主
+目录、不发布端口、--network none 的独立容器再次执行契约／安全探针；安装的四包
+522 个 Python 文件逐字节匹配归档（Server 98、SDK 313、Tools 97、Workspace 14）。
+这属于所列已知修复验收，不替代 FR-717 的完整安全／业务端到端门禁。
+
+验收：SDK 扩展／迁移／中断主套件 1028 passed，原生 child Tool 9 passed，真实
+Uvicorn／HTTP／WebSocket 13 passed。镜像内五个原生终端模块 58 passed，含 socket
+超长路径、池隔离、旧终端身份、环境脱敏和优先级。测试依赖取固定 SDK uv.lock 的六个
+纯 Python wheel 并校验 hash，只在该一次性容器离线安装；安装后再次复核四包源码不变。
+补充扩展回归 90 passed／2 failed 的两项 tmux 环境用例已由上述 Linux 套件实际通过，
+不把前次失败计作通过；subprocess 环境用例单独重跑亦通过，明确记录测试间干扰。
+
+平台 adapter／contract／plugin 独立套件 271 passed，来源／静态 V1／V2 10 passed；
+冻结契约组合 17 passed 与前述重叠，不累加总数。最初从仓库根运行的相对路径失败已在
+正式 platform 目录重跑；合并套件中的 container fixture 重置全局 logger，九项日志
+测试失败在隔离 adapter 进程后全部通过。未修改实现或断言掩盖该全局测试干扰。
+
+镜像内真实 TCP 读取容量探针完成 50 次请求：最大 0.4842 秒、P95 0.1166 秒，保持
+原两秒门槛，覆盖后台线程／七路读取、取消仍占槽、释放后恢复、interrupt、drain／reload
+及原事件恢复。128 PID 上限的一次性容器耗尽进程达到 errno 11，释放 60 个测试子进程
+后原生终端恢复。原生 server 进程终止／重启保留原 Conversation、五个既有事件及
+原 tool-call 身份，产生一个正式恢复事件，重复读取不追加恢复事件。此探针在本机
+arm64 → amd64 CPU 模拟下先触及默认 30 秒冷启动预算，新增显式且有界的 1–180 秒
+startup 参数并以 180 秒通过；默认仍为 30 秒，HTTP／运行和读取容量阈值未放宽。
+
+受影响 Ruff、AST／TOML、provenance 一致性、平台身份模块 Pyright（零错误）、diff
+和任务状态／依赖检查通过。contract 的既存 E402 启动导入边界按原约定独立排除，
+未全量格式化探针；新增安全探针 format 通过。Alembic 唯一 head 仍为
+`0174_agent_workspace_user_defaults`，无新增迁移；平台定向测试仅使用独立临时数据库。
+所有模型响应均为受控夹具，未执行真实 LLM。SDK baseline 未追加代码、未推送或部署；
+本地验收使用独立标签，现有 Runtime 镜像／generation 与冻结协议未替换。
+当前 NONE，下一可执行切片 FR-705。
+
+### FR-705 原生子创建身份与持久受理原语 — DONE
+
+依赖：FR-704 DONE。原切片同时涉及持久幂等身份、配置物化、运行前治理和首条任务投递，
+按可独立验收边界拆分。本片建立 SDK 正式稳定创建身份、请求摘要及原生服务的持久原子
+预留／同请求查回，覆盖线程／进程并发、冲突、响应丢失和进程退出后的恢复。不开放新
+创建路由、不创建或运行 child；纯身份预留不是已受理执行，也不宣称具备 429／首轮门禁。
+
+完成（2026-10-26）：SDK baseline 独立提交
+`c1f092aa71980b327633d931cb6f7db85d063c45`。正式
+`ChildConversationCreationIdentity` 以 parent UUID 和受信 creation UUID 为 v1 命名空间
+生成稳定 child UUID，并校验序列化身份不可替换 child。`ChildConversationCreationReceipt`
+为独立 schema 1，记录三项 UUID、task／title／isolation 的 SHA-256 与 UTC 创建时间，
+不保存任务正文、Secret、事件或执行状态。原生 `ChildConversationCreationStore` 使用
+有界跨进程 FileLock 和 SDK 原子写入／fsync／rename，返回 receipt＋是否首次预留；
+相同意图重试保持回执和时间，改变意图明确冲突。只读查回不创建目录；未知 schema、
+截断、非法编码和身份错配均明确拒绝，禁止损坏回执被覆盖或误认为未受理。
+
+验收：新增 21 项定向用例通过；合并既有 parent／child 和 executor isolation 模块后
+65 passed（含前述 21 项），覆盖 16 次八线程竞争、三个独立进程竞争、进程提交后在
+返回响应前 os._exit、写入前／提交后故障恢复、原回执不可变及损坏拒绝。进程测试经
+真实文件锁与持久目录，不用进程内 mock 代替跨进程互斥；模型／原生子会话运行未执行。
+四文件逐项及最终 pre-commit 的 Ruff format／lint、PEP8、Pyright、动态属性、导入和
+工具注册检查全部通过；staged diff、状态及依赖检查通过，Alembic 唯一 head 仍为
+`0174_agent_workspace_user_defaults`。忽略的 SDK build 副本验证时临时移出，提交后原样
+恢复，不提交生成物。使用 verify-agent-server 技能核对验证边界；本片没有新增／修改
+REST 或 WebSocket，不能把本次存储测试当作新 API、实际 Runtime 镜像或模型验收。
+
+本片未实例化 store 到 ConversationService，未修改原 children 路由／请求／事件，
+未启用任何工具或浏览器入口；跨用户／父 Tool 权限继续由 FR-706 负责。FlowWeave source
+lock、归档和验收镜像仍固定 FR-704 的 `ecf0aec09`，新扩展须在 FR-709 与其余扩展一起
+锁定；本片不构建／部署、不推送，不更改旧 V1／V2 或现有 Runtime。当前 NONE，下一可执行
+FR-718；原计划 FR-705 的 429、子准备、首轮治理／投递及 native 创建中崩溃恢复明确保留
+为 FR-718 的必验内容，不视为已完成。
+
+### FR-718 原生子准备与运行前治理生命周期 — DONE
+
+依赖：FR-705 DONE。消费正式创建身份，接入 native child 配置物化、准备后查回、治理
+放行和首条任务的原子受理。覆盖 429 无执行副作用、并发／未知结果、创建中和首轮投递
+阶段崩溃恢复、普通 send／run 不得绕过准备门禁；保留旧 children 默认契约。此片完成后
+才进入 launcher 身份和产品集成。必要时继续按可独立验收边界拆分。
+
+实现：SDK baseline 提交 `085a838aff2177bae6256794d591e7bc1ebcdfd4` 新增正式
+prepare／查询／release 路由及 shared-only 类型。先经 RunSlot 准入再预留身份，以子
+Cipher 整体加密不可变启动计划，覆盖 base_state 已写但 meta 未写的恢复窗口。准备后
+不投递消息、不运行、不初始化 Git 或创建 Worktree；普通 send／run／goal／ask／condense
+和 live Conversation 访问受门禁保护，只读与凭据配置仍可用。release 再经容量准入后，
+按正式稳定 event ID 受理首条任务；并发、取消、响应未知和服务重载均复用原身份。
+started 但后台任务尚未真正运行的崩溃窗口，仅在无活动任务、原生 IDLE 且 HEAD 为初始
+event ID 时补启动；已完成／暂停／异常或事件已推进时不重跑。删除持久标记身份并清除
+加密计划，旧 creation_id 不可复活。旧 immediate children 默认契约保留，fork 不继承
+准备门禁，旧元数据不新增空 gate；creation UUID 不代替 launcher 授权。
+
+验收：受影响 SDK／Agent Server 主回归 364 passed；真实 Uvicorn HTTP／WebSocket
+受控 LLM 回归 5 passed。覆盖 429 无执行副作用、稳定事件去重与冲突、准备／投递中
+失败、并发准备、取消写入围栏、重载／未知响应、已删除身份及调度未启动恢复。
+11 个受影响 Python 文件的 Ruff format／lint、PEP8、Pyright、动态属性／导入规则和
+Tool 注册 pre-commit 全通过。独立真实 Agent Server 的 F35.prepare 检查通过，含认证
+doctor、准备／查回／重试、409 运行门禁、实际进程重启及删除后拒绝重建；在上述已提交
+SDK HEAD 上重跑同一 recipe 通过，测试服务已停止且无残留受管进程。真实模型
+F35.release 因无 DEEPSEEK_API_KEY 记录 blocked，不能将受控 LLM 回归当作真实模型
+验收，后续 FR-717 仍须补齐。feature-map check 通过，三个新路由均已归属并有驱动；
+全局 coverage 仍有既存 activity／context 两条未归属路由，不宣称全图通过。
+
+FlowWeave 本片只更新设计和进度，无迁移；唯一 Alembic head 仍为
+0174_agent_workspace_user_defaults。source lock／归档／镜像仍固定 `ecf0aec09`，最终
+扩展归档与 V3 消费由 FR-709 冻结；未更新包版本、TypeScript 发布客户端 schema 或旧
+V1／V2，未接入平台／Web 产品入口，未部署、推送或替换已有 Runtime。当前 NONE，
+下一可执行切片 FR-706，提交后停止。
+
+### FR-706 原生子 launcher 调用身份与权限策略 — DONE
+
+依赖：FR-718 DONE。建立可信原生 action／tool-call 关联、直属关系、shared 隔离、
+一层深度及并发门禁；Runtime key 不能单独授权任意父 binding。
+
+实现：SDK baseline 提交 `2cf2bd7bdcd7a624d38aca7d5a9082199fbb46f5`。新增正式
+`start_governed_child_conversation` Tool，模型只提交 task／title；旧同类工具及无受治理
+配置的旧 children／preparation 默认契约保留。原生 Agent 单次执行边界绑定当前
+ActionEvent／Conversation，executor 按正式 action ID／tool-call ID 生成稳定 creation，
+以独立于 Runtime key 的 Cipher 签发十分钟 scope／generation／Manifest／audience／
+任务摘要证明。新增正式 launcher/verify 路由，按父正式配置、原生事件及当前分支祖先
+关系复核；无证明、伪造、跨父、generation 变化或废弃分支拒绝。过期 token 只能恢复
+已预留身份，不能首次准入；token 沿用 SecretStr、正式 serializer 与脱敏，不回显错误正文。
+
+prepare／release 接收可选 launcher_token；受治理父必须提供，旧请求无新配置时仍兼容。
+父生命周期与跨进程非等待锁串行准入，按持久回执与正式状态最多允许三个创建中／活动
+子会话，超限 429 不预留新身份，重试复用既有名额；删除未完成不提前释放。受治理子
+去掉新旧创建工具并重建独立执行器，服务端同时拒绝孙会话及绕过 immediate／通用 parent
+创建入口。release 核对最初受理的调用身份和策略。verifier 只证明原生来源，平台仍须
+在 FR-711 按父 binding 解析用户／宿主，校验 active generation、Manifest 和操作权限；
+本片不把 Runtime key 或原生验签成功等同于平台授权。
+
+验收：SDK／Agent Server／并行分发／旧 children 受影响主套件 354 passed，含新增八项
+原生来源、伪造／任务变化／跨父／generation／废弃分支、准备与释放门禁、深度、并发、
+服务重载配额、过期恢复和 Runtime key fallback 拒绝回归。三项真实 Uvicorn HTTP 回归
+通过，覆盖带 Runtime 认证的 verifier／prepare／release／旧入口拒绝，以及原准备释放
+和旧 fresh-workspace 创建兼容。12 个 Python 文件 pre-commit（Ruff format／lint、PEP8、
+Pyright、动态属性、导入及 Tool 注册）通过；diff 检查通过。测试临时目录受 Git ceiling
+隔离，避免夹具误认当前仓库为待测工作区。
+
+verify-agent-server 独立进程 F35.launcher recipe 通过，实际认证、prepare／旧入口拒绝、
+重启后仍拒绝、无子会话副作用均有证据；在上述已提交 SDK HEAD 上重跑亦通过，测试
+服务已停止且无残留受管进程。真实模型原生 launcher 调用
+因无 DEEPSEEK_API_KEY 记录 blocked，受控原生 dispatch／HTTP 不能代替真实模型验收，
+仍留 FR-717。feature-map check 通过，新增路由已归属且有驱动；全局 coverage 仍有既存
+activity／context 两条未归属路由，无重复归属或未驱动新路由。
+
+FlowWeave 仅更新设计与进度，无迁移，Alembic 唯一 head 仍为
+0174_agent_workspace_user_defaults。source lock／包／镜像维持 FR-704 的 `ecf0aec09`，
+最终扩展冻结与静态 V3 消费由 FR-709 完成。未开放产品入口、未推送、部署或替换现有
+Runtime；当前 NONE，下一可执行 FR-707，提交后停止。
+
+### FR-707 原生子 list read wait 工具 — DONE
+
+依赖：FR-706 DONE。实现正式直属子查询、事件／最终结果分页及最多 30 秒的可取消
+等待；只认正式身份，不自动唤醒已结束父会话或将截断结果标成完整读取。
+
+实现：SDK baseline 提交 `66ccd2da020d75155169b6938f7aa8a2d65b0278` 新增三个正式
+Tool、typed query／响应及 queries/verify、queries 两条正式路由。工具冻结父策略与可信
+access_url，按原生 action／tool-call 和所有查询参数签发专用用途 token；验证当前分支、
+冻结 scope／generation／Manifest／audience，再校验目标原生 parent、确定性 child ID、
+创建回执、受理策略及 shared 目录。子会话移除父查询工具；仅 Runtime key、跨父／跨子
+cursor、伪造 token、参数变化或非直属目标均拒绝，异步返回前复核权限与关系。
+
+list 使用 UUID keyset 分页，每页至多 50 条，标题超 256 字符显式标记。read 从正式 HEAD
+沿分支从新到旧读取，返回进度身份／工具元数据与正式 assistant 文本；results 只读后者，
+不导出系统／用户消息、工具参数／正文或隐藏推理。每页扫描至多 100 个事件、返回 50 条
+摘录和 12000 个 Unicode 文本字符；正文用正式 event ID 和字符 offset 续读，页／摘录
+分别标记完整性。游标绑定 scope／generation／child／mode／HEAD，HEAD 变化返回 409
+要求重读。wait 比较正式状态／HEAD 等 checkpoint，最多 30 秒，超时是正常结果；父
+cancellation 关闭 HTTP 请求，断连取消服务端任务，不运行或中断任何父子会话、不取
+child run-slot、不激活已关闭子 EventService，不建立平台轮询执行器。
+
+真实原生工具 HTTP 回归暴露父 run lock 的自等待，已修复 queries 与 FR-706 launcher
+verifier／准备配置检查：校验读取不可变正式事件与冻结配置，子查询读取原子持久状态，
+不等待正在执行的父／子工具持有的 state lock；身份／分支／关系仍在返回前复核。
+
+验收：受影响 SDK／Agent Server／并行分发／旧 children 主回归 360 passed；最终冻结
+配置标准化修正后，14 项原生调用与查询回归全部复验通过（已含主套件，不累加）。新增
+六项覆盖 Unicode 分段还原、完整性／扫描预算、跨子游标／伪造／未知目标、HEAD 变化、
+等待变化／超时／取消、等待中撤销、父取消关闭 HTTP、keyset 翻页和关闭子会话只读。
+三项真实 Uvicorn HTTP 回归通过，含受控 LLM 实际调用原生 list 工具，经认证 HTTP 得到
+正式 observation 后正常结束，以及既有 launcher 拒绝与 prepare／release 兼容。八个
+受影响 Python 文件 pre-commit（Ruff format／lint、PEP8、Pyright、动态属性、导入和
+Tool 注册）及 diff 检查通过。
+
+verify-agent-server 独立进程 F35.queries recipe 通过，覆盖两个新路由的无证明拒绝、
+30 秒上限校验、实际进程重启后仍拒绝及无子会话副作用；在上述已提交 SDK HEAD 上
+重跑亦通过，测试服务已停止且无残留受管进程。真实模型 list／read／wait 因
+缺少 DEEPSEEK_API_KEY 记录 blocked，受控 LLM 和拒绝探针不代替真实模型验收，仍由
+FR-717 补齐。feature-map check 通过，两个新路由均有归属和驱动；全局 coverage 仍有
+既存 activity／context 两条未归属路由，无重复归属或未驱动新路由。
+
+FlowWeave 仅更新设计和进度，无迁移；Alembic 唯一 head 仍为
+0174_agent_workspace_user_defaults。source lock／包版本／镜像保持 FR-704 的 `ecf0aec09`，
+最终扩展归档及 V3 消费由 FR-709 冻结。未开放平台／Web 入口、未推送、部署或替换
+已有 Runtime；当前 NONE，下一可执行 FR-708，提交后停止。
+
+### FR-708 原生子 send interrupt 与输入并发 — DONE
+
+依赖：FR-707 DONE。实现父工具正式投递／中断、来源关联、稳定 invocation 幂等和
+原子忙碌门禁；用户与父 Agent 竞争不重复写消息，不建立平台执行／消息队列。
+
+实现：SDK baseline 提交 `3a4f5f1f61082430e8a2ccf8d59e52c9f4eab5dc`。新增正式
+send_child_conversation_message／interrupt_child_conversation Tool、typed command／
+invocation／响应及 commands/verify、commands 路由；专用 token 绑定正式 action／tool-call、
+全部命令参数、父冻结策略和可信 access_url。复用 FR-707 分支／scope／直属身份验证，
+子会话不继承两工具；仅 Runtime key、跨父／未知目标、篡改内容均拒绝。平台用户与
+active generation 的复核继续由 FR-711 接入，原生验签不单独授予平台操作权限。
+
+受治理 child 用户发送通过原生 events 路由追加 submission_id 和 run=true，返回正式
+event_id；父 command UUID 与用户 submission UUID 在 child 内确定稳定输入事件 ID。
+普通旧会话请求／响应保持兼容。用户／父 send 与 run／pause／interrupt／condense 共用
+原生输入锁，goal 输入路径对受治理 child 明确拒绝；运行中或等待确认等不可写状态返回
+409，不排队、不自动 interrupt，不触发 ACP supersede。先准入 RunSlot 再落消息，429
+无新消息副作用。重试匹配原正式事件及正文／来源，已执行轮次不再启动；仅当前 HEAD
+恰为未启动输入且原生 idle／paused 的恢复窗口可补启动。请求取消仍等写入与调度收口，
+保持原生围栏。首条交办和后续父 send 均保留 user role，MessageEvent 的正式可选
+parent_instruction 记录父、action／tool-call 及冻结策略，旧事件不新增空字段。
+
+父 interrupt 使用原生中断并先持久写入受 lease 保护的控制回执，只保存命令来源、原目标
+input／HEAD 和原生事件身份，不保存正文或形成执行队列。实际 InterruptEvent／同步
+fallback PauseEvent 带稳定 ID 和同一来源，线程锁保护待写来源。原生调用返回后，等待
+run 收口五秒未完成则 pending=true、同 ID 对账；同步 fallback 沿用原生 cooperative pause，
+可先等待当前工具退出，期间保持输入围栏。已完成／效果已落盘的重试仅查回，待完成回执
+发现新用户轮次时不再中断，避免迟到请求停止新输入。故障和取消恢复保留原身份。
+
+验收：主套件 369 passed，含新建九项命令回归与既有父子准备／查询／执行／并行分发。
+覆盖用户与父输入竞争、容量无副作用、来源及初始任务来源、写后失败、正文冲突、伪造／
+跨父／未知目标、正式异步中断、旧中断不影响新轮次、丢失确认、用户重载重试与取消围栏。
+真实 Uvicorn HTTP／WebSocket 定向六项通过；新增完整受控 LLM 链路由原生工具生成
+launcher 证明并通过正式 prepare／release 创建 child，再验证父 send、用户稳定 ID 重试
+和父异步中断，正式事件均核对来源；同服其他五项旧行为回归通过。线程来源保护最终
+调整后，九项命令及该真实 HTTP 用例共十项复验通过，已含上述套件，不累加计数。
+十八个 Python 文件 pre-commit（Ruff format／lint、PEP8、Pyright、动态属性、导入和
+Tool 注册）及 diff 检查通过，未将受控 LLM 记为真实模型成功。
+
+verify-agent-server 的 F35.commands 独立进程 recipe 通过，两个新路由拒绝无正式证明
+的 send／interrupt，非法命令形状 422，实际重启后仍拒绝，普通父无新增 child；在上述
+已提交 SDK HEAD 上复验亦通过，测试服务已停止且无残留受管进程。真实模型
+父指令／中断因缺 DEEPSEEK_API_KEY 记为 blocked，仍由 FR-717 补齐。feature-map check
+通过，两个新路由均有归属和驱动；全局 coverage 仍有既存 activity／context 两条未归属
+路由，无重复归属或未驱动新路由。
+
+FlowWeave 只更新设计和进度，无数据库迁移，唯一 Alembic head 仍为
+0174_agent_workspace_user_defaults。source lock／包版本／镜像仍固定 FR-704 的 `ecf0aec09`，
+本片不改 V1／V2、发布客户端 schema 或既有 Runtime；最终扩展归档与 V3 消费由 FR-709
+冻结。未开放平台／Web 入口、未部署、推送或替换运行时。当前 NONE，下一可执行 FR-709，
+提交后停止。
+
+### FR-709 子会话扩展归档与 V3 冻结兼容 — DONE
+
+依赖：FR-708 DONE。冻结最终 SDK 扩展 commit／归档／digest 与 ToolSet／策略 Manifest，
+注册 V3 adapter 和追加式允许值迁移；V1／V2 与旧 Runtime 请求形状保持兼容。
+
+完成（2026-10-27）：最终 SDK 来源固定为
+`3a4f5f1f61082430e8a2ccf8d59e52c9f4eab5dc`，四包维持 1.58.2，upstream anchor 不变。
+完整 commit 归档 SHA-256 为
+`f63ecb0d046c1a6a20e39540c1cb6b37570c105c788916b782bc76c5881b3846`；source lock、
+provenance、平台身份、Docker 构建输入与可执行探针同步，旧归档保留。SDK baseline 本片
+没有追加源码变更；归档、安装和固定 commit 的 536 个 Python 文件逐字节一致。
+
+新增静态 OH_FW_V3 adapter／契约及 `oh-fw-child-v1` 能力 Manifest，冻结六个父工具、
+shared／一层／三个活跃子、正式分页预算、稳定提交、prepare-release 和父使用说明。
+能力摘要为 `c50549595d98880f44c2f97edd7fed834c8ebef83ff67aa6f7e4fb9eaf3320a1`。
+V3 契约显式要求八个 native method/path，Environment 门禁同时核对 source commit／
+archive／四包／Manifest，缺少身份或能力时拒绝。新构建和恢复发布仅在实证来源吻合时
+声明能力；选择 V3 的新 Snapshot 冻结同一能力文档，五处 Snapshot 编译入口均传入其
+Environment 的冻结 profile。工具编译仅接收宿主授权后的身份与可信 URL，实证可由归档
+中的六个正式工厂解析；本片不自动安装父工具，FR-711 负责两宿主接入及绑定凭据。
+
+V3 继承 V2 原生 timeout／Task 边界及既有普通消息 429 恢复路径；独立 child 的原子
+submission/send 入口继续留 FR-712。V1／V2 的 adapter、默认 profile、请求形状及
+Snapshot 字段不变，未更新已有发布记录、Runtime 镜像／generation 或 SDK 发布 TS schema。
+新增 0175 只追加三表允许值；downgrade 锁住三表并禁止 RLS 隐藏检查，逐表发现 V3
+即拒绝，不重写历史 profile。唯一 Alembic head 为 0175_add_oh_fw_v3_protocol_profile。
+
+验收：平台 adapter／冻结 contract／V1–V3／来源主套件 268 passed；最终五项 child
+contract 与一项真实 PostgreSQL 迁移回归全部通过（其中三项已含主套件，不累加）。
+Snapshot／能力定向套件 15 passed（含上述三项）；构建架构定向两项通过。真实 PostgreSQL
+临时容器完成全迁移链到 0175；独立迁移回归验证三张表各自含 V3 时阻止回退、旧 V1／V2
+行保留、清空测试 V3 后可回退且再次拒绝 V3。离线 upgrade／downgrade SQL 亦通过。
+全部操作只在本片临时测试资源，不迁移业务数据库。
+
+扩展 Environment 套件 40 passed／11 failed，修改前 HEAD 同批为 39 passed／11 failed；
+多出的通过项是新迁移用例，失败集合完全一致。宿主／replacement／持久化／逐步端口套件
+105 passed／18 failed，与修改前 HEAD 同批通过数及失败集合完全一致。既存失败涉及旧
+provider／workspace／Settings 夹具、显式身份缺失和列表排序预期，不能称扩展全套通过。
+未修改既存失败的断言或业务逻辑掩盖结果。
+
+独立 frozen 依赖环境通过 pip check、正式 fetch_source 归档校验、四包安装及完整可执行
+contract（含六个原生 child 工厂、八条路由、shared-only、稳定提交／来源字段），未调用模型。
+实际 FlowWeave Tool.params 编译结果经归档的 native resolve_tool 解析，未产生事件／run。
+本片没有构建新镜像；完整 Runtime／真实模型／双宿主业务门禁继续由 FR-717 完成。
+新增模块 Pyright 零错误，受影响旧模块七项诊断与 HEAD 逐项相同；新增及受影响 Ruff
+检查除六条原有长提示词 E501 外通过，源码 AST、diff、来源一致性与状态／依赖核对通过。
+所有临时环境／证据在 `.tmp/fr709/`，测试容器由 fixture 清理；未推送、部署、开放产品
+入口或替换已有 Runtime。当前 NONE，下一可执行 FR-710；提交后停止。
+
+### FR-710 子会话关联 RLS 与普通入口隔离 — DONE
+
+依赖：FR-709 DONE。新增用户隔离关系和唯一约束，维护强制 RLS 与表清单；两宿主
+校验直属身份，普通列表／置顶／活动／搜索及主会话路由不暴露 child 独立入口。
+
+完成（2026-10-27）：新增用户隔离 `agent_child_conversations` 关系与 0176 追加式迁移，
+登记 `_USER_ISOLATED_TABLES`、模块及兼容 ORM 导出。仅保存父子 locator、宿主／scope／
+Runtime、原生创建调用身份、generation／Manifest 受理审计和创建时间，不保存任务正文、
+事件树、执行状态或明文凭据。唯一约束保护 child、多父、creation 和 invocation；强制 RLS
+同时提供 USING／WITH CHECK。数据库触发器按稳定顺序锁住两端，复核 owner／宿主／
+scope／Runtime／原生 ID／shared 目录及版本，拒绝自关联、孙会话、临时聊天和门禁 sidecar。
+关系及绑定身份不可变，子不持有 NodeRun／Attempt；并发 A→B 与 B→C 只能受理一条关系。
+回退持锁并禁止 RLS 隐藏，非空关系明确拒绝；不清空关系以掩盖仍存在的子会话。
+
+新增共享直属关系／正式 native 身份比对服务；当前用户、已授权 host context 和正式父子 ID
+共同约束读取，trusted tenant bypass 也不能替代显式 owner 校验。`accepted_generation`
+仅是原受理审计，后续请求仍须经 active generation fence，FR-711 负责实际原生调用和治理。
+普通列表／分页／置顶／排序／管理／活动、搜索扫描与已保存命中均在 SQL 中排除 child。
+普通按 binding 访问、创建／bootstrap 幂等重放、fork、历史引用及工作区文件／终端不能
+复用 child。工作区及 FlowRun 主路由在校验用户与宿主后返回已授权父 binding；共享 Web
+组件只构造当前宿主的父路由并 replace，不打开子标签，迟到响应不能改变新选择。
+父删除和记录清理在原生调用前拒绝仍有关系的 binding；逐子可恢复清理继续由 FR-713 接入。
+
+验收：最终父子关系／历史／用户隔离套件 72 passed、2 skipped，其中关系用例使用
+真实独立 PostgreSQL，覆盖两宿主、跨用户／宿主／Runtime／目录、ORM trusted bypass、
+非特权角色 RLS 读取及越权写拒绝、唯一性、一层并发、绑定漂移、普通入口拒绝、搜索、
+原生删除前门禁及实际迁移回退拒绝／清理后回退重升。全迁移链到 0176、离线 upgrade／
+downgrade SQL 与唯一 head 检查通过。SQLite 历史夹具仅补建空关系表，不能代替上述 RLS 验收。
+
+扩展旧套件初次 170 passed／102 failed／2 skipped；修改前 HEAD 同批为
+171 passed／101 failed／2 skipped。新增失败来自历史锁测试替身的查询假设，已将过滤
+合入原 SQL 以保持原锁范围和查询次数，并定向通过。随后按基线精确排除原 101 项既存
+失败，171 项此前通过用例全部复验通过、2 skipped；这不是扩展全套通过。既存失败
+涉及旧模型／Runtime／Workspace／Settings 夹具和已有授权／排序预期，不在本片修改。
+
+Chromium 四项定向验证通过：Workspace、嵌入式定时会话及 Flow Node 的子主路由回父，
+以及迟到子拒绝不跳离用户的新会话；断言无 child hydration／写入或侧边聊天打开。首次
+Node 夹具缺少 workspace scope、迟到夹具误拦 HTML 导航，均已修正夹具并复验，不计作
+产品故障或原生端到端成功。Web typecheck／受影响 ESLint、新模块及 ORM Pyright（零错误）、
+受影响 Ruff／AST、diff 与任务依赖／状态检查通过；旧文件 E501 只保留 HEAD 已有提示词／
+文件逻辑长行。本机仅按既有 pnpm lock 补装依赖，锁文件未改。测试证据在 `.tmp/fr710/`，
+测试容器／自建角色和本片 Vite 已清理或停止。
+
+未改 SDK／source lock／Runtime 镜像，不调用真实模型，不部署、推送或替换 Runtime。
+尚未开放子创建、续聊或浮卡入口；专用入口与完整两宿主／原生验收仍按后续切片执行。
+当前 NONE，下一可执行 FR-711；提交后停止。
+
+### FR-711 原生子创建 HTTP 适配与治理核对 — DONE
+
+依赖：FR-710 DONE。原范围跨 Runtime transport、父工具装配／调用鉴权及子准备／凭据／
+释放恢复，拆成可独立验收的 FR-711、FR-719、FR-720。本片只实现静态 V3 的正式
+launcher verifier、prepare／read／release 和配置核对适配，保留原生幂等／门禁及错误语义；
+不注册平台入口、不安装父工具、不预留产品子 binding，不表示两宿主创建已可用。
+
+实现：新增共享 typed request／invocation／receipt／preparation／公开配置 DTO，RuntimePort
+和 OpenHands adapter 消费正式 verifier、prepare／read／release 及完整配置读取。仅显式 V3
+可用；未声明 profile、旧 V1／V2 和 Mock 在 HTTP 前拒绝。核对正式父／creation／child
+身份、原生 UUID5 不变量与 exact task 摘要；只有 reconcile 的真实 404 返回不存在。
+明确拒绝状态沿用原生 401／403／404／409／422／429；超时、连接中断、5xx 和不可信写响应
+保留结果未知。prepare 不自动 release／run，失败不重试、不新建 UUID；错误不回显 task／
+token／响应正文。配置按正式公开 Agent 文档核对，不能把脱敏相等当作凭据治理完成。
+原生 verifier 未导出 SDK 的 creation_id property，适配明确不提供猜测字段，后续 FR-720
+必须通过正式 native 事实解决受管入口的创建身份来源。
+
+验收：定向 child transport／V3／既有 OpenHands adapter 与 Runtime contract 共 **354 passed**，
+包含一项独立原生进程真实 TCP 回归。该进程使用固定 source commit
+`3a4f5f1f61082430e8a2ccf8d59e52c9f4eab5dc` 的非 editable 四包 1.58.2，启动前复核归档
+SHA-256 及全部 536 个安装 Python 文件一致；实际原生父工具签发证明，完成 verifier、
+prepare、同 UUID 重试／查回、公开配置核对、未释放 409、首轮 release／重复 release 与
+正式单条用户／assistant 事件验证，shared 目录没有新建 .git。只替换 LLM completion，
+不调用真实模型，也没有接通产品 launcher；子进程正常停止，无 Runtime 镜像替换。
+
+受影响 Ruff check／format、diff 与任务状态／依赖核对通过。新增 DTO Pyright 零错误，
+base／mock／openhands 三文件与提交前 HEAD 的 47 项既存诊断按文件／消息／规则逐项相同，
+零新增；不能宣称整个 legacy 模块严格类型检查全绿。Alembic 唯一 head 保持
+`0176_agent_child_conversations`，无迁移；证据位于 `.tmp/fr711/`。
+未改 SDK／source lock／Runtime 镜像或 Web，不部署、不推送；两宿主创建、授权、凭据治理
+仍由 FR-719／FR-720 完成。当前 NONE，下一可执行 FR-719；提交后停止。
+
+### FR-719 两宿主父能力冻结与 launcher 调用授权 — DONE
+
+依赖：FR-711 DONE。按父 binding 冻结原生工具／使用说明／策略与可信地址，接入两宿主
+新建父会话配置和只接受 native invocation 的受管入口；校验用户、宿主、active generation、
+Manifest／audience 和版本。不升级 V1／V2 或既有会话；未知源码／旧 Runtime 拒绝。
+
+实现：0177 为 binding 追加可空 `child_parent_manifest_json`，历史 NULL 不回填。
+新 PROVISIONING 父绑定冻结 source／archive、能力 Manifest、Runtime Manifest／摘要、
+image digest、用户／宿主／scope／父 UUID、Runtime Session／generation 和三个可信目标 URL；
+复用 binding 用户隔离和 RLS。数据库 trigger 禁止旧 ACTIVE 记录升级、冻结内容或其身份
+漂移；保留标题／未读／lifecycle 更新，存在冻结记录时拒绝 downgrade。
+
+Agent Workspace 默认仍为 V1，仅显式 `AGENT_WORKSPACE_RUNTIME_PROTOCOL_PROFILE=OH_FW_V3`
+的新父会话装配能力；实际创建通过固定来源／版本／路由契约握手，旧镜像不能凭配置获得能力。
+FlowRun 使用冻结 Environment profile 与 Snapshot 摘要，覆盖手动创建、bootstrap 和自动启动
+Worker；Worker 校验 lease 后提交冻结配置，再释放事务并调用 native start。六个原生父工具
+通过正式 `tool_module_qualnames` 加载，模型只有 native 工具定义允许的参数；使用说明来自
+固定能力版本。临时 sidebar 显式关闭装配，gate-sidecar／child 不得成为父。
+
+新增精确 UUID 的受管 `/api/v1/agent-child-launchers/{owner}/{binding}/start`，仅此入口独立于
+浏览器 cookie 登录；必须核对当前资源派生的 Runtime key、仍有权限的活动用户、ACTIVE 普通
+父 binding、宿主／目录／generation／镜像，FlowRun 还核对未取消 Attempt、未终结 Run、原
+Snapshot 与 V3 connection。短 DB 授权 → 不持有 DB Session 的正式 native verifier → 新 DB
+复核，再比对全部 policy 和精确 audience；原生 key 本身、自填 claim 或 cookie 都不能授权。
+错误与请求格式拒绝不回显 task／token，256 KiB 上限，用户停用／权限撤销／删除／替换
+发生在验证期间也拒绝。配置入口通过显式可信基址生成，不从 Host／模型／public URL 猜测。
+本地 env example 与 Compose 只增加默认关闭的配置传递，未操作任何远端配置。
+
+边界：授权成功仍返回明确 `AGENT_CHILD_CREATION_NOT_ENABLED`，不伪造回执或调用 prepare／
+release；实际创建／凭据／恢复留给 FR-720，queries／commands 平台入口留给 FR-712。
+新 V3 父能力会话的 fork 和需要换 native ID 的旧恢复旁路明确拒绝，避免 native fork 复制
+原父 UUID 的 resolved policy；旧普通会话不受影响。replacement 后旧 generation 不能自动
+获得新授权，正式重绑定／继承需要后续单独实现，不能改写不可变 Manifest 绕过门禁。
+
+验收：两宿主授权／关联／历史主套件 **162 passed、2 skipped**，含真实 PostgreSQL 全迁移
+upgrade、0177 downgrade 非空拒绝与空表回退重升、旧 binding 保持 NULL、原生证明字段
+错配、root／其他 key／cookie 拒绝、权限／generation／Snapshot 漂移、冻结触发器和两项真实
+TCP 探针。两项探针使用同一固定 source commit `3a4f5f1f61082430e8a2ccf8d59e52c9f4eab5dc`
+独立安装的四包 1.58.2，每次复核归档 SHA-256 及全部 536 个 Python 源码一致；真实 native
+父工具／ActionEvent → 实际平台 HTTP → native verifier → 平台复核 → 显式创建门禁。
+completion 为受控 LLM，容器挂载与 FlowRun 物理连接由夹具提供，不当作实际 Runtime 镜像
+或真实模型全链路验收。进程正常退出，无遗留监听。
+
+适配器／V3／旧协议定向回归 **359 passed**。补充 Worker 持久化与无持有事务检查通过；
+其两项定向运行含一项已在主套件的迁移用例，新增一个不同 Worker 用例，不重复累计。
+旧 Workspace 四项相关用例为 1 passed／3 failed，已在提交前 HEAD 重跑，失败集合完全相同，
+均为既存无用户 principal 夹具问题；新增真实 binding 的 Workspace 装配开／关用例均通过，
+不宣称旧宿主测试全套通过。新增模块 Pyright 零错误，八个受影响既有模块的 340 项原有
+诊断与 HEAD 逐项相同、零新增。受影响 Ruff、变更函数格式、Compose YAML 解析、diff、
+任务状态／依赖核对通过，Alembic 唯一 head 为 `0177_agent_child_parent_manifest`。
+证据保存于 `.tmp/fr719/`；未改 SDK／source lock／Runtime 镜像或前端，未部署、推送、
+替换 Runtime 或调用真实模型。当前 NONE，下一可执行 FR-720；提交后停止。
+
+### FR-720 原生创建身份与准备凭据冻结 — DONE
+
+依赖：FR-719 DONE。原计划包含原生契约修正、不可变归档／静态适配和产品两宿主恢复，
+按独立验收边界拆分。本片只补正式 HTTP 创建身份投影与 prepare 时的绑定级凭据／MCP
+隔离覆盖，将覆盖写入原生加密不可变计划，证明 reload 与部分初始化恢复不会回灌父凭据。
+旧 verifier／prepare／release、V1／V2／V3 固定契约不改；不开放产品创建或更新 source lock。
+
+实现：SDK `baseline` 提交 `b9f976b2ca05b947ee28eb34ebe590ff0409307f`。
+新增 POST `children/launcher/resolve`，由原生 verifier 返回 invocation 与正式
+parent／creation／child identity，类型校验二者相符；不改变旧 verifier 的 HTTP JSON。
+新增 POST `children/preparations/{creation_id}/governed`，接收正式 overrides：governance UUID、
+移除 secret 名、替换的原生 SecretSource、移除 MCP server 名。初始化前同时剔除 AgentContext
+secret 种子、调整 StoredConversation secrets 与 Agent MCP 配置，再创建原生 registry；
+不解析 source，不改变普通未选中凭据或 LLM key。受管子配置移除六个父工具和旧 launcher，
+重验 Agent 丢弃父实时 executor。覆盖只处理平台显式选定来源，不宣称自动清除任意嵌入秘密。
+
+覆盖与最终 Agent／StoredConversation 在初始化前写入完整加密不可变计划，同 creation 的
+覆盖改值、改治理 UUID、遗漏或移除列表变化一律 409；原生 reload 和 base_state 已写但 meta
+未写的恢复均复用原计划。受管计划丢失或不一致时 prepare／release 拒绝，准备阶段没有首条
+用户消息。旧 gate／preparation／plan 未配置治理时省略新增字段，旧路由和立即 children
+语义保留。新路由沿用 native 认证／证明，UUID 是配置身份，不是用户／资源授权。
+
+验收：定向原生套件 **366 passed**，其中 14 项新治理测试和正式身份／旧形状回归；另有
+**2 passed** 的真实 Uvicorn HTTP／受控 LLM 回归，核对 resolve、旧 verify 相等、governed
+prepare、首轮 release、后续发送与 interrupt。最初三项 Git 目录失败由 `.tmp` 位于 FlowWeave
+仓库内触发；设置本轮临时根的 GIT_CEILING_DIRECTORIES 后三项独立复测及全套通过，未改生产
+Git 行为。受影响九个 Python 文件的 Ruff／PEP8／Pyright、动态属性／依赖／注册检查通过。
+
+`verify-agent-server` CLI 独立进程完整 F35 为 **5 pass／1 blocked**；最终提交再重放本轮两个
+新路由的治理及拒绝配方，并记录真实模型 release 为 blocked。实际 prepare／GET／相同与
+变更覆盖重试／原生 409／重启／registry 和 MCP／加密落盘／删除后拒绝重建均已验证；非法
+resolve proof 为 403。全部 run 均 doctor 后驱动并停止，只操作本轮所有进程。完整配方首次
+执行暴露旧 release 的行内 Needs 未被 CLI 识别，导致模型前置条件未门控；保留失败证据并修为
+独立 Needs 行，最终运行明确 blocked，不把受控 LLM 或不可达 provider 当成真实模型成功。
+缺少 DEEPSEEK_API_KEY／LLM_API_KEY，模型驱动 resolve 成功及真实首轮执行继续作为 FR-717
+门禁。新两条 route 均有唯一 owner 和可执行 recipe；map check 为 35 文件／956 ID 通过。
+全局 coverage 仍有既存 activity／context 两条未归属，不能宣称全图覆盖通过。
+
+证据位于 `.tmp/fr720/`；SDK 忽略的 generated build 已原样恢复。Alembic 唯一 head 保持
+`0177_agent_child_parent_manifest`，本片无迁移。FlowWeave source lock 仍固定
+`3a4f5f1f61082430e8a2ccf8d59e52c9f4eab5dc`，没有重解释 V3／旧 Manifest、修改镜像、
+平台／Web 产品入口或任何远端。FR-721 冻结新增能力版本和静态契约，FR-722 接两宿主预留／
+凭据重签／恢复并解决首轮 PROVISIONING 授权时序；FR-712 依赖 FR-722。当前 NONE，
+下一可执行 FR-721；提交后停止。
+
+### FR-721 子创建治理扩展归档与静态契约冻结 — DONE
+
+依赖：FR-720 DONE。归档本片新 native 扩展，以新增能力版本／静态 profile 消费身份和
+准备覆盖；保留 FR-709 原有 V3 来源／Manifest 和既有记录，不重解释已冻结版本。
+
+完成（2026-10-27）：SDK 来源固定 `b9f976b2ca05b947ee28eb34ebe590ff0409307f`，
+完整 commit 归档 SHA-256 为
+`4f53a19445c7c5cfabe022414dd33942fc3c086b0be5b60fd87e9fa0ccc5899f`；四包仍为 1.58.2，
+upstream anchor 不变。source lock、provenance、Docker COPY／build SHA、平台 current 身份与
+可执行探针同步；旧归档保留，SDK baseline 无本片源码改动。归档的 537 个包内 Python 文件
+与固定 commit 逐字节一致，两套独立安装环境分别按对应归档验证旧 V3 536 个／新 V4 537 个文件。
+
+新增静态 `OH_FW_V4` adapter／schema 7，冻结原八条路由以及 resolve／governed 两条新路由；
+`oh-fw-child-v2` 能力摘要为
+`d7c28b472a8667139698ddcc10211d325514d12f50bc39c21ce3caa3154ad365`。固定正式创建身份、
+四个 overrides 字段、初始化前治理、加密不可变计划与相同配置重放；沿用六个父工具、shared／
+一层／三个活动子、查询预算与父使用说明。Environment 校验 source／ref／archive／完整四包／
+capability／timeout，构建与恢复发布只按实证来源声明对应能力；Snapshot 原编译入口冻结 V4。
+FR-709 的 V3 source／archive／schema 6／v1 Manifest 与摘要不改，两个版本互相拒绝；默认 V1。
+Workspace V3 创建／恢复使用固定 V3 身份作期望，不再误读构建基线 current，实际握手仍拒绝错误
+镜像。0178 只追加三张版本／Runtime 表的 V4 允许值，downgrade 持锁并禁止 RLS 隐藏，任一表
+有 V4 时拒绝，不改历史行。唯一 Alembic head 为 `0178_add_oh_fw_v4_protocol_profile`。
+
+RuntimePort／OpenHands adapter 增加独立 V4 resolve 与 governed prepare 方法，正式 DTO 校验
+返回的 parent／creation／child、调用不变量和精确任务摘要，不发明服务未返回的字段。
+覆盖当前仅投影平台所需的原生 StaticSecret，repr／普通 JSON 脱敏，请求边界展开；governed
+prepare 必须取得相同治理 UUID，read／release 保留 V4 回执。旧 V3 方法／线路形状保留，
+V1／V2／V3 对新操作在 HTTP 前拒绝，Mock 不伪造。没有自动 release／run／重试或改创建 ID。
+
+验收：契约／DTO／HTTP 边界主套件 **120 passed**；额外两项真实 PostgreSQL 迁移回归通过，
+其中旧 V3 回退也重新验证（三表逐一拒绝、旧值保留、清理测试新增值后回退并拒绝再插入）。
+**2 passed** 的独立原生 TCP 回归分别使用旧 V3 和新 V4 的固定归档／安装包；实际 native
+Tool／ActionEvent 证明 → resolve／verify → prepare／重放／read → 未释放 409 → release／
+重复放行 → 单条正式 user／assistant 事件，V4 还核对治理 UUID 与原生 registry。completion
+为受控 LLM，不计为真实模型成功；父工具不经过平台产品 launcher，不声称两宿主产品已开放。
+原生进程均正常退出。完整归档可执行探针、pip check、两个构建架构定向用例通过；没有构建镜像。
+
+扩展平台同顺序回归与修改前 HEAD 均为 **353 passed／9 failed／2 skipped**，失败集合逐项
+一致；九项分别独立重跑在两边均 **9 passed**，属于既存组合顺序下日志断言问题，不改断言掩盖，
+不宣称扩展全套通过。父能力定向套件另为 **97 passed／2 skipped**（与主套件重叠，不累计）。
+新 DTO／capability／profile Pyright 零错误，十个受影响旧模块的 102 项诊断与 HEAD 按文件／
+规则／消息逐项一致、零新增；不能称整个旧模块类型检查全绿。Ruff、语法、变更范围格式、diff
+检查通过；probe 原有动态导入 E402 和 runtime_config 六条原有提示词 E501 保持，不扩大格式清理。
+全迁移链由独立测试数据库实跑至 0178，离线 upgrade／downgrade SQL 和状态／依赖检查通过。
+
+证据在 `.tmp/fr721/`。未更新任何已发布版本／Snapshot／binding／generation，没有平台 V4
+父工具装配、两宿主子创建／恢复或前端改动；未调用真实模型、部署、推送或替换 Runtime。
+FR-722 必须再接 V4 父能力与用户／资源授权、预留、重签／禁用绑定凭据及首轮恢复；实际镜像、
+真实模型与两宿主故障链仍由 FR-717 验收。当前 NONE，下一可执行 FR-722；提交后停止。
+
+### FR-722 两宿主 V4 父能力与首轮授权 — DONE
+
+依赖：FR-721 DONE。原范围同时覆盖 V4 父能力、首轮调用时序和子创建治理恢复，按
+独立验收边界拆分。本片为两宿主新父会话追加 V4 不可变能力装配和正式 resolve 授权；
+受管 PROVISIONING 父仅在正式 native invocation 校验后可通过网关，创建前持久冻结、
+native I/O 前释放事务，避免首轮等待自身提交。旧 V3 不升级，仍不开放实际子创建。
+
+实现：新增独立 schema 2／V4 的 GovernedParentCapability，固定 FR-721 的 source／archive／
+v2 Manifest；保留原 schema 1／V3 的字段形状和来源。沿用 binding JSON 的不可变 trigger、
+用户隔离和 RLS，无迁移。新 Workspace 显式支持 V4、默认仍 V1，既有 binding 从冻结 profile
+恢复，不由当前设置升级。两宿主手动／bootstrap 与自动 Worker 装配相同六个正式 Tool；先
+校验版本能力，再复用不变的 Tool 参数编译器，native adapter 按固定 source 与八／十条路由
+契约识别 V3／V4，返回相应 handle。sidebar、gate、child、fork 和 replacement 的边界保留。
+
+V4 在 native create 前持久提交父 binding 与冻结能力；Workspace bootstrap 首轮 send 前也
+提交后续历史授权事务。Flow Node 两个创建入口同样结束事务；Worker／inline V4 在冻结后
+提交，附件准备后再核对 lease、提交再 start，避免父 Tool 等待自身首轮事务。原 V1／V2／V3
+不扩展此事务边界。网关只把 ACTIVE 或冻结 V4 的 PROVISIONING 父视为候选，旧 V3
+PROVISIONING 和 FAILED／DELETE_PENDING 均拒绝；候选仍先核对用户、宿主、资源派生 key、
+Snapshot、image、generation。释放数据库会话后 V4 调正式 resolve，V3 保持 verifier，再在
+新事务中重新授权，严格核对 policy／audience 和 DTO 版本；裸 invocation 不能通过 V4。
+创建中转 ACTIVE 的正常推进不改冻结能力，撤权／删除／取消／replacement 期间的变化拒绝。
+
+验收：父能力及授权用例分批共 **149 个不同用例通过**：首批 **139 passed／4 skipped**，
+后补六项独立入口／版本切换用例 **6 passed**，四项原生 TCP **4 passed**（对应首批 skip，
+不重复累计）。覆盖 V3／V4 冻结互不改写、候选 lifecycle、用户撤权、generation／镜像漂移、
+Runtime-key-only／cookie／伪 proof 拒绝、前后独立数据库阶段及显式创建门禁。Workspace、
+Flow Node 手动／bootstrap、leased／inline Worker 均验证 native I/O 前无事务，独立数据库
+会话可读已冻结 PROVISIONING 父。真实 PostgreSQL 全迁移链仍到唯一 head 0178。
+
+四项 TCP 使用两宿主 × 两个固定原生归档／四包安装，复核旧 536／新 537 个 Python 文件；
+真实 native Tool／ActionEvent → 平台 HTTP → native verifier／resolve → 平台复核。V4 保留
+PROVISIONING，断言首次 Tool 调用期间就完成实际授权，并按正式 action id 关联；之后仍只
+返回 AGENT_CHILD_CREATION_NOT_ENABLED，关系表无 child。不是靠执行结束后的重放冒充首轮
+成功。加强测试观察时曾因观察器离开 tenant_user 后再次读 RLS 表取得 None，已仅为观察读取
+补齐租户范围并复验；授权实现未绕过 RLS。completion 为受控 LLM，物理连接由夹具提供，
+不声称实际 Runtime 镜像或真实模型全链路。原生／网关进程正常退出，证据位于 `.tmp/fr722/`。
+
+另有 **120 passed** 的 DTO／原生 HTTP 边界／V3–V4 契约回归，旧 adapter 创建／启动／工具／
+profile 定向 **18 passed**。两个父授权模块 Pyright 零错误，六个受影响既有模块的 337 项诊断
+与修改前 HEAD 按文件／规则／消息逐项相同、零新增；不能宣称旧模块严格类型检查全绿。
+受影响 Ruff、变更函数格式、Python AST、diff、任务状态／依赖及 head 检查通过。SDK、source
+lock、Manifest digest 和归档未改，无数据库迁移、前端、部署、推送或 Runtime 替换。
+
+实际子预留、凭据重签／禁用、首轮 release 与恢复仍由 FR-723 完成；FR-712 依赖 FR-723。
+当前 NONE，下一可执行 FR-723；提交后停止。
+
+### FR-723 两宿主子预留凭据重签与首轮恢复 — DONE
+
+依赖：FR-722 DONE。先预留 binding 再原生 prepare，核对正式父子／shared 目录／配置，
+复制冻结能力并重签或明确禁用 binding 级授权后 release；短事务、同 invocation 并发、
+generation fence、原身份查回及各阶段崩溃恢复。
+
+实施结果（2026-10-27）：V4 gateway 已接通真实原生子创建，V3 保持原 verifier 与显式 503
+产品门禁并保留已授权调用的用户审计归属。新 `child_creation` 服务通过正式 resolve 身份和父配置，在父 row lock 内预留子
+binding／关系，随后分别短事务授权 → 原生 prepare／读配置 → 核对治理，再重新授权 → 原生
+release → 受理投影；Runtime I/O 期间不保留 DB 连接。首轮父仍 PROVISIONING 时可完成整链，
+不等待父 Tool 自身结束或父 ACTIVE 提交。并发同 invocation 仅一个 binding／creation；原生
+prepare／release 及稳定首事件负责消息去重，平台不制造消息或另建执行器。
+
+迁移 `0179_agent_child_creation_audit` 添加创建策略、请求／预期公共配置摘要及原生持久目录，
+旧关系全空兼容，新治理行不允许部分字段空；既有关系不可变 trigger 继续覆盖，存在治理审计
+时拒绝有损 downgrade。平台审计不保存 task、proof、Secret 或整个 Agent 文档。准备核对
+parent／child ID、shared 目录、持久目录、治理 UUID 和公共 Agent 配置；仅剔除原生 finalize
+会刷新的 `AgentContext.current_datetime` 后取摘要。ACTIVE 表示 locator 治理完成，之后原身份
+重放不阻止用户更改原生模型；身份、目录、请求与治理 UUID 检查始终保持。
+
+`binding-isolated-v1` 在原生准备时移除父历史 Secret `FLOWWEAVE_HISTORY_ACCESS` 与 MCP
+`flowweave-reference-history`，同步排除其能力引用；其余冻结版本／摘要／位置复制。子不装配
+父六工具／旧创建工具，不分配 Attempt／NodeRun／Runtime。普通 Secret 沿原生创建配置继承；
+后续 additive `/secrets` 的 registry 更新不保证继承，故不复制父 credential-sync 记录或谎报
+已同步；独立同步留 FR-712。ACP 的 activation 与 native Conversation 关联，当前在预留前明确
+拒绝，不能将其当作普通 Secret 复制。SDK 源码及 source lock、V4／V3 身份和归档均未改。
+
+恢复重放原请求与证明，查回相同预留和原生准备计划；429、写入响应未知和超时均不删除预留
+或换身份。release 阶段权限复核失败返回结果未知，避免错误宣布未受理；native 操作返回晚于
+共享响应 deadline 时不得再投影数据库。证明过期时，仅原生准备回执存在且证明、父配置／分支
+仍有效可重放；平台预留本身不豁免过期，撤权／generation 变化仍失败关闭。没有无人值守
+重放循环或无限期恢复承诺。
+
+验证：相关 PostgreSQL／launcher／关系隔离／HTTP DTO／V3–V4 契约／迁移套件 **335 passed**，
+另补充共享 ASGI 循环中的 resolve／prepare／release 真实超时与迟到 worker 拒绝投影
+**6 passed**（共 341 个不同用例，不叠加之前重复运行）。覆盖两宿主同 invocation 四并发预留、
+准备前后／配置读取／释放前后响应丢失、配置错配、阶段间撤权、容量不足／证明拒绝、能力引用
+复制与认证同步未伪报、ACP 拒绝、有损迁移保护及历史普通入口隔离。两宿主 × V3／V4 的真实
+TCP 共四用例纳入 335：固定非 editable 安装逐文件校验（V3 536／V4 537），正式 Tool 调用进入
+平台再 resolve／prepare／release，V4 真实子首轮完成及服务进程完整重启后同证明重放，始终一个
+首条用户事件，创建时普通 Secret 继承且父历史 Secret 不继承；V3 仍 503。仅模型 completion、
+物理挂载与 Runtime 连接使用夹具，不代表实际镜像／真实模型验收。所有 run-owned 原生／平台
+服务已退出，日志位于 `.tmp/fr723/`。
+
+新增核心服务、gateway 与治理 DTO 的 Pyright **零错误**；六个受影响既有模块检查 47 项
+诊断与修改前 HEAD 按文件／规则／消息逐项相同，零新增，未宣称旧模块全绿。受影响 Ruff、
+新改函数格式、AST、diff、任务状态与依赖检查通过。Alembic 唯一 head 为
+`0179_agent_child_creation_audit`。无前端、部署、推送或 Runtime 替换。当前 NONE，下一可执行
+FR-712；提交后停止。
+
+### FR-712 两宿主子续聊控制附件与结果引用 — DONE
+
+依赖：FR-723 DONE。接入正式消息／控制／模型／condense、附件 owner 和正式结果引用，
+用户与父工具共用受理门禁，不借用父 token 或跨 binding 路径。
+
+完成（2026-10-28）：新增两宿主共用、cookie 认证的专用子资源
+`/api/v1/agent-session-children/{parent_id}/{child_id}`，包含详情、正式 events／hydration／
+readiness／context、消息、控制、模型、待确认／decision、附件上传／移除／文件读取、普通凭据
+查询／显式同步及正式结果引用。父工具精确 `queries`／`commands` 回调同时开放；Runtime key
+与原生 proof 都必须满足，并在 native verify 前后重做用户／宿主／policy／audience／generation
+复核。只有已经验证 proof 的原生调用可在父 V4 PROVISIONING 首轮操作其已治理子；浏览器
+父仍须 ACTIVE。V3 创建继续明确拒绝，不新增旧协议能力或向浏览器暴露 Runtime 连接。
+
+新增不可变 ChildLocator 由服务端解析当前用户、直属关系、宿主、Runtime／image／generation、
+shared 目录、创建审计和原生持久目录；操作前正式 read 回执／子配置核对 started、governance UUID
+及原生父子身份。取消节点的子可读不可写，不取得 Attempt／NodeRun 权限。原生调用采用短 DB
+prepare → I/O → 重新授权／project，Session 不进入新子运行操作；未知受理结果保留提交身份，
+原生已送达后权限／定位变化返回结果未知，既有响应 deadline 禁止迟到 worker 投影。
+
+用户消息必须携带稳定 submission UUID，经正式 `/events` 的 submission_id／user／run=true
+受理；不通过前后历史差集猜 event ID，不建平台消息队列。父 send 与用户 send 都进入固定 SDK
+同一原生输入锁／run-slot 门禁，busy／429 不追加新输入；相同提交重放取得同一正式事件，附件
+元数据在 child row lock 下幂等记录。模型只解析当前用户可见的已测试供应商并只更新子 binding；
+暂停／继续／待确认均调用原生控制。condense 复用既有单次持久任务，Worker 再授权子 locator 后
+调用 native condense；单独投影 task 状态，不伪造 native RUNNING，child 内 Idempotency-Key
+隔离并发受理。认证同步仅为子显式发送普通用户 Secret，原生成功且复核授权后才记录子版本；
+不借用父历史 token／MCP，不将 Secret 明文写入平台元数据。
+
+附件只属于子 binding UUID 的 uploads 前缀；发送／读取均检查精确附件投影与宿主根，拒绝父、
+兄弟、未登记路径及越界／非规范路径，移除复用现有宿主文件安全清理；下载保留 sandbox CSP
+与 nosniff。正式 assistant 结果引用最多一万字，不自动发送或改父草稿；两宿主父消息入口只对
+其直属子重新取正式 event_id／正文，不接受浏览器伪造结果或兄弟引用。普通父消息原有引用
+路径继续保留，Flow Node 新子 locator 在 prepare 冻结后再读 Runtime；Workspace 复用其既有
+引用装配阶段。完整历史仍在原生，不新建数据库 transcript／HEAD／cursor 状态机。
+
+父 list／read／wait 保持原生分页、完整性、text offset、checkpoint；list 过滤没有已启动平台
+locator 的 Runtime-only／尚未治理子，read 最多 50 项／12000 字，wait 最多 30 秒并使用有界
+history lane／35 秒整体 deadline。同步等待取消后 slot 可保留至原生返回或超时，不承诺抢占
+线程，也不因父等待取消而暂停子。新 DTO／适配方法只消费现有 V4 正式类型与路由。原生事件
+投影另保留类型校验后的 parent_instruction 与 sender，start／send／interrupt 的正式
+parent/action/tool-call/scope/session/generation/manifest 作为来源，不按文本／顺序猜测。
+
+验证：最终相关 PostgreSQL／两宿主子 API／launcher／父子隔离／压缩／消息 ACK／引用／独立
+事件读取阶段／HTTP DTO 契约套件 **484 passed／2 deselected**，另补充物理 Runtime 镜像漂移
+拒绝 **1 passed**；共 485 个不同用例通过，不叠加中间重复运行。新增关系查询使既有轻量引用／
+压缩测试夹具需要 scalar 空查询，已补齐接口而未放宽生产判断。两项 deselected 为修改前 HEAD
+同一组合顺序也失败的既存用例：压缩日志测试 StopIteration、Flow Node 流投影测试漏传已有
+working_directory 参数；独立 HEAD 对照 **49 passed／2 failed**，保留失败证据，未宣称旧测试
+全绿。最终主套件与对照日志均在 `.tmp/fr712/`。
+
+四项真实 TCP（两宿主 × V3／V4）包含在主套件：按各自固定归档核对 V3 536／V4 537 个已安装
+Python 文件；V4 父在 PROVISIONING 时实际执行全部六个正式工具，经平台 verify→授权→原生
+queries／commands，核对关联 action／tool-call 的成功 observation、父 send 正式来源；父
+ACTIVE 后用户通过专用 HTTP 续聊，重复 submission 只有一个事件，再完整重启原生服务、按原
+创建证明恢复并核对共三条 user 事件（初始、父追加、用户追加）及 Secret 隔离。V3 保持原拒绝。
+模型 completion、容器挂载映射和 Runtime 物理连接为夹具，正式 API／Tool／事件／加密持久化／
+重启真实；不等同于实际 Runtime 镜像或真实模型全链路验收。所有测试服务正常退出。
+
+新核心／gateway／DTO 的 Pyright **零错误**；12 个受影响旧模块当前 101 项诊断与 HEAD 按
+文件／规则／消息逐项相同、零新增。受影响 Ruff 通过；Flow Node router 的 13 条既有 E501
+未扩散，不清理无关格式。新文件格式、AST、diff、状态／依赖核对通过。Alembic 唯一 head
+保持 `0179_agent_child_creation_audit`，无迁移；SDK、source lock、归档、V3／V4 Manifest
+和镜像未改。无前端、部署、推送、Runtime 替换或 Worktree 产品功能。当前 NONE，下一可执行
+FR-713；提交后停止。
+
+### FR-713 子活动与独立未读聚合 — DONE
+
+依赖：FR-712 DONE。父列表聚合子运行／未读但不伪造父运行态；直属子列表与逐子已读，
+关闭保留。原范围包含三条独立故障链，拆出 FR-724 可恢复删除与 FR-725 replacement。
+
+实现（2026-11-04）：新增用户鉴权的直属子列表和逐子 unread API，运行时离线仍可读取
+已有治理记录及确认已读，关闭视图没有生命周期操作。两宿主复用单次原生活动目录，
+仅投影同用户、同宿主／scope／Session、原生身份相符的已审计直属子；父列表分页提供
+纯控制面子数量／未读摘要，活动响应附独立子状态与父入口。子运行、压缩或待终态同步
+可以保留父活动入口，父自身 running／failed／possibly_stuck ID 集合不混入子状态。
+目录缺失或路由暂不可用保持 unknown，之前观察到运行的子保持有界正式终态补读待办，
+只有 OpenHands 正式 ASSISTANT_MESSAGE 完成身份生成普通未读与最小预览，按事件 ID 去重。
+SYSTEM 异常、手工普通未读、系统已读确认沿用既有规则；行锁后重读防止旧 ORM 快照
+覆盖并发确认。选中父不会清子未读，激活具体子仅确认该子；续聊受理及原生运行观察
+清除过期最终回复预览。子压缩任务按显式 owner 过滤，不能伪造父运行态。
+
+验收：隔离 PostgreSQL 的新增两宿主 38 项通过，覆盖运行与未知状态、正式完成／非消息
+完成、超时／缺失重试、重复通知、焦点与父子／兄弟隔离、并发已读、离线元数据、普通分页、
+异常确认、压缩任务所有者及跨用户拒绝。既有子接口／关系／活动回归 96 项通过，与新增
+合计 134 个不同用例。宿主历史定向 cohort 为 5 passed／6 failed；六项均在创建夹具时
+缺少用户主体，当前 HEAD 隔离副本复跑得到同样 5／6，未计为通过。上述使用受控 Runtime
+响应，不代表实际 Runtime 镜像或真实模型验收。
+
+新聚合、子接口与子核心 Pyright 零错误；四个受影响旧模块的 66 条诊断与 HEAD 按文件／
+规则／消息相同。受影响 Ruff、定向格式、diff 检查通过；节点 router 的 13 条既有 E501
+保持原状。Alembic 唯一 head 为 0179，未新增迁移或修改 SDK／source lock。父删除与
+replacement 的实现／故障验证分别由 FR-724／725 承担，前端由 FR-714–716 承担。
+用户已授权完成全部切片，按片独立验证与提交后继续；全部完成后由用户决定集成与发布。
+
+### FR-724 父删除围栏与逐子恢复清理 — DONE
+
+依赖：FR-713 DONE。父删除围栏新增创建，逐子持久清理与故障重试，保留删除中父入口；
+两宿主直接删除与 FlowRun 记录清理共用，原生删除缺失幂等，绝不删除共享工作目录。
+
+实现（2026-11-05）：含已治理子会话的父删除转为持久后台任务，返回 202／原任务 ID 和
+原子冻结的 child binding 清单；父行锁与 FR-723 预留共用创建围栏，父／子 DELETE_PENDING
+关闭普通交互。两宿主普通／分页／活动列表保留父入口与安全任务投影，可继续查看子关联、
+重试同一失败任务；无子关联删除维持同步 204，批量管理将 pending 与 deleted 分开。
+
+任务在原生 I/O 前后使用短事务和 lease／generation／原父子定位复核；每子先删除、再以
+原生父删除等待在途准备／释放完成、最后逐子复核清理关系、附件与绑定。原生明确 404
+可重复收口，超时不丢定位，部分成功逐步提交；任务审计独立于 binding，并在父仍删除中时
+排除终态任务回收。固定 b9f976b2 的 `_governed_child_operation` 与 `delete_conversation`
+共用父生命周期锁，是第二次子清理覆盖已受理在途 prepare 的源码依据，未修改 SDK。
+
+FlowRun 记录删除仅遍历普通父记录，复用相同原生围栏并保留现有外层事务，不提前提交
+NodeRun／Attempt 清理；仅完整 Runtime owner 记录允许沿用已授权 inactive 清理路径，
+借用 Runtime 不得因不可达丢弃子定位。私有附件立即精确清理并登记独立十分钟兜底回收，
+覆盖 Runtime 级文件 API 的晚到上传；已存在正式 binding 时不清理，保护共享工程、其他
+UUID 的附件和持久 Workspace。新任务均进入正常维护队列；新任务和两种记录清理任务
+在 Worker 恢复任务 owner 后执行。
+
+验收：新增隔离 PostgreSQL／真实文件定向 37 passed，三个 Workspace 参数因仅适用
+FlowRun 记录删除而跳过；覆盖两宿主创建／写入围栏、可见删除中入口、先子后父再复核、
+原生调用前／成功后超时、原任务重试、租约丢失、附件部分失败、晚到文件与既有 binding
+保护、借用 Runtime fail-closed、记录事务回滚及正常 Worker 执行器／用户恢复。现有子会话、
+关联、活动和任务回归 152 passed／6 failed；Worker lane 回归 8 passed／2 failed。
+HEAD 隔离副本的任务／lane cohort 得到同样八个失败，涉及旧模型／Runtime 夹具、临时聊天
+未注册 lane 及单 Worker 配置夹具校验，未计为通过。本片共 197 个不同用例通过，受控
+Runtime 响应不代表真实镜像或模型验收；原生 TCP 全链路继续由 FR-717 承担。
+
+新删除模块 Pyright 零错误，九个旧模块的 314 条诊断与 HEAD 按文件／规则／消息一致。
+受影响 Ruff 与定向格式、diff／状态／依赖检查通过；node router 保留原有 13 条 E501。
+Alembic 保持唯一 head 0179，未新增迁移、修改 SDK／source lock／镜像或前端。下一片
+FR-725 处理原父子身份替换恢复；按用户指示继续逐片完成。
+
+### FR-725 父子原身份 Runtime 替换恢复 — DONE
+
+依赖：FR-724 DONE。replacement 核对原父子会话及正式事件身份，用户恢复路由与冻结
+父工具授权分开，过期 generation 不得重获权限。
+
+实现（2026-11-05）：新增宿主通用的只读恢复证据，收集不可变父／子治理定位，按正式
+parent ID、创建 action ID／tool_call_id、receipt／请求摘要／governance ID、共享目录及
+persistence 对账。source 可读时保留临时正式事件身份，在 target 重读同一事件；source
+不可达时仍校验已审计创建事件及 started 子的非空正式事件。允许保留未物化预留与尚未
+首轮释放的原生准备态，探针不 create、send、run 或重放任务，不保存消息／HEAD 副本。
+
+FlowRun 共享与 Attempt 独占 Session 共用持久替换任务、原 allocation／secret 和冻结镜像；
+独占 ensure／健康入口围栏并登记同一任务，普通 provisioning 不得绕过恢复直接激活。
+原生停止未确认时保留同一 N+1 重试，任务租约检查后释放 SQL 再进行等待／原生 I/O。
+FlowRun 在 drain 后重新取得完整关联并验证所有子，CAS 激活前再次核对恢复集合；明确
+删除中的父由独立清理任务接续，不能阻塞其余会话替换。Workspace 的 V4 父冻结契约阻止
+恢复时选择当前配置镜像，沿用原 digest，并增加父子 reload、优雅 drain 与非正常停止
+45 秒租约接管校验；失败保留同一 N+1 重试，不跳过身份校验激活。两宿主的 ACTIVE＋READY
+新 generation 可以沿原 ID 恢复用户读取／续聊，旧 locator 迟到响应被拒绝；旧 generation
+父工具策略仍 fail-closed，没有重签其冻结授权。用量 Worker 改为从所属父解析 child 的
+V4 handle，避免把 child 当普通会话路由或错误使用默认协议。
+
+验收：新增两宿主恢复与用户 HTTP 45 passed／4 个不适用宿主的参数跳过，覆盖原始
+创建事件和父子身份漂移、空事件拒绝、预留与 prepared 过渡、两宿主
+真实控制面激活顺序／失败重试同一 N+1、模拟时钟的 45 秒租约等待且不占 SQL、READY
+门禁、原回复与续聊／用量恢复、旧父工具拒绝及 Workspace 默认镜像冻结。既有子接口、
+活动、删除、关系及 FlowRun replacement 回归 178 passed／3 个仅 FlowRun 的 Workspace
+参数跳过；压缩回归 8 passed，既有日志夹具失败一项排除。Workspace Runtime 历史
+cohort 为 9 passed／1 failed，HEAD 隔离副本同为 9／1，失败仍为旧 RECOVERING 展示
+预期，不计通过。Attempt／provisioning 历史 cohort 为 3 passed／2 failed，HEAD 隔离
+副本同为 3／2，失败涉及旧 owner 模式与已存在的资源清理夹具。新增验证真实任务 claim／
+handler、Attempt 身份、ensure 幂等准入、连续健康失败、未确认停止与过期 task lease，
+恢复后经实际 active Attempt connection 读取和续聊。本片共 243 个不同用例通过；
+受控 Runtime／Provider 和模拟时间不代表实际 Runtime 镜像、真实租约等待或真实模型验收，全链路继续由 FR-717 承担。
+
+八个受影响模块 Pyright 仅 runtime_sessions 保留四条历史诊断，与 HEAD 按文件／规则／
+消息一致，其余七个零错误；受影响 Ruff、格式、diff、状态／依赖核对通过。Alembic
+保持唯一 0179，无迁移或 SDK／镜像变更；source.lock 与归档 SHA-256 仍固定 b9f976b2／
+4f53a194。只读检查发现共享 SDK 工作树 HEAD 已推进到后续 600fe6a88，本片始终取固定
+b9f976b2 及其归档作证，未从浮动 HEAD 构建。复核发现首轮／续聊若早于首次活动轮询完成
+会漏未读，新增独立 FR-726 收口该窗口，再继续前端切片。
+
+### FR-726 快速完成与恢复首轮的子未读对账 — DONE
+
+依赖：FR-725 DONE。以原生 started／正式发送受理证据登记终态补读，覆盖首轮和续聊
+在第一次活动目录轮询前已完成、创建回执丢失后恢复等窗口；仅正式 assistant 完成事件
+生成未读，不伪造运行状态或重复提醒。
+
+实现（2026-11-05）：原生 started 首次回执、用户正式发送和父 Tool send 受理均登记
+终态补读并清除旧预览，不写伪造 RUNNING。新增可空 `child_completion_checked_activity_at`
+读取节流水位，原生活动更新时间变化只触发正式事件补读，覆盖响应丢失与快速完成；
+读取失败／准备态不推进水位，正式终态后才完成对账，最终回复仍按正式 event ID 去重。
+旧数据在首次目录观察时自动补读。升级／降级仅影响读节流，不删除父子定位或通知事实。
+
+验收：新增回归先得到 14 failed，修复后活动专项 56 passed，覆盖两宿主首轮／用户续聊／
+父指令快速完成、首轮／续聊回执丢失、超时重试、prepared 不误报、同 event ID 不重报与
+真实 PostgreSQL 0180→0179→0180 往返保持原 ID／未读。五个受影响模块 Pyright 零错误，
+Ruff／格式及 diff 检查通过，唯一 Alembic head 0180。既有创建／子接口／删除回归为
+282 passed／2 failed／7 skipped；两个失败均为 capability 降级测试原来写死 0179，
+更新为记录迁移前的实际 head 后两宿主定向复验通过。七个跳过为未配置的四项原生 TCP
+与三个宿主不适用的删除参数，本片共 340 个不同用例通过。
+本片受控 Runtime 响应不替代 FR-717 的真实 TCP／镜像／浏览器验收。
+
+### FR-714 通用侧边会话交互边界 — DONE
+
+依赖：FR-712 DONE。最小抽取两宿主通用展示与 binding 隔离的 hydration／输入逻辑；
+临时侧边聊天保留现有一小时 TTL／关闭删除，子会话不能复用这套生命周期。
+
+实现（2026-11-05）：抽取共用侧边 ConversationSurface 布局、按真实 scope 隔离的正式
+hydration／历史读取协调器和用户气泡认领。两宿主主工作台继续使用原来的事件合并实现，
+将其移入共享模块供侧边读取复用；仅正式 parent ID 保留祖先，分支切换移除旧后代。
+侧边首屏取得同批 events／readiness／context 后再展示，120ms 合并选择，单飞读取、
+最新窗口信号排队、history 低优先级及耗尽游标记忆、前台恢复和重连补读、卸载 Abort。
+暂存快照仅存当前组件内存，选择恢复仍取得正式最新窗口；StreamContext 正文不参与展示。
+用户气泡保留稳定 renderKey，POST 返回正式 event ID 后认领原气泡；异步完成按 scope
+校验。临时聊天继续独立创建／一小时过期／关闭删除，补齐正常 Worker maintenance lane
+和任务 owner 恢复，防止过期任务留在队列；未增加子会话的临时生命周期或主路由。
+
+验收：13 项不同 Chromium 定向通过，包含五项侧边聊天、慢响应加载／发送门禁及焦点
+信号合并／并发峰值一、附件／引用／气泡／暂停，以及主会话 hydration、历史重试、发送
+去重、快速选择和两宿主子入口路由拒绝。新增慢用例最初错误断言 contenteditable，
+改为实际 textarea 的 disabled 后通过；协调器门禁完善后定向复验再次通过。Worker
+正常 lane 与 TTL owner 定向 3 passed，既有 lane cohort 8 passed／1 failed，保留原有
+DELETE_FLOW_RUN_SCHEDULE 未注册造成的全集检查失败；single-worker 旧配置夹具未运行。
+共 22 个不同用例通过。Web typecheck、受影响 ESLint、Worker Pyright 零错误、Ruff／
+格式与 diff 检查通过，Alembic 唯一 0180。浏览器使用受控 API／WebSocket，原生全链路
+继续由 FR-717 承担；本片仅抽取复用边界，下一片接入父悬浮卡和子标题标签。
+
+### FR-727 子会话正式流代理与游标失效恢复 — DONE
+
+依赖：FR-726 DONE、FR-714 DONE。增加两宿主统一的父作用域原生 WebSocket 授权代理，
+关闭浏览器时释放上游；按原 locator 复核并拒绝删除／generation 漂移。修复 child hydration
+在游标不属于当前分支时的正式全窗口回退，不能把失效游标响应标成增量。
+
+实现（2026-11-05）：新增 `/agent-session-children/{parent_id}/{child_id}/stream`，先以
+同一正式 locator 执行原生身份校验、释放 SQL、再次授权后连接 OpenHands 原生 stream；
+原 after_seq 原样传递。每个可见帧之前及空闲时每 15 秒复核用户／父子／generation，
+失效关闭连接；文本 delta 不转发，不创建平台事件。原两宿主常规流保留各自内容投影，
+三条入口共用断开观察与上游关闭原语；ASGI 同时取消时用最长五秒 shield 完成清理。
+子 hydration 仅对正式游标不属于当前分支的错误回退最新窗口，在同一读取预算内重新
+取得同批事件／readiness／context；其他错误仍返回原错误，不把无效游标标成 incremental。
+
+验收：25 个不同用例通过，包含两宿主 cookie／非直属／跨用户拒绝、原 seq 续接、
+文本 delta 拒绝、浏览器断开关闭空闲上游、父／子删除和 Session 围栏时拒绝迟到帧、
+模拟时间的空闲授权复核，以及正式增量／脱离分支／显式 anchor 失效／超时保持。
+包含原 Workspace 流关闭回归。初次测试暴露 WebSocket 路径未绑定 Runtime 上下文与
+TestClient 同时取消导致的清理异常，修复后全部通过。三个新增／受影响模块 Pyright
+零错误，两种旧宿主 router 的 18 条历史诊断与提交前按文件／规则／消息一致；Ruff／
+格式和 diff 检查通过，Node router 保留旧 E501。无迁移，唯一 head 仍为 0180。
+本片使用隔离 PostgreSQL 与受控原生适配器，真实镜像／TCP／浏览器继续在 FR-717 验收。
+
+### FR-715 悬浮卡子列表与标题多标签 — DONE
+
+依赖：FR-727 DONE、FR-714 DONE。新增不撑开悬浮卡的子摘要／选择浮层，每个 child
+一个右侧标题标签；入口只来自父卡，不新建主标签、独立路由或弹出窗口。
+
+实现（2026-11-05）：两宿主父悬浮卡增加独立子摘要，直属子标题／状态／未读在独立
+浮层内按六项分页；卡片自身无滚动，计数和箭头固定可见。仅点击浮层行打开一个 child
+标题标签，使用 child 正式 hydration／历史和原生 WebSocket；单一侧边读取器串行追赶
+最后选择，迟到结果仅留原 scope。活动父入口加入 child 聚合但父圆环保持自身状态。
+子标签按父 scope 在当前页面内保留，关闭只移除视图并选择右侧、否则左侧相邻标签；
+从持久工具布局的读写两端排除 child，刷新不会自动重开。子标签双击与工具全屏均禁用，
+仅在父卡中发现和打开。已正式加载的选中子单独确认已读，取消旧列表读取后发布新值，
+不修改父或兄弟未读。共用 ConversationSurface 在没有 fork 回调时隐藏无效分叉按钮。
+本片为浏览／多标签边界，独立输入和草稿等继续由 FR-716 完成。
+
+验收：14 项不同 Chromium 回归通过，覆盖两宿主子卡／标签／正式独立历史、父无子运行
+圆环、单子已读与兄弟保留、快速切换时原生请求峰值一和迟到内容隔离、父切换恢复、
+关闭／隐藏不删除不暂停、刷新不重开、双击不全屏，以及独立分页／卡片无滚动；同时
+回归五项临时侧边聊天和三宿主主路由拒绝／迟到重定向隔离。初次夹具对未声明列表返回
+空对象造成页面失败，改为正常 404；子状态图标增加了 accessible name，标签增加显式
+标题 aria-label。截图核对发现子面板误落自动高度行，修正为剩余高度行并追加高度断言，
+五项子 UI 复验通过；已核对父卡和双子标签截图。Web typecheck、受影响 ESLint 和 diff
+检查通过，无迁移，唯一 head 仍为 0180。受控接口不替代 FR-717 的实际原生全链路。
+
+复核普通父删除入口仍把 202 当完成移除，新增 FR-728 接入已实现的可恢复删除投影，
+在最终验收前收口，避免隐藏尚在删除的子会话唯一入口。
+
+### FR-716 子标签续聊草稿快捷键与引用 — DONE
+
+依赖：FR-715 DONE。独立发送框、模型、附件、队列、草稿／滚动和两次 Esc；正式
+结果引用加入父草稿不自动发送，迟到回调不污染其他父子 scope。
+
+实现：子标签使用自己的发送框、模型／推理程度、附件、工作区引用、注释、消息队列和
+滚动快照。完整草稿按用户／宿主／父／子 scope 写入 sessionStorage；关闭或切换保留，
+刷新从悬浮卡重新打开后恢复。未激活标签的队列在激活并完成正式 hydration 后继续发送。
+发送使用稳定 submission ID 和正式 cursor 认领同一气泡；发送结果不明时保留原身份，
+需用户显式确认重试。接受但尚未进入正式窗口的消息阻挡自动队列，不阻挡终态视觉恢复。
+
+复用既有文件路径解析和中央预览，child 文件始终走自身授权；私有 uploads 仅预览／下载，
+共享文件可显式进入父文件工具。子正式结果加入原父草稿，迟到响应不写新父；父引用按钮
+和历史引用只预览结果，不构造 child 主路由。可信 parent_instruction 显示父指令来源。
+两次 Esc 仅操作焦点子会话，弹层／能力菜单优先关闭；压缩仅调用原生控制、保持输入可编辑
+且全部发送进入队列，等待正式完成。模型、认证同步和工具确认均使用 child 专用接口。
+历史补页先捕获锚点再恢复；独立滚动在切换后保留。后端新增工作区／注释载荷沿用现有
+消息封装，按 child 私有附件、规范目录、直属 parent／child 与正式 event ID 复核可见来源。
+注释 compact offset 是渲染导航提示，保留用户选区文本，不冒充 Markdown 源文位置。
+
+验收：子用户接口套件 80 passed（含新增两宿主上下文与拒绝边界 18 项）；21 个不同
+子 UI Chromium 用例、9 项临时侧聊／child 路由回归、3 项主文件预览／Esc 回归通过。
+后续四项草稿／父指令／Esc 用例复验通过，计入原 21 项，不重复累加。覆盖两宿主草稿、
+附件预览、父兄弟切换、刷新、排队／正式确认／同气泡、失去回执重试、模型／认证／工具
+确认、压缩、注释／拖拽、直接发送、父结果迟到隔离、前台完成视觉和历史滚动恢复。
+已核对双子标签和恢复草稿截图。Web typecheck、受影响 ESLint、Python Ruff／format、
+子接口模块 Pyright 零错误、diff 和状态／依赖检查通过；唯一迁移 head 仍为 0180。
+受控接口与模型夹具不替代 FR-717 的真实镜像／模型验收。下一可执行 FR-728。
+
+### FR-728 父子删除任务与恢复状态的前端投影 — DONE
+
+依赖：FR-716 DONE、FR-724 DONE。浏览器区分同步 204 与 family 删除 202，删除中保留
+父入口、任务进度／失败重试和子清单，关闭写交互，不把受理当作已经删除。
+
+实现：两宿主 DELETE 返回值显式区分普通 204 和 family 202。浏览器等待正式响应后才
+改变归属；202 保留父入口、已打开子视图和服务端原任务清单，立即关闭父子写交互并停止
+其正式流／hydration。按用户／宿主／工作区保存删除投影，后台元数据补读持续更新阶段、
+确认数量和安全失败码；刷新恢复原任务，失败按钮重试同一父清理任务，只有授权元数据
+确认 404 才移除入口。普通列表、置顶和活动列表都保留清理状态，不显示父运行圆环或旧子
+运行计数。已有子关联时，确认弹窗先读取并列明子标题和 binding 清单。批量管理受理的
+pending_ids 显示原父进度入口提示，不当作已完成删除。
+
+验收：两宿主 202／延迟受理／清单／写门禁／活动入口／失败／原任务重试／刷新／后台最终
+移除各链路通过，包含在 10 项子标签／路由 Chromium 回归；普通 204、陈旧删除 404 和后台
+正式缺失 3 项通过，批量管理布局／pending 提示 1 项通过，共 14 个不同浏览器用例。
+额外两项删除链路复验通过，不重复计数；已查看实际删除进度截图。管理页旧用例的导航
+名称调整为当前 AI 工作台和 Agent 工作区，未改产品导航。真实隔离 PostgreSQL 删除套件
+37 passed、3 个不适用 Workspace 宿主的 FlowRun 清理参数跳过；原生操作为受控故障夹具，
+不等同 FR-717 的实际 Runtime 门禁。Web typecheck、受影响 ESLint、diff、唯一 CURRENT／
+依赖核对通过；无迁移，唯一 head 仍为 0180。下一可执行 FR-717，继续按整目标完成验收。
+
+### FR-717 原生子会话全链路故障与两宿主验收 — DONE
+
+依赖：FR-725 DONE、FR-728 DONE。固定真实 Runtime／TCP、隔离 PostgreSQL、两宿主
+Chromium 验证创建、续聊、父工具、并发、RLS、未读、多标签、删除和 replacement，
+确认没有 Worktree 创建且 V1／V2 不变；不自动发布或升级已有 Runtime。
+
+验收（2026-11-05）：使用本地独立 PostgreSQL、真实平台 API、固定 linux/amd64 Runtime
+镜像和线上已配置的 `gpt-5.6-luna`，以 low reasoning 完成 Workspace、FlowRun node-session
+两宿主完整用例，最终 2 passed。线上模型凭据始终留在原服务进程，测试经受保护的临时转发
+调用真实上游 HTTP／SSE。测试数据库仅保存临时转发凭据，生产会话不参与该样本。
+
+实际镜像为 `sha256:7e7ee2e0b91be6d51d8a308fff83b030c24eef63d8ef61ceb26e907794b55056`，
+source lock 为 `b9f976b2ca05b947ee28eb34ebe590ff0409307f`，归档 SHA-256 为
+`4f53a19445c7c5cfabe022414dd33942fc3c086b0be5b60fd87e9fa0ccc5899f`，四包 1.58.2。
+真实 Dockerfile 构建中的 contract/security 检查通过，Chromium 可用。每次原生服务启动还逐字节
+核对固定归档对应的 537 个已安装 Python 文件。完整 main 与既有扩展均由此固定身份承载。
+
+两宿主均验证正式父工具 start/list/read/wait/send/interrupt、首轮 PROVISIONING 授权、同 proof
+重放返回原 child、用户 submission 重试返回原 cursor、直属身份和共享目录、绑定级凭据过滤。
+关闭原容器后以同一镜像、外部挂载和持久密钥启动新容器，恢复原父子 ID、首轮及续聊事件，
+并由正式 child recovery 探针核对原 action/tool-call、receipt、governance、workspace 和 persistence。
+随后 Chromium 从父悬浮卡打开子标题标签，读取真实历史、上传及中央预览附件、续聊获得真实
+`BROWSER_READY`，核对四条正式用户气泡、结果引用保留父草稿，以及关闭视图的请求与路由。
+两个实际页面截图均已检查。
+
+完整链路最后执行真实原生家族删除。首个 child 删除成功后人为丢失回执，Worker 任务保持
+原父子定位，显式重试复用同一任务，完成 child → parent barrier → child 复核及私有记录清理。
+直接核对原生 GET 404、父子持久目录缺失、任务 COMPLETE/SUCCEEDED，私有附件移除而共享
+文件及无关 owner 附件保留。最终缺失按实际 HTTP 与持久目录确认，避免把 child adapter 的
+404 包装码误当作普通会话错误码。所有测试原生容器均已退出。
+
+独立综合回归为 463 passed、9 skipped，其中两项真实模型用例已在上述独立门禁通过，七项
+为宿主不适用参数。140 项契约／传输／迁移单测、6 项旧 V1/V2 协议回归通过，四项 V3/V4
+两宿主真实 TCP 包含在综合套件中。23 项子标签／队列／草稿／快捷键／未读／删除 Chromium
+回归通过，使用受控 API 与 WebSocket。并发预留、权限/RLS、消息竞争、断流及游标恢复、
+多标签迟到结果、删除失败恢复和 replacement 控制面矩阵由这些定向测试覆盖。Provider
+编排矩阵使用受控物理 Provider，原生持久恢复另经上述真实容器重建验证，两类证据分别保留。
+
+本片修正实际验收发现的两项产品问题。原生子标题在准备治理时投影到 binding，重试保留
+已有标题。Workspace launcher 保留宿主正式用户根，恢复探针也以冻结 owner 取得用户根，
+并继续独立核对父子的实际子目录，修复把工作子目录误作 Runtime 根导致恢复拒绝的问题。
+新增标题／原根定向回归均通过。Web typecheck、受影响 ESLint、Ruff format/check、子模块
+Pyright、diff 和状态依赖核对通过。对依赖独立 SDK 环境的测试夹具额外执行 strict Pyright
+出现未安装 SDK 及未标注测试类型诊断，未将该额外检查记为通过。无新增迁移，唯一 head 为 0180。
+
+固定上游普通会话启动／重载会原生 git init，实际样本已观察并记录在子会话设计中。
+shared 子会话没有 linked Worktree 或 worktrees 注册，目录没有切换。现有 V1/V2、旧
+generation 父工具拒绝策略、V4 Workspace 冻结镜像，以及非活动子队列待选中并正式 hydration
+后恢复的边界继续遵守原设计。全部子会话切片现已闭环，当前与下一切片均为 NONE，代码保留
+在 `codex/child-conversations`，合并和发布交由用户决策。
+
+### FIX-GIT-BRANCH 分支切换与远端推送状态核验 — DONE
+
+2026-11-05。Git 侧栏的当前分支复用 LaunchOptionMenu 和 ViewportPopover，
+提供本地分支及远程跟踪分支选择。远程项创建同名本地跟踪分支，已有同名
+本地分支时提示选择本地项。菜单支持键盘、Escape 和外部点击，切换错误
+就地展示并可关闭。当前会话运行、压缩或不可写时禁用切换。
+
+Workspace 和 FlowNode 两种宿主均提供严格的分支目录与切换接口，沿用
+各自用户、binding、工作目录和 Attempt 授权。写操作要求整个仓库位于
+授权文件范围内，携带 expected_head 和 expected_ref，并通过 Git 目录锁
+串行化平台切换请求。保留 Git 原生文件冲突、工作树占用和索引锁保护，
+禁止覆盖忽略文件，关闭 checkout hook。重试已完成的切换可幂等收口。
+
+同步和切换通过 OpenHands 正式 /api/bash/execute_bash_command 下发固定
+脚本，继承 Runtime 的 Git 配置和认证上下文。当前 source lock 对应的
+805bb3fe0 原生路由已取证。同步当前上游 remote 的所有远程分支后，再
+核对本地状态；刷新期间 branch／HEAD／upstream 发生变化则状态待确认。
+Runtime、认证或网络不可用时仍可读取提交历史，推送标记保持待确认。
+原先直接将本地旧上游引用差异显示为“待推送”的问题在此切片修复。
+
+Git Query 按宿主和会话范围隔离。正式核验结果同步至侧栏、文件树和
+概览缓存，未经核验的领先数字不展示。切换后刷新分支、历史、本地改动
+及文件目录，清理文件选择和工作树 Diff 快照，递增目录读取 epoch，
+阻止旧请求重新插入已切换分支的文件。会话切换后的迟到回调不更新新宿主。
+
+验证通过20项定向后端检查，覆盖真实 Git、中文分支、跟踪关系、非覆盖
+切换、忽略／未跟踪文件冲突、同名分支、锁、CAS、Runtime 配置、旧引用
+误标、刷新竞态、原生路由封装及两种宿主接口转发。8项 Chromium 回归
+通过，含分支选择、错误、文件树刷新、远端重试与原全屏滚动行为，截图
+检查通过。Web typecheck、新组件／菜单／API／测试 ESLint、受影响新增
+Python Ruff 与 diff 检查通过。既有工作台 Plug 未使用及 bootstrap 依赖
+问题、三项旧 Python 模块的20处既有行长提示已与 HEAD 对照，无新增诊断。
+唯一 Alembic head 为0200_message_model_changes，任务无 CURRENT。
+代码待 Platform／Web 发布，线上实际远端认证状态仍以发布后核验为准。
+
+### FIX-WORKSPACE-RETURN 文件全屏返回会话的阅读位置 — DONE
+
+2026-11-05。修复工具全屏隐藏会话后切回、或退出全屏进入分栏时，
+会话宽度变化导致已在底部的长回复停在中途。仅观察会话视口的显隐和
+宽度变化，按原有 followLatest 与用户阅读意图恢复底部或历史位置；
+隐藏视口不写入零尺寸滚动快照、不触发历史分页。内容高度、计时文案
+和过程动画不作为此次滚动触发源。
+
+新增底部／历史两项定向浏览器用例，覆盖文件全屏、会话 Tab 返回和退出
+全屏后的分栏恢复。既有全屏布局用例在读取几何尺寸前等待动画完成，
+避免把过渡中的宽度作为断言基准。两项 Git 历史纯函数测试更新为实际
+仓库根路径，修正旧夹具在授权仓库定位阶段提前失败的问题。
+
+经正式只读远端预检及平台会话定位，在对应活跃 Runtime 容器核验两项
+Git 状态。hq-calculator-option 的 daily 相对本地 origin/daily 领先6项，
+含当天2项及历史4项 merge；hq-service-usoptioncalcore 领先8项，含当天
+2项及历史6项 merge。两项工作树干净，均非浅克隆。实时 ls-remote 因
+非交互命令缺少 Git 用户名认证失败，未能判定远端最新分支指针；本地
+跟踪引用与当前服务器状态的差异仍待取得有效认证后核对。
+
+验证通过8项定向浏览器回归（底部／历史、全屏、手动滚动及正式过程事件
+追加）和3项 Git 历史／同步纯函数检查。Web typecheck、定向 ESLint
+（排除原文件已有的两项 react-refresh 导出警告）、diff 检查通过。
+额外尝试的旧 product-flow 顶层会话用例因导航仍匹配“Agent 会话”而超时，
+未到达 Git 断言；未宣称完整 E2E 通过。唯一 Alembic head 为
+0200_message_model_changes，任务无 CURRENT。修复待 Web 发布，无后续实现切片。
+
+### FIX-CASE-NAV 场景会话隐藏后的导航抢占 — DONE
+
+2026-11-05 复现从场景协调会话切换至 AI 工作台后，地址被改回场景会话、
+页面却显示节点中心的问题。RetainedPages 保留后台场景页挂载，其共享会话
+工作台仍读取全局 URL。切换后旧宿主无法从 /agent 解析自身 binding，自动
+选中首条场景会话并执行导航，而 App 的 view 仍为 agent-workbench，最终触发
+节点中心兜底。自动选中与无效会话路由恢复现均要求当前宿主页面处于前台。
+
+新增两项定向浏览器用例，覆盖会话目录已加载与离开后请求才返回。修改前
+两项均重现地址／页面错位，修改后两项通过，并检查经过轮询周期后地址、
+顶部选择和可见工作台一致。Web typecheck、新增测试 ESLint、diff 检查通过，
+唯一 Alembic head 为 0197_case_pause_reason，任务无 CURRENT。
+
+额外十二项既有浏览器回归三项通过、九项失败。全部九项已在独立的
+bd3160fa 未修改源码服务器对照复现，涉及场景文案／启动按钮断言、会话
+回复读取、隐藏 DOM 定位及流程列表旧夹具。工作台 ESLint 的未使用 Plug
+与 bootstrap 依赖提示亦在 HEAD 原源码复现。本片完成导航抢占修复，页面
+导航由本次两项隔离 API 专项验证，正式发布验收见下。
+
+#### FIX-CASE-NAV Web 发布验收
+
+2026-11-05 正式 Web 预检、commit-bound 最小上下文和发布收尾通过，发布
+0f55feb63a15fd6cee494659747a048e657c1f59。源码归档 SHA-256 为
+cec9946c663dfb4e4c6c0e46db8dbe9e2d4199df10d659e156682fbe8a8efce4，
+linux/amd64 Web 镜像 ID 为
+sha256:7d80506129791e319fefea6655408840294992661832a5fc27c0831338c2392a。
+保留旧 Web 回滚镜像及服务日志，定向 recreate Web 后 revision 与 HTTP
+健康通过。服务器配置哈希及其余 47 个容器的镜像和启动时间复核通过。
+
+公网首页、Agent 深链、根登录页和 API 鉴权边界通过，HTML、入口 JS／CSS
+与会话工作台 JS／CSS 共五项资源的 SHA-256 与实际运行镜像一致。全新
+Chromium 的平台登录页、Agent 深链与根登录页通过，应用 JavaScript 错误
+为零，两个 API 请求均带部署前缀。以实际运行镜像静态资源及隔离 API
+夹具执行本片两项交互回归通过，71 个 API 请求均带部署前缀。
+
+remote-release-finish 完成四项过期受管上下文及一个精确 Web 历史 tag
+回收，保留 24 小时上下文、实际引用和每仓库一个回滚镜像。收尾后 Web
+revision／健康、API／stream-api 健康与 readiness、服务器配置及 47 个保护
+容器再次复核通过。交互验收使用隔离夹具，真实业务资源未参与写入。
+
+### OPS-87-CS 会话管理事件数与累计 Token — DONE
+
+依赖 OPS-86 DONE。用户明确选择同时展示完整历史事件数与累计 Token，并支持
+按统计值排序。OpenHands 正式 ConversationInfo 暴露事件日志计数，复用后台
+用量同步写入用户隔离投影，管理列表一次批量读取。验证旧数据未知态、零值、
+归档／工作区／用户隔离、排序与分页。未知统计显示 —，零值保留，
+升降序均将未知置后，筛选后先排序再分页。后台计数以原生累积日志为准，
+使用条件 UPDATE 防止迟到快照回退，不读取或保存完整历史正文。
+
+SDK 固定来源 366cd8ecf0f833705f6b92957621905af5b85d8a 已合入 baseline。
+四包仍为 1.54.0，新增 conversation_stored_event_count_v1；新快照持久化计数，
+旧快照只由原生 EventLog 文件名索引补齐，保留压缩与分支历史。源码归档
+SHA-256 为 af2a07ff01b94117fd5bf2e43dbf3acc47ef9f2a9b203cdb3c096e033c42c8f6。
+固定源码 65 项及合并 baseline 67 项定向测试通过，SDK 变更文件 hooks、
+TypeScript lint／build／coverage／format 检查通过。baseline 动态属性全量
+hook 命中既有 build/lib 生成目录，改对本片两个 SDK 源文件检查通过。
+
+独立 PostgreSQL 实跑完整迁移链及 7 项定向测试通过，覆盖归档与用户隔离、
+零值／未知、跨连接迟到快照、0194 downgrade／upgrade 保留原记录及源码锁。
+Alembic 唯一 head 为 0194_conversation_event_count。会话管理 Playwright
+14 项通过，Web typecheck、受影响 ESLint、production build 与 diff 检查
+通过。窄屏布局检查通过。正式发布验收如下。
+
+#### OPS-87-CS 正式发布验收
+
+2026-11-04 正式 runtime 预检与 Web／platform commit-bound 最小上下文通过。
+发布提交 b07b8e680fab8cd845f09f6fdb9f39b4919e84e8，包含实现提交 f1e0b36d
+及探针来源常量修正。首次镜像构建由来源一致性断言拒绝旧探针常量，
+修正后重新从已提交版本构建，完整契约及独立 network=none 探针通过，
+含事件数在 fork／恢复后的契约验证。
+
+实际 linux/amd64 镜像如下。
+
+- Runtime sha256:6939d9a0afe593f5cf4eb945e4d8f22fe38c833d0d89221982d801c23c12647f
+- Platform sha256:555165b4bdb28174803d08ff95f59b9b8744991d6b8bea2b9b10f24a08e45817
+- Web sha256:d81d74506c7cb07b57b2362de98a1c7ce7caa2ce2c280f12ec03758ca0cf501f
+
+迁移退出码 0，唯一 head 为 0194_conversation_event_count；API、stream-api、
+Worker 和 Web 同步更新并通过健康验证。Runtime 原生活动门禁为空闲，
+服务器侧保留原状态备份与回滚镜像，通过正式 replacement 恢复至 generation 54。
+实际运行 digest、四包 1.54.0、server_info.build_git_sha、provenance、归档 SHA
+及 conversation_stored_event_count_v1 一致。326 个原生会话 ID 与持久挂载
+保留，原会话恢复后正式计数 411。33 个保护容器的镜像和启动时间、配置
+哈希核验通过。
+
+通过用户认证的正式只读接口核验两个新字段，当前根组 102 条记录中
+100 条已有累计 Token。实际读取样本回填 113 个事件及 3979914 累计 Token，
+后台同步亦已回填其他会话；其余未知统计继续由后台渐进补齐。
+
+公开首页、Agent 深链、根登录页、鉴权边界及四个静态资源哈希验证通过。
+本机直连公开静态代理返回 502，改用 SSH 只读取得运行镜像的同版资源，
+并以已验证的公开资源哈希确认一致。隔离模拟用户／API 的已发布前端
+浏览器专项通过，覆盖两列升降序、未知置后、跨页排序、选择不串扰、重置、
+1024 布局、全部 API 使用部署前缀与无 JavaScript 错误。远端 Chromium CLI
+直连 smoke 超时，已停止本片自建探针容器；该额外检查不记为通过。
+
+Web 与 platform 的 remote-release-finish 成功，上下文回收候选均为零，
+精确回收三个旧镜像的历史 tags，保留 24 小时受管上下文、实际引用和每仓库
+一个回滚镜像。收尾后再次验证版本、健康、资源哈希、generation、来源、
+原会话读取、配置与保护容器通过。
+
+本片在隔离分支 codex/conversation-size 实施与发布。收尾时主分支已并发
+提交 7801771b 的大模型配置 OPS-87，因此本片跟踪标识补为 OPS-87-CS；
+既有提交与发布资产中的 OPS-87 指向本会话统计切片。后续合并时，原本未提交的
+模型 Provider 用量查询迁移已改为 0195_model_provider_usage_query，并衔接于
+线上已应用的 0194_conversation_event_count 之后，以保持唯一 Alembic head。
+会话统计代码与验收记录现已合并至 feat/refactor。
+
+### OPS-87 大模型配置单行列表与详情信息布局 — DONE
+
+2026-11-04 按用户请求完成。服务列表将名称与连接状态收为单行，保留名称打开
+详情、行空白区域勾选、搜索与分页。测试连接、Codex 登录／断开、编辑和删除
+统一置于详情右上角，测试反馈在详情顶部按服务独立呈现。
+
+连接配置与上游预算并排展示，补充认证方式、调用协议和创建／更新时间。
+模型表展示启停数量、推理档位、默认推理档位及上下文窗口，缺失模型元数据
+明确显示未提供；沿用现有 API 数据与按需预算查询。窄屏调整为纵向概览，
+模型表在自身容器内滚动。
+
+Web typecheck、受影响 TS／E2E ESLint、diff 检查通过。模型布局及设置管理
+定向 Playwright 共 8 项通过，含 1920／1440／1024 宽度单行布局、右上角操作、
+服务切换反馈隔离、预算查询、模型配置、Codex 登录／断开与批量删除。
+该切片验收时 Alembic head 为 `0193_case_copy_stepwise_execution`，无迁移变更。
+验收使用受控 API 响应与本地 Chromium 页面。
+
+### FR-706 最终回复后的新消息直接发送 — DONE
+
+依赖 OPS-86 DONE。未完成轮次恢复只检查最新用户轮次，正式结束判断统一
+使用最新正式用户轮次，避免本地 activeTurnEventId 指向旧分支时重新开启
+运行状态。新消息 POST 到正式用户事件可读之间继续由原提交交接门控管理。
+
+新增四项受控 Chromium 回归覆盖 Workspace／Flow Node 的首屏和运行中
+REST 恢复。原实现先于“最终回复后暂停按钮消失”的断言复现失败；修复后
+四项均验证新消息实际 POST、队列为空、单一用户气泡和提交交接运行态。
+另十项相关既有回归通过，覆盖运行中排队、调整方向、message_complete、
+最终回复不可降级、Goal 循环和异常／暂停交接。
+
+扩展检查有四项既有失败，在未修改的 HEAD e6e182ec 隔离 Web 上均于相同
+断言复现。其中两项为旧会话返回后的正式回复可见性，两项为子任务摘要
+旧文案断言。Web typecheck、新增测试 ESLint、diff 检查和 CURRENT 唯一性
+通过；唯一 Alembic head 保持 0193_case_copy_stepwise_execution。
+本片实现验收为本地前端与受控 API 行为，正式 Web 发布验收如下。
+
+#### FR-706 Web 发布验收
+
+2026-11-04 按用户授权完成正式 Web 预检、commit-bound 最小上下文构建、
+定向服务更新与受管发布收尾。发布提交为
+36df3b290166ccd43cce740d1b918be0b2f6d5f6，源码归档 SHA-256 为
+e439250c2fb04a48c35a54c8bdfdb60ec82c21b6cfc9def3da27543ff7e9443d。
+实际 linux/amd64 Web image ID 为
+sha256:153860b6968692767e19fe5fbca9d6eafaad25575cd2234fdb1f739cc2a20b5f。
+
+服务器侧保留旧 Web 镜像回滚 tag 与服务／构建日志，仅定向 recreate Web。
+实际镜像 revision、Web HTTP、API／stream-api health 与 readiness、Worker
+和 Provider 健康通过；47 个保护容器的镜像及启动时间、服务器配置哈希
+核验通过。公网首页与 Agent 深链返回相同 HTML，入口 JS／CSS 和工作台
+模块 SHA-256 与运行镜像一致，前缀 API 未认证入口为 401，根登录页可读。
+
+通过本机只读静态资源代理加载实际已发布资源，受控 API 的五项浏览器回归
+通过，覆盖两类宿主的首屏／REST 恢复与 message_complete 后再次发送。
+另两项全新浏览器上下文验证首页／会话深链登录入口、前缀 API 请求和
+无 JavaScript 错误。浏览器行为验收使用隔离模拟身份与响应。
+
+remote-release-finish 成功，受管上下文回收候选为零，精确回收一个旧
+Web 历史 rollback tag，保留 24 小时上下文与每仓库一个回滚镜像。收尾后
+再次核验正式版本、资源哈希、服务健康、47 个保护容器和配置哈希通过。
+
+### OPS-86 长会话历史渲染与事件索引优化 — DONE
+
+依赖 FR-705 DONE。2026-11-04 按用户请求优化持续上拉直至全部展开的长会话。
+每个 transcript 共用一个 IntersectionObserver，按实测高度卸载视口外轮次正文，
+保留浅层占位及正式事件身份；最新轮次、编辑／搜索／引用目标和活动文本选择
+保留挂载。高度与原生详情展开状态按稳定 renderKey 保存，随 binding 的阅读
+快照恢复；已完成过程详情首次展开前延迟渲染。共享正式 parent 链的归属索引，
+缓存祖先解析，移除每轮重复全历史扫描及普通分支的无效祖先遍历；事件排序
+改用迭代遍历，保留原有顺序与环保护。
+
+受控 Chromium 完整展开 180 轮、540 个事件及 11 页历史，视口附近仅挂载
+8—9 轮正文，节点数约 729—797；同一数据的未修改版本有 13141 个节点。
+验证搜索跳转与高亮、历史阅读位置、展开状态、会话往返、1024／1440 布局；
+12000 个深链事件的排序及环保护通过。另覆盖运行中正式文本增长、历史
+退让与父链桥接、乱序事件、消息双身份及 Workspace 增量 hydration。
+共 30 项不同定向检查通过，最后 7 项发布回归通过。
+
+扩展检查有 10 项既有失败，均在 HEAD 9bac1c2f 的隔离未修改 Web 上同位置
+复现，未改断言或计为通过。其中 1 项查找旧导航名称，7 项为 Flow Node 的
+全局重复元素严格断言，2 项为旧会话返回后的正式回复断言。
+Web typecheck、新模块／事件排序／测试 ESLint、production build、diff 检查
+通过。两个既有大组件原有 3 条 ESLint 诊断与 baseline 对比一致，构建仍有
+既有 topbar CSS 语法及大 chunk 提示。唯一 Alembic head 保持
+0193_case_copy_stepwise_execution。Web 发布验收如下。
+
+#### OPS-86 Web 发布验收
+
+2026-11-04 正式 Web 预检、commit-bound 受管最小上下文与收尾通过。
+发布提交 `4981e7d8649c1f7fc3377d03c41fbd93eb03e7c8`，源归档 SHA-256 为
+`05db914dd9fe57e7c5f461952df18764de14b10dffb1267eb98195b81c792ddd`。
+实际 linux/amd64 Web image ID 为
+`sha256:7595a8e8ea8539de20af8daaf639688ee8fbbbc65e1d504d4e3ea4ceef22d817`。
+保存旧镜像回滚 tag 和服务日志，定向 recreate Web；实际 revision、HTTP、
+API／stream-api health 与 readiness 通过，37 个保护容器的镜像和启动时间、
+服务器配置哈希核验通过。
+
+公网 HTML 与 Agent 深层路由一致，两个入口资源及工作台模块的 SHA-256
+与运行镜像一致，模块含本次窗口化实现，两项 API 鉴权边界为 401。
+三个全新 Chromium 登录／深层路由／根登录页检查通过。
+
+经本机只读静态资源代理加载实际已发布 Web，以独立模拟账号及受控 API
+重跑完整长会话专项，全部 180 轮历史展开后挂载 8 轮正文、729 个页面节点。
+搜索、高亮、历史阅读锚点、工作过程展开／恢复、会话往返、1024 布局均通过，
+无页面 JavaScript 错误；39 项 API 请求使用部署前缀，根 API 请求为 0。
+该结果验证已发布前端与浏览器交互，真实用户历史和模型未参与负载验收。
+
+remote-release-finish 已回收两个过期且无引用的受管上下文及一个精确旧 Web
+历史 tag，保留 24 小时上下文、实际引用和每仓库一个回滚镜像。收尾后再次
+核验版本、健康、资源哈希、服务器配置和 37 个保护容器通过。无后续实现切片。
+
+### FR-704 Fork 后摘要模型凭据持久化与实际压缩回归 — DONE
+
+依赖 FR-585、OPS-12 DONE。固定线上源码 `73e3cd8e` 的故障为原生 Fork
+创建临时 LocalConversation 时遗漏 cipher，模型凭据落盘被脱敏；重新加载后
+主模型切换恢复自身凭据，而摘要器与主模型的 stream／stream_idle_timeout
+差异阻止摘要模型跟随更新。实现已在同一固定源码上完成最小修复：本地
+Fork 继承原 cipher，Agent Server 显式传入目标会话 cipher；默认摘要模型
+跟随切换时忽略两项传输差异，并重新校验摘要器以正确应用流式要求。
+独立摘要模型的模型与认证配置继续参与身份比较。
+
+不可变修复提交为 `9bf1678d86ca51b334c51f3f97677585e5b1064e`，已通过
+`842fefa` 合入 SDK baseline；本次 source lock 固定该纯修复提交，避免携带
+baseline 中其他后续变更。四包保持 `1.54.0`。源码归档 SHA-256 为
+`4481e401c09c23b88402807b99d46bbda8f7e998524d858ee1d35deb5c3a0ab9`。
+同步更新 Dockerfile 构建身份、平台固定身份、provenance 和架构断言。
+
+固定修复源码的 SDK／原生服务定向回归共 60 项通过。新增真实 TCP HTTP
+回归覆盖事件边界 Fork、持久状态重载、模型切换、原生 condense、正式
+Condensation 事件、再次重载、历史保留及继续回复；服务级共用 cipher 与
+每会话独立 cipher 两种方式均通过。相同 HTTP 回归在旧固定源码上于
+condense 复现失败。baseline 合入后的 54 项定向回归通过。
+模型响应使用确定性替身，此结果不代表线上真实模型验收。
+
+不可变归档校验／提取、五项无数据库 source supply／架构检查、Python
+语法检查、目标 Ruff、SDK pre-commit、diff 检查通过。baseline 的动态
+属性扫描改用全部 Git 跟踪 SDK 源文件，以排除原有 build/lib 副本的扫描
+干扰，其余 pre-commit 检查通过。新增镜像探针在固定源码下独立执行通过，
+要求 Fork 重载和切换后确实生成摘要且正式历史保留。完整固定镜像构建、
+镜像内完整契约和实际独立 Agent Runtime 同步由 OPS-85 验收。
+当前 Alembic 唯一 head 保持 `0193_case_copy_stepwise_execution`。
+
+### OPS-85 Fork 压缩修复 Runtime 发布与线上验收 — DONE
+
+依赖 FR-704 DONE。用户明确要求开始发布切片，并验证已有受损会话是否恢复。
+2026-11-04 以提交 `ffd567cc04dfe809afcd4245c09ad734ed545178` 通过正式
+runtime 预检，从 commit 归档的最小输入构建 linux/amd64 Runtime 镜像。
+构建内完整契约及独立、无网络、无业务挂载的镜像契约均通过，包含 Fork
+凭据重载、模型切换和实际生成原生摘要的探针。实际 Runtime image ID 为
+`sha256:8042dd4cbb1e367fd4cf61003174d7cf67fa1871c542bece76567a213614c459`。
+四包均为 `1.54.0`，实际 `/server_info.build_git_sha`、provenance 和 source
+lock 一致固定 `9bf1678d86ca51b334c51f3f97677585e5b1064e`。
+
+用户同时询问后续终端环境能否采用新 Runtime。本片同步构建平台镜像
+`sha256:64872c1633cd422e406269ee8a504b0eed9887bc49c71a69bf4bcbbf954f5ef5`，
+由受管 platform 最小上下文构建并冻结完整 revision。API、stream-api、Worker
+和 Runtime Provider 全部同步至同一提交及源码身份。终端创建 seed、OpenHands
+原生 Runtime builder 和独立 Agent Runtime 的实际配置均解析到上述 Runtime
+digest，终端入口验收覆盖配置与构建身份。后续发布的新环境版本按此固定
+源码执行正式打包，既有环境版本及 FlowRun 仍由各自冻结快照决定。
+
+首次活跃会话门禁发现运行项，等待结束后再次检查全部受影响 Runtime，确认
+无 running／starting／executing／stopping 才继续。服务器侧完成受保护的
+原生状态备份与回滚镜像保留，Compose／env 哈希验收通过。正式 migration
+退出码为 0，唯一 head 为 `0193_case_copy_stepwise_execution`。受影响常驻
+服务定向更新后健康检查通过，再通过平台正式 replacement 将独立 Agent
+Runtime generation 51 更新为 52，恢复 ACTIVE／可写。322 个原生持久化
+目录、既有 Binding 的原 native ID 和全部持久挂载验收通过，33 个保护
+容器的镜像及启动时间核验通过。
+
+线上新建 Fork 使用真实模型完成压缩，已读取正式 CONDENSATION_REQUESTED
+和 CONDENSATION_COMPLETED 事件。原生当前 View 从 49 个事件降至 24 个，
+可信 token 指标从 100926 降至 67211；源会话正式事件保留。压缩后发送
+独立验收消息，收到正式 assistant 最终回复并恢复 COMPLETED。原受损 Fork
+也经正式接口重试，Worker 任务最终为 DEAD，受保护 Runtime 日志继续报告
+`Summarization LLM call failed`／`Missing credentials`，其摘要器 api_key
+仍为空，而主模型凭据和父会话摘要器凭据仍有加密值。该已有会话尚未恢复
+压缩，后续由 FR-705 处理认证恢复。
+
+受管 `remote-release-finish` 完成，随后 API／stream-api 的 health、readiness、
+Worker、Provider、Runtime 实际身份及配置哈希再次验收通过。保留服务器侧
+受保护状态备份、失败日志、24 小时内受管上下文和受管回滚镜像。临时资料
+仅保存在忽略目录及服务器受保护发布上下文。本片只补记实际发布与验证结果，
+文档 diff 及 CURRENT 唯一性检查通过。
+
+### FR-705 已有受损 Fork 摘要模型认证的正式恢复 — DONE
+
+依赖 OPS-85 DONE。2026-11-04 完成原受损 Binding
+`b3a07bbd-eb2b-4f24-ab80-76d71528e3f4` 的认证恢复、真实压缩和继续对话验收。
+原生 `switch_llm` 正式接口增加显式、可发现的缺失摘要器认证恢复选项。
+LocalConversation 在原生状态锁内核对摘要模型完整配置，仅允许 API Key
+缺失时补齐，保留摘要策略和既有用量，拒绝配置不匹配及运行中恢复。
+EventService 在线程生命周期边界执行恢复，响应返回安全的认证存在标记。
+平台公开恢复动作只解析当前用户 Binding 的供应商与模型，不接受调用方
+提供的认证或模型配置，并拒绝活动压缩任务及忙碌会话。
+
+纯修复源码固定为 `4c563c0f96700b6b331c4a70cd244b287749e980`，经
+`8a7cafb69` 合入 SDK baseline；`46ba1f9` 适配 baseline 后续测试夹具。
+Runtime 归档 SHA-256 为
+`08039bd770dcaf6b5fbb289a862577b0eb1776d49106177575643c03ae5138ff`，
+四包保持 `1.54.0`。固定修复源码定向回归 59 项、合入后的 baseline 定向
+回归 63 项、平台适配器回归 4 项、源码供应链／架构检查 6 项通过。
+新增真实 TCP HTTP 回归覆盖恢复拒绝、重复恢复、持久重载、实际摘要生成、
+原历史保留及继续回复。镜像探针覆盖缺失认证恢复后持久重载和实际生成摘要。
+SDK 定向 pre-commit 通过；baseline 原有 build/lib 副本干扰动态属性扫描，
+改以全部 Git 跟踪 SDK Python 文件验证通过。平台 adapter 类型检查仍有
+42 条既有诊断，与改动前逐条消息一致，无新增诊断；四条既有行长问题
+保持原范围，受影响文件其余 Ruff、Python 语法及 diff 检查通过。
+
+发布输入绑定 FlowWeave 提交 `c9d9627ddbd65df2ad4c042c06bad8f34b1f7cbd`。
+正式 runtime 预检、受管 platform 最小上下文、linux/amd64 镜像构建、构建内
+及独立无网络完整镜像契约均通过。Runtime 实际 image ID 为
+`sha256:130a14ec283d8faf704b8d1a155f82afa659f2218a4a36cedbc9cad99e6dc33c`，
+平台 image ID 为
+`sha256:86bf0e5f90f5b27640ff708c23e19906bcbb9c1bab049c195b90026309dc6f16`。
+API、stream-api、Worker、Provider 全部使用同一发布提交；终端 seed、原生
+Runtime builder 和独立 Agent 镜像引用均解析为本次 Runtime digest。
+
+全部受影响 Runtime 的正式活动分页门禁无运行项后，服务器侧完成 323 个
+原生会话目录备份和回滚镜像保留；迁移退出码 0，唯一 Alembic head 为
+`0193_case_copy_stepwise_execution`。通过平台正式 replacement 单次受理，
+独立 Agent Runtime generation 52 更新为 53，恢复 ACTIVE／可写。
+实际容器 digest、四包版本、build_git_sha、provenance 和恢复 capability
+与 source lock 一致；原 Binding、原 native ID、工作区、持久挂载及全部
+323 个会话目录保留，33 个保护容器的镜像和启动时间核验通过。
+
+在原 Binding 通过平台正式恢复动作补齐认证，随后正式压缩任务
+`996ce01a-9087-40e2-9ad5-0f118ae1fef3` 为 SUCCEEDED。读取到正式请求事件
+`a2f75afa-178b-4bc4-bda7-038850391420` 和完成事件
+`5f9a3c44-e0bd-4bb8-9c06-27fc2e53bbf1`。真实模型生成摘要后，当前 View
+从 318 个事件降至 159 个，可信 token 从 409661 降至 193095。
+压缩后读取到的原有 320 个正式事件逐项一致。
+
+继续在同一原会话发送一条仅文字验收消息，正式用户事件为
+`167c3e66-2c9d-4a92-a18b-6f854f20de12`，assistant 最终回复事件为
+`b5a86d21-06d3-416e-8320-b67426aa625c`，正文为“FR-705 原会话恢复验证通过”。
+正式结果为 COMPLETED，最终 hydration 为 ready／finished，当前 View 为
+161 个事件、193160 tokens。最终分页包含 324 个正式事件；原事件 ID 与
+正文保持，仅上一条最终回复的展示投影 final_reply 随新轮次正常更新。
+服务器侧对照备份核验 377 个原生正式事件文件，全部内容哈希一致。
+摘要器 Key 已加密持久化；恢复操作本身保留主模型和摘要配置。正常续聊入口
+按既有逻辑更新 primary usage_id 和摘要器 stream_idle_timeout，模型、
+供应商、摘要策略及工作区身份核验一致。
+
+受管 remote-release-finish 完成，收尾后 API／stream-api health 与 readiness、
+Worker、Provider、Runtime 实际身份及服务器配置哈希再次验收通过。
+保留受保护备份和回滚镜像，临时证据只在忽略目录及服务器受保护发布上下文。
+CURRENT 唯一性核验通过；本片完成后停止，下一可执行切片为 OPS-84。
 
 ### OPS-12 独立 Agent Runtime baseline 同步升级 — DONE
 
@@ -15913,9 +17858,86 @@ SHA-256一致，API鉴权边界及全新Chromium三种登录／深链入口通�
 为10项；保留24小时上下文、实际引用及每仓库一个回滚镜像。收尾后再次
 核验Web健康／版本、配置和47个保护容器通过，未push。
 
+### OPS-BL1582 OpenHands baseline 1.58.2 Runtime 同步与 ask_user 发布 — DONE
 
-### OPS-84 会话配置侧栏与列表操作简化 — CURRENT
+2026-11-05。代码 commit `c03c724eb2d173af92d8f1cbadf3a4e6e3363a8b`（含 `9b83efa5`），
+source commit `536244f6e26617a3932ae9ac49cadc65039effd2`，上游锚点
+`ce5716a3c0a955a85bb0cc4dcfaa94d5fefcda50`，四包 1.58.2，归档 SHA-256
+`8c32a625ee056641e270b3fc8c641aee61e702f7cf0de3a70db3e1f34aadef76`。
 
-依赖 OPS-83 DONE。能力／认证改左侧导航，类型筛选与列表操作分行，
-Skill组合收进多选筛选弹层并显示激活数量，移除选择统计行；认证表头
-字体及全选控件与列表协调，沿用共享CapabilityManager和现有绑定语义。
+SDK 侧在 `baseline` 追加 `AskUserTool`／`AskUserAction`／`AskUserObservation` 与
+`ConversationExecutionStatus.WAITING_FOR_USER_INPUT`（无提问次数上限）；平台新增
+`pending-question` 路由和 `WAITING_USER_INPUT`，Case 以 ask_user 取代 `ASK_HUMAN`，
+Web 新增问题卡片与侧栏“需要用户输入”标识。
+
+镜像：服务器侧 linux/amd64 构建，Runtime `flowweave-openhands-runtime:1` 现指向
+`sha256:ca43f7fbef507032ab967d49f19478b4698302b8cd25b1fe1786d7c3e2b1aa59`（旧镜像
+保留为 `rollback-bl1582-pre`，digest `6939d9a0afe5`）；平台
+`sha256:b1b29786171cb…`，Web `sha256:e0f455a82e565…`，均带 revision 标签。
+`contract_check.py` 在构建中暴露三处针对旧上游的断言并随 1.58 更新：tmux 套接字锁参数化、
+清理／tmpdir 实现、Agent Profile schema 3→4；其余契约未改。
+
+门禁：平台投影无运行会话；原生 331 个会话为 finished 302／paused 8／error 16／idle 2／
+stuck 3，无 running/starting/executing/stopping。服务器侧先备份 `state/`（2.3GB，权限 600），
+再执行 `runtime-replace`（RECOVERING→ACTIVE）。替换后容器 digest、`build_git_sha`、四包
+版本、provenance 与 source lock 一致；原生会话 331 个且状态分布不变；`AskUserTool` 可解析；
+migration 退出码 0（无新迁移）。Agent 会话容器、终端环境 setup、插件解析和环境构建均引用同一
+`:1` 镜像。公网首页、`/agent`、`/agent/schedules` 为 200，`pending-question` 路由对非等待会话返回
+`pending=false`。受管收尾已执行，未 push。
+
+未完成项：尚未用真实模型触发一次 ask_user 的端到端问答（未创建测试会话）；
+FR 之外既有的 32 项架构／环境测试失败为发布前即存在，未在本次处理。
+
+### OPS-BL1582b ask_user 不再暂停运行与 baseline e934488e5 Runtime 同步 — DONE
+
+2026-11-05。代码 commit `768dce932cb518a5a4bdc5bdc25bce3f45aefc65`（含 `b5c73975`），
+source commit `e934488e53a97377f8b35d1b564086a1092a6bfa`，上游锚点不变，四包 1.58.2，归档
+SHA-256 `55d2f19690ae2a3e7ec7993db697626a829f71b8ab754358549e75845026e4fd`。
+
+行为：`ask_user` 支持 `questions`（至多 3 个），调用后不改变原生执行状态；模型决定继续工作或
+以一条总结收尾。开放问题＝活动分支上最新 ask_user ActionEvent 之后无用户消息。用户回复通过
+V5 消息信封的 `answered_question` 携带被回答问题，前端以单行引用展示。
+
+镜像：服务器侧 linux/amd64 构建，Runtime `flowweave-openhands-runtime:1` 现指向
+`sha256:545557289c5761bc05dc8feb2b3595bea4aad48ac27453dce0cb2d0bc9afc243`（旧镜像保留为
+`rollback-e934488e-pre`，`ca43f7fbef50`）；平台 `sha256:66793ea87a50…`，Web
+`sha256:f2a9e0974d50…`。镜像内 `contract_check.py` status ok。
+
+门禁与切换：原生会话 336 个，error 16／finished 307／idle 2／paused 8／stuck 3，无
+running/starting/executing/stopping；服务器侧先备份 `state/`（压缩包权限 600，gzip 校验通过；
+备份期间仅一个已 finished 的历史会话目录被读到变化）。migration 退出码 0，随后重建
+runtime-provider／api／stream-api／worker，再执行 `runtime-replace`（RECOVERING→ACTIVE）。
+新 generation 容器 digest、`/server_info.build_git_sha`、四包版本与 source lock 一致，`AskUserTool`
+可解析，原生会话数量与状态分布不变。公网首页、`/agent`、`/agent/schedules` 为 200。受管收尾已执行。
+
+未完成项：尚未用真实模型触发一次“ask_user 后继续工作”的端到端问答（未创建测试会话）；
+`tests/architecture` 既有 11 项失败与发布前一致。
+
+### OPS-BL1583 ask_user 真实阻塞等待与 baseline b2131e0ef Runtime 同步 — DONE
+
+2026-11-05。代码 commit `d7ee30ead23c266db03a30cc35c5a1bb81e7f624`（含 `2aa3d164`），source commit
+`b2131e0ef31a459486f6bd716e150c7e710c8a78`，上游锚点不变，四包 1.58.2，归档 SHA-256
+`a7defbd65c78ba5e1fa26b4dd5eca3f7ddc9a546a02fc5a4873f6cb3e3e12f9a`。
+
+行为：`ask_user` 调用后会话进入原生 `WAITING_FOR_USER_INPUT` 并停止（同批含 finish 除外）。跳过不发送任何消息、
+保持等待；会话区的提问行提供“回答问题”重新打开卡片。运行中提交为追加消息，等待／暂停时提交为新消息。
+下一条用户消息是否构成答复由模型判断（未回答则重新提问）。
+
+镜像：Runtime `flowweave-openhands-runtime:1` 现为 `sha256:d48c26d42c72…`（旧镜像保留为
+`rollback-e934488e-pre2`，`545557289c57`）；平台 `sha256:29de7e1786b5…`，Web `sha256:8333c017ba62…`。
+门禁：原生会话 355 个，error 16／finished 321／idle 2／paused 13／stuck 3，无运行态；服务器侧先备份 `state/`
+（权限 600，gzip 校验通过；仅一个历史 finished 会话目录在备份期间变化）。migration 退出码 0，随后重建
+runtime-provider／api／stream-api／worker／web，再执行 `runtime-replace`（RECOVERING→ACTIVE）。新容器 digest、
+`build_git_sha`、四包版本与 source lock 一致，会话数量与状态分布不变，`/flowweave/`、`/agent`、`/agent/schedules` 为 200。
+
+未完成项：尚未用真实模型端到端触发一次 ask_user 阻塞问答（未创建测试会话）；`tests/architecture` 既有 11 项失败与发布前一致。
+
+### OPS-BL1584 ask_user 部分回答后仅重问未答问题与 baseline 89dd0d1b0 同步 — DONE
+
+SDK `baseline` 提交 `89dd0d1b0c9bccdee8bbae4eb710500d12115455`：`ask_user` 描述要求模型在用户只回答部分问题时先回应已答内容，再仅对未答问题重新调用 `ask_user`。归档 SHA-256 `63b3aebec0a76e305961040a68452a7e05e99e578b6cbf83c96072b656c32b0f`。Web 端仅发送已答问题（`ec3e5a50`）。2026-11-05 以 commit `5bf11a77d330ecd9ac36697247eb6bca18429ede` 完成 runtime 范围发布：Runtime `flowweave-openhands-runtime:1` 现为 `sha256:848f9d5f5c0a…`（旧镜像保留为 `rollback-b2131e0e-pre`，`d48c26d42c72`）；平台 `sha256:177c6ad06108…`，Web `sha256:37c2d3713bb8…`。门禁：原生会话 357 个，error 16／finished 321／idle 2／paused 15／stuck 3，无运行态；服务器侧先备份 `state/`（权限 600，gzip 校验通过；一个历史会话目录在备份期间变化）。migration 退出码 0，随后重建 runtime-provider／api／stream-api／worker／web，再执行 `runtime-replace`。新容器 digest、`build_git_sha=89dd0d1b0…`、四包 1.58.2 与 source lock 一致，`ask_user.py` 含新描述，公网首页、`/agent`、`/agent/schedules` 为 200。
+
+未完成项：尚未用真实模型端到端验证“只答部分问题后模型回应并重新提问”；`tests/architecture` 既有 11 项失败与发布前一致。
+
+### OPS-BL1585 ask_user 先处理已答问题再重问与 baseline 805bb3fe0 同步 — DONE（已部署 7c1e7604）
+
+SDK `baseline` 提交 `805bb3fe0a57cdc3e383e26019fa216a6892e608`，归档 SHA-256 `eaf4322c182d2ea80202840b43834cb72697371e479eca91aaf03dc458adb208`。线上试验（`89dd0d1b0`）发现模型在用户只答一题后立即重新调用 `ask_user`，没有先做已答问题对应的实际工作；描述改为：先依据已答内容完成实际工作并汇报，再仅对未答问题重问。Web：提问卡片出现导致会话容器变矮时，跟随最新内容的会话保持贴底，不被卡片遮挡。已随合并提交 `7c1e76046f5bc99e36951feb48145b9e2eb72b4b` 发布（含远程 origin 的 `1ee81f3b` 与另一会话的 Git 分支功能）：Runtime 镜像 `flowweave-openhands-runtime:1` = `bl-805bb3fe`（sha256:7ed73c05…），platform/web 镜像带 revision 标签，migration 退出码 0，runtime-provider/api/stream-api healthy，`runtime-replace` 后 `/server_info.build_git_sha=805bb3fe…`，公网 `/flowweave/`、`/agent`、`/agent/schedules` 均 200；发布前备份了 Agent 工作区 state。回退锚点：`rollback-89dd0d1b-pre` 标签。

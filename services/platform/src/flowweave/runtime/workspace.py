@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import io
 import json
@@ -1562,6 +1563,38 @@ def materialize_agent_workspace_capability_marketplace(
     host_root: Path,
     runtime_root: Path,
     marketplace_name: str,
+    plugin_namespace: str | None = None,
+) -> str | None:
+    # Parent and child sessions publish into the inherited native marketplace.
+    # Serialize its read/modify/write across API workers and different bindings.
+    if host_root.name in {"", ".", ".."} or host_root.parent.is_symlink():
+        raise DomainError(
+            "RUNTIME_CAPABILITY_UNAVAILABLE",
+            "The Agent Workspace capability directory is invalid",
+            409,
+        )
+    host_root.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(
+        host_root / ".marketplace.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600
+    )
+    with os.fdopen(descriptor, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return _materialize_agent_workspace_capability_marketplace(
+            capability,
+            host_root=host_root,
+            runtime_root=runtime_root,
+            marketplace_name=marketplace_name,
+            plugin_namespace=plugin_namespace,
+        )
+
+
+def _materialize_agent_workspace_capability_marketplace(
+    capability: dict[str, Any] | None,
+    *,
+    host_root: Path,
+    runtime_root: Path,
+    marketplace_name: str,
+    plugin_namespace: str | None,
 ) -> str | None:
     """Create/update the read-only native Marketplace for one Conversation.
 
@@ -1597,6 +1630,9 @@ def materialize_agent_workspace_capability_marketplace(
                 409,
             )
         plugin_ref = _agent_workspace_capability_plugin_name(capability)
+        namespace = _segment(plugin_namespace, "child") if plugin_namespace else None
+        if namespace:
+            plugin_ref = f"{namespace}-{plugin_ref}"
         if not any(item.get("name") == plugin_ref for item in plugins):
             plugin_root = marketplace_root / "plugins" / plugin_ref
             runtime_plugin_root = runtime_root / "marketplace" / "plugins" / plugin_ref
@@ -1661,11 +1697,17 @@ def materialize_agent_workspace_capability_marketplace(
                     mode=0o444,
                 )
             else:
-                plugin = _extract_plugin(capability, marketplace_root, runtime_root / "marketplace")
+                plugin_host = marketplace_root / namespace if namespace else marketplace_root
+                plugin_runtime = runtime_root / "marketplace"
+                if namespace:
+                    plugin_runtime /= namespace
+                plugin = _extract_plugin(capability, plugin_host, plugin_runtime)
                 plugins.append(
                     {
                         "name": plugin_ref,
-                        "source": f"./plugins/{Path(plugin.source).name}",
+                        "source": f"./{namespace}/plugins/{Path(plugin.source).name}"
+                        if namespace
+                        else f"./plugins/{Path(plugin.source).name}",
                     }
                 )
                 plugin = None

@@ -486,6 +486,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   let upstreamGateAuditEventPersisted = false;
   let gitSyncRequests = 0;
   let gitSynchronizesToRemote = false;
+  let backendGitBranch = 'main';
   // Early workspace reads run before the synchronization gate is installed.
   // eslint-disable-next-line prefer-const
   let gitSyncGate: Promise<void> | undefined;
@@ -614,7 +615,7 @@ test('top-level Agent workspace creates a direct conversation and restores its U
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         repositories: [
           { path: '/runtime/workspace/project', remote: 'https://example.test/repo.git', branch: 'main', head: '1234567890ab', upstream: 'origin/main', ahead: gitSynchronizesToRemote ? 0 : 2, behind: gitSynchronizesToRemote ? 0 : 1 },
-          { path: '/runtime/workspace/project/backend', remote: 'https://example.test/backend.git', branch: 'main', head: '1234567890ab' },
+          { path: '/runtime/workspace/project/backend', remote: 'https://example.test/backend.git', branch: backendGitBranch, head: '1234567890ab' },
         ],
       }) });
       return;
@@ -1257,6 +1258,8 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await expect.poll(() => compactConversationItem.evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(40);
   await expect(page.getByText('工作区已就绪。')).toBeVisible();
   await expect(page.getByText('需要部署 Gateway', { exact: true })).toBeVisible();
+  // Git information must load before the user opens the workspace tools.
+  await expect(page.locator('.agent-workspace-summary').getByLabel('打开工作区工具')).toBeVisible();
   const gitSummary = page.locator('.agent-workspace-git-summary');
   await expect(gitSummary).toContainText('Git 信息');
   await expect(gitSummary).toContainText('main');
@@ -1313,6 +1316,11 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.getByRole('button', { name: '文件', exact: true }).click();
   await expect(page.getByText('README.md', { exact: true })).toBeVisible();
   await expect(page.locator('.agent-file-tree input[type=checkbox]')).toHaveCount(0);
+  const backendRow = page.locator('.agent-file-tree-row').filter({ hasText: 'backend' });
+  await expect(backendRow.getByText('main', { exact: true })).toBeVisible();
+  backendGitBranch = 'feature/refresh-branch';
+  await page.getByLabel('刷新 Git 分支信息').click();
+  await expect(backendRow.getByText('feature/refresh-branch', { exact: true })).toBeVisible();
   await page.getByLabel('全屏查看工作区工具').click();
   const gitSidebar = page.getByRole('complementary', { name: 'Git' });
   await expect(gitSidebar).toBeVisible();
@@ -1817,7 +1825,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   const mcpDetail = completedProcess.locator('.conversation-tool-detail[data-tool-kind="mcp"]');
   await expect(mcpDetail).toHaveCount(1);
   await expect(mcpDetail.locator(':scope > summary .conversation-tool-kind')).toHaveCount(0);
-  await expect(mcpDetail.locator(':scope > summary > svg.lucide-plug-zap')).toBeVisible();
+  // The MCP icon and the server name are one unit (market-data comes from market-data.get-kline).
+  const mcpBadge = mcpDetail.locator(':scope > summary > .conversation-mcp-badge');
+  await expect(mcpBadge.locator('svg.lucide-plug-zap')).toBeVisible();
+  await expect(mcpBadge).toContainText('market-data');
   await expect(completedProcess.locator('.conversation-activity-row.thought.tool-thought.tool-mcp')).toContainText('我先通过行情 MCP 获取日线数据。');
   await mcpDetail.locator(':scope > summary').click();
   await expect(mcpDetail.getByText('事件类型', { exact: true })).toBeVisible();
@@ -2072,8 +2083,10 @@ test('top-level Agent workspace creates a direct conversation and restores its U
   await page.locator('h2.agent-session-title').click();
   await expect(page.locator('.agent-composer-model-popover')).toBeHidden();
   await page.getByLabel('打开模型与推理设置').click();
-  await page.getByRole('button', { name: '供应商 已测试模型' }).click();
-  await page.getByLabel('选择供应商').getByRole('button', { name: '另一模型配置' }).click();
+  // Cascade: hovering a provider reveals its models, clicking a model applies it at once.
+  await page.getByRole('option', { name: '供应商 另一模型配置' }).hover();
+  await expect(page.getByRole('option', { name: '模型 gpt-second' })).toBeVisible();
+  await page.getByRole('option', { name: '模型 gpt-second' }).click();
   await expect.poll(() => persistedModelSelection).toEqual({
     model_provider_id: 'provider-2', model_name: 'gpt-second', reasoning_effort: 'high',
   });
@@ -3081,7 +3094,7 @@ test('each user message can be edited and replaced on its active branch', async 
       rerunPayload = JSON.parse(request.postData() ?? '{}') as Record<string, unknown>;
       await new Promise<void>(resolve => { releaseRewrite = resolve; });
       rewritten = true;
-      return route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true, cursor: 'rethink-user' }) });
+      return route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ accepted: true, cursor: 'rethink-user', event_id: 'rethink-user' }) });
     }
     return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }) });
   });
@@ -3095,6 +3108,11 @@ test('each user message can be edited and replaced on its active branch', async 
   await expect(page.locator('[data-user-event-id="original-user"]')).toContainText('审计报告.md');
   const rewriteButtons = page.getByRole('button', { name: '编辑并重新思考' });
   await expect(rewriteButtons).toHaveCount(2);
+  const earlierMessage = page.locator('[data-user-event-id="earlier-user"]');
+  await earlierMessage.hover();
+  await earlierMessage.getByRole('button', { name: '编辑并重新思考' }).click();
+  await expect(page.getByLabel('编辑已发送消息')).toHaveValue('更早的问题');
+  await page.getByLabel('编辑已发送消息').press('Escape');
   await page.locator('[data-user-event-id="original-user"]').getByRole('button', { name: '编辑并重新思考' }).evaluate(button => (button as HTMLButtonElement).click());
   await expect(page.locator('.conversation-message-edit')).toBeVisible();
   const rewriteEditor = page.getByLabel('编辑已发送消息');
@@ -3106,15 +3124,21 @@ test('each user message can be edited and replaced on its active branch', async 
   const rewriteForm = page.locator('.conversation-message-edit');
   const rewriteSurface = page.locator('.conversation-surface');
   await rewriteEditor.fill('第一行\n第二行\n第三行\n第四行\n第五行');
-  await expect.poll(() => rewriteEditor.evaluate(editor => {
-    const textarea = editor as HTMLTextAreaElement;
-    return textarea.clientHeight > 100 && textarea.clientHeight === textarea.scrollHeight;
-  })).toBe(true);
   await expect.poll(async () => {
     const form = await rewriteForm.boundingBox();
     const surface = await rewriteSurface.boundingBox();
-    return Boolean(form && surface && form.y + form.height <= surface.y + surface.height - 8);
+    return Boolean(form && surface && form.y + form.height <= surface.y + surface.height);
   }).toBe(true);
+  await rewriteEditor.fill(Array.from({ length: 9 }, (_, index) => `第${index + 1}行`).join('\n'));
+  await expect.poll(() => rewriteEditor.evaluate(editor => {
+    const textarea = editor as HTMLTextAreaElement;
+    return textarea.scrollHeight <= 240 && getComputedStyle(textarea).overflowY === 'hidden';
+  })).toBe(true);
+  await rewriteEditor.fill(Array.from({ length: 11 }, (_, index) => `第${index + 1}行`).join('\n'));
+  await expect.poll(() => rewriteEditor.evaluate(editor => {
+    const textarea = editor as HTMLTextAreaElement;
+    return textarea.clientHeight === 240 && textarea.scrollHeight > textarea.clientHeight && getComputedStyle(textarea).overflowY === 'auto';
+  })).toBe(true);
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
   await rewriteEditor.press('Escape');
   await expect(page.locator('.conversation-message-edit')).toHaveCount(0);
@@ -3134,7 +3158,7 @@ test('each user message can be edited and replaced on its active branch', async 
   await rewriteEditor.type('问题');
   await expect(rewriteEditor).toHaveValue('修改后的\n问题');
   expect(releaseRewrite).toBeUndefined();
-  await rewriteEditor.fill('修改后的问题');
+  await rewriteEditor.fill('  修改后的问题  ');
   await rewriteEditor.press('Enter');
   await expect(page.getByText('更早的问题', { exact: true })).toBeVisible();
   await expect(page.getByText('更早的回答', { exact: true })).toBeVisible();
@@ -3147,7 +3171,7 @@ test('each user message can be edited and replaced on its active branch', async 
   await expect(page.locator('.conversation-turn-status')).toHaveText('正在重新思考');
   await expect.poll(() => Boolean(releaseRewrite)).toBe(true);
   expect(rerunPayload).toMatchObject({
-    content: '修改后的问题',
+    content: '  修改后的问题  ',
     attachments: [attachedReport],
     workspace_references: [referencedFile],
   });
@@ -3542,17 +3566,25 @@ test('Agent new session keeps full capabilities and can create an explicit works
     ]),
   }));
 
-  await page.route('**/api/v1/model-providers', route => route.fulfill({
-    status: 200,
-    contentType: 'application/json',
-    body: JSON.stringify([{
-      id: 'provider-default', name: '默认供应商', connection_state: 'CONNECTED',
-      models: [{ model_name: 'gpt-default', enabled: true, is_default: true }],
-    }, {
-      id: 'provider-pro', name: '专业供应商', connection_state: 'CONNECTED',
-      models: [{ model_name: 'gpt-pro', enabled: true, is_default: true, default_reasoning_effort: 'high', supported_reasoning_efforts: ['low', 'high'] }],
-    }]),
-  }));
+  const providers = [{
+    id: 'provider-default', name: '默认供应商', connection_state: 'CONNECTED',
+    models: [{ model_name: 'gpt-default', enabled: true, is_default: true }],
+  }, {
+    id: 'provider-pro', name: '专业供应商', connection_state: 'CONNECTED',
+    models: [{ model_name: 'gpt-pro', enabled: true, is_default: true, default_reasoning_effort: 'high', supported_reasoning_efforts: ['low', 'high'] }],
+  }];
+  await page.route('**/api/v1/model-providers', async route => {
+    if (route.request().method() === 'POST') {
+      const created = {
+        id: 'provider-new', connection_state: 'CONNECTED',
+        ...route.request().postDataJSON(),
+      };
+      providers.unshift(created);
+      await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(created) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(providers) });
+  });
 
   await login(page);
   await page.getByRole('button', { name: 'Agent 会话' }).click();
@@ -3632,13 +3664,31 @@ test('Agent new session keeps full capabilities and can create an explicit works
   expect(attachmentUploads).toBe(2);
 
   await composer.fill('切换页面后仍应保留的首条草稿');
+  await page.getByRole('button', { name: '账户与设置' }).click();
+  await page.getByRole('menuitem', { name: '供应商配置', exact: true }).click();
+  await page.getByRole('button', { name: '新增供应商', exact: true }).click();
+  const providerEditor = page.locator('form.model-editor');
+  await providerEditor.getByLabel('服务名称', { exact: true }).fill('即时可用供应商');
+  await providerEditor.getByLabel('Base URL', { exact: true }).fill('https://models.example.test/v1');
+  await providerEditor.getByLabel('API Key', { exact: true }).fill('fixture-key');
+  await providerEditor.getByLabel('模型 1', { exact: true }).fill('gpt-new');
+  await providerEditor.getByRole('button', { name: '保存供应商', exact: true }).click();
+  await page.getByRole('button', { name: 'Agent 会话', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
+  await page.getByLabel('打开模型与推理设置').click();
+  await page.getByRole('button', { name: '供应商 专业供应商' }).click();
+  await expect(page.getByLabel('选择供应商').getByRole('button', { name: '即时可用供应商', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '返回模型设置', exact: true }).click();
+  await page.getByRole('button', { name: '供应商 专业供应商' }).click();
+  await page.getByLabel('选择供应商').getByRole('button', { name: '即时可用供应商', exact: true }).click();
+  await expect(page.getByLabel('打开模型与推理设置')).toContainText('即时可用供应商 gpt-new');
   await page.getByRole('button', { name: '节点中心', exact: true }).click();
   await page.getByRole('button', { name: 'Agent 会话', exact: true }).click();
   await expect(page.getByRole('heading', { name: '新会话' })).toBeVisible();
   await expect(page.getByLabel('发送 Agent 消息')).toHaveValue('切换页面后仍应保留的首条草稿');
   await expect(page.locator('.agent-attachments').getByText('需求.png', { exact: true })).toBeVisible();
   await expect(page.locator('.agent-attachments').getByText('需求说明.md', { exact: true })).toBeVisible();
-  await expect(page.getByText('当前供应商：专业供应商 · 前端工作区', { exact: true })).toBeVisible();
+  await expect(page.getByText('当前供应商：即时可用供应商 · 前端工作区', { exact: true })).toBeVisible();
   expect(conversations).toHaveLength(0);
   expect(bootstrapPayload).toBeNull();
 
@@ -3693,7 +3743,7 @@ test('Agent new session keeps full capabilities and can create an explicit works
   await page.getByRole('button', { name: '发送消息' }).click();
   await expect(page).toHaveURL(/\/agent\/conversations\/fr58-conversation$/);
   expect(bootstrapPayload).toMatchObject({
-    model_provider_id: 'provider-pro', model_name: 'gpt-pro', reasoning_effort: 'low',
+    model_provider_id: 'provider-new', model_name: 'gpt-new', reasoning_effort: null,
     work_directory_id: 'fr58-frontend', content: '实现前端工作区',
     attachments: [
       { path: '/runtime/workspace/project/uploads/0123456789abcdef0123456789abcdef-需求.png', image_data_url: 'data:image/png;base64,iVBORw==' },

@@ -12,7 +12,10 @@ from flowweave.modules.agent_sessions.application import (
     history_access,
     history_sessions,
 )
-from flowweave.modules.agent_sessions.infrastructure.models import AgentConversationBinding
+from flowweave.modules.agent_sessions.infrastructure.models import (
+    AgentChildConversation,
+    AgentConversationBinding,
+)
 from flowweave.modules.agent_sessions.presentation import history_mcp as mcp
 from flowweave.modules.agent_workspaces.infrastructure.models import AgentWorkspace
 from flowweave.modules.users.application.security import tenant_bypass, tenant_user
@@ -39,6 +42,11 @@ def persisted(graph, monkeypatch):
         if constraint.name == "ck_agent_conversation_working_directory":
             table.constraints.remove(constraint)
     table.create(g.db.get_bind())
+    child_table = AgentChildConversation.__table__.to_metadata(MetaData())
+    for constraint in tuple(child_table.constraints):
+        if constraint.name == "ck_agent_child_audit":
+            child_table.constraints.remove(constraint)
+    child_table.create(g.db.get_bind())
     AgentWorkspace.__table__.create(g.db.get_bind())
     g.db.add(AgentWorkspace(id="workspace", scope_key="default"))
     for binding in g.bindings.values():
@@ -140,8 +148,8 @@ def test_reference_metadata_cannot_disclose_another_users_conversation(persisted
         g.db, workspace, g.first.id, None, None
     )
     assert own["source_binding_id"] == g.first.id
-    assert own["history_tool"] == "platform_conversation_history"
-    assert own["resolved_content"] == "user: 来源内容"
+    assert own["history_tool"] == "read_referenced_conversation"
+    assert "resolved_content" not in own
     with pytest.raises(DomainError) as caught:
         conversations._resolve_source_conversation_reference(
             g.db, workspace, g.other_source.id, None, None

@@ -89,7 +89,7 @@ from flowweave.runtime.mock import MockRuntime
 from flowweave.shared.artifact_store import artifact_store_context
 from flowweave.shared.credentials_crypto import encrypt_secret
 from flowweave.shared.errors import DomainError
-from flowweave.shared.models import BackgroundTask, ManagedSandbox, TaskState
+from flowweave.shared.models import BackgroundTask, CapabilityVersion, ManagedSandbox, TaskState
 from flowweave.shared.settings import settings_context
 
 
@@ -214,10 +214,11 @@ def test_git_history_marks_commits_ahead_of_the_upstream_branch(tmp_path):
         git("commit", "-m", f"local revision {index}")
 
     history = workspace.git_log(
-        tmp_path,
+        repository,
         "/runtime/workspace/project",
         ("/runtime/workspace/project",),
         "/runtime/workspace/project",
+        remote_status="verified",
     )
 
     assert history["repository"]["upstream"] == "origin/main"
@@ -247,7 +248,7 @@ def test_git_history_does_not_guess_unpushed_commits_without_upstream(tmp_path):
     )
 
     history = workspace.git_log(
-        tmp_path,
+        repository,
         "/runtime/workspace/project",
         ("/runtime/workspace/project",),
         "/runtime/workspace/project",
@@ -2936,6 +2937,7 @@ def test_agent_workspace_bootstrap_creates_only_on_first_message_and_freezes_dir
         assert runtime.request is not None
         assert runtime.request.workspace_ref == "/runtime/workspace/project/backend"
         assert first["cursor"] == "first-user-event"
+        assert first["event_id"] == "first-user-event"
         assert (
             first["conversation"]["work_directory_version_id"] == directory["current_version"]["id"]
         )
@@ -3012,8 +3014,34 @@ def test_agent_workspace_bootstrap_starts_native_goal_without_plain_first_messag
         assert title_task.payload_json["first_message"] == objective
 
 
+def test_workspace_activity_reads_questions_only_for_native_waiting_status(monkeypatch):
+    statuses = ["idle", "finished", "paused", "error", "running", "waiting_for_user_input"]
+    bindings = [
+        SimpleNamespace(id=status, openhands_conversation_id=status) for status in statuses
+    ]
+    native_activity = {
+        status: RuntimeConversationActivity(status, status, datetime.now(UTC).isoformat())
+        for status in statuses
+    }
+    probes = []
+
+    def pending_question(handle):
+        probes.append(handle)
+        return SimpleNamespace(action_id="open-question")
+
+    monkeypatch.setattr(
+        conversations, "get_runtime", lambda: SimpleNamespace(get_pending_question=pending_question)
+    )
+    monkeypatch.setattr(conversations, "_handle", lambda _db, _workspace, binding: binding.id)
+    result = conversations._open_question_binding_ids(None, None, bindings, native_activity)
+
+    assert result == {"waiting_for_user_input": "open-question"}
+    assert probes == ["waiting_for_user_input"]
+
+
+@pytest.mark.parametrize("source_version_state", ["PUBLISHED", "RETIRED", "missing"])
 def test_sidebar_conversation_inherits_source_configuration_and_appends_context(
-    settings, db_session_factory, monkeypatch
+    settings, container, db_session_factory, monkeypatch, skill_capability, source_version_state
 ):
     class CapturingRuntime(MockRuntime):
         requests = []
@@ -3047,8 +3075,15 @@ def test_sidebar_conversation_inherits_source_configuration_and_appends_context(
             (workspace.id, target.id, references)
         ),
     )
-    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+    with (
+        settings_context(settings),
+        tenant_user(FLOWWEAVE_USER_ID),
+        artifact_store_context(container.artifact_store),
+        db_session_factory() as db,
+        runtime_context(runtime),
+    ):
         workspace = _ready_workspace_for_conversation(db)
+        source_version_id = skill_capability["capability_id"]
         source = conversations.bootstrap_conversation(
             db,
             workspace.id,
@@ -3064,8 +3099,26 @@ def test_sidebar_conversation_inherits_source_configuration_and_appends_context(
                 },
             ),
             content="主会话消息",
+            capability_version_ids=(source_version_id,),
             idempotency_key="sidebar-source",
         )["conversation"]
+
+        source_version = db.get(CapabilityVersion, source_version_id)
+        latest_version = CapabilityVersion(
+            package_id=source_version.package_id,
+            blob_id=source_version.blob_id,
+            version_no=source_version.version_no + 1,
+            digest="f" * 64,
+            normalized_config_json=dict(source_version.normalized_config_json),
+            source_filename=source_version.source_filename,
+            state="PUBLISHED",
+        )
+        db.add(latest_version)
+        if source_version_state == "missing":
+            db.delete(source_version)
+        else:
+            source_version.state = source_version_state
+        db.commit()
 
         created = sidebar_conversations.create_sidebar_conversation(
             db,
@@ -3091,6 +3144,14 @@ def test_sidebar_conversation_inherits_source_configuration_and_appends_context(
             }
         ]
         assert child.working_directory == source["working_directory"]
+        assert source["capabilities"][0]["id"] == source_version_id
+        assert created["capabilities"][0]["id"] == latest_version.id
+        recovered = sidebar_conversations.sidebar_conversation_for_source(
+            db, workspace.id, source["id"]
+        )
+        assert recovered["binding_id"] == child.id
+        assert recovered["source_binding_id"] == source["id"]
+        assert recovered["expired"] is False
         assert len(runtime.requests) == 2
         assert runtime.messages[-1] == "侧边追问"
         assert prepared_history[0][2] == ()
@@ -3099,7 +3160,8 @@ def test_sidebar_conversation_inherits_source_configuration_and_appends_context(
         assert implicit_reference["kind"] == "conversation"
         assert implicit_reference["source_binding_id"] == source["id"]
         assert (
-            implicit_reference["source_conversation_id"] == source["openhands_conversation_id"]
+            implicit_reference["source_conversation_id"]
+            == db.get(AgentConversationBinding, source["id"]).openhands_conversation_id
         )
         suffix = runtime.requests[-1].agent_spec.agent_context.system_message_suffix
         assert "已隐式授权按需读取此主会话" in suffix
@@ -3573,6 +3635,99 @@ def test_agent_workspace_bootstrap_explicit_failure_cleans_up_hidden_conversatio
         assert result["conversation"]["id"] == draft_id
         assert result["accepted"] is True
         assert len(list(db.scalars(select(AgentConversationCredentialSync)))) == 1
+
+
+@pytest.mark.parametrize("cancel_stage", ["before_reserve", "before_native_create", "before_send", "after_send"])
+def test_agent_workspace_bootstrap_cancel_until_first_message_is_dispatched(
+    settings, db_session_factory, monkeypatch, cancel_stage
+):
+    class CancelRuntime(MockRuntime):
+        deleted = 0
+        created = 0
+        sent: list[str] = []
+
+        def create_conversation(self, request):
+            self.created += 1
+            return super().create_conversation(request)
+
+        def send_message(self, handle, content, image_urls=()):
+            self.sent.append(content)
+            return super().send_message(handle, content, image_urls)
+
+        def delete_conversation(self, handle):
+            del handle
+            self.deleted += 1
+
+    monkeypatch.setattr(
+        conversations,
+        "runtime_provider",
+        lambda _db, asset, **kwargs: RuntimeProvider(
+            provider_id=asset["asset"]["executor"]["model_provider_id"],
+            base_url="https://models.example.test/v1",
+            model=kwargs.get("model_name") or "test-model",
+            api_key="x",
+        ),
+    )
+    runtime = CancelRuntime()
+    key = "draft-cancel"
+    with (
+        settings_context(settings),
+        tenant_user(FLOWWEAVE_USER_ID),
+        db_session_factory() as db,
+        runtime_context(runtime),
+    ):
+        workspace = _ready_workspace_for_conversation(db)
+        draft_id = str(uuid4())
+
+        def start():
+            return conversations.bootstrap_conversation(
+                db,
+                workspace.id,
+                work_directory_id=None,
+                conversation_id=draft_id,
+                model_provider_id=workspace.default_model_provider_id,
+                content="撤回我",
+                idempotency_key=key,
+            )
+
+        if cancel_stage == "before_reserve":
+            assert conversations.cancel_bootstrap(db, workspace.id, key) == {"cancelled": True}
+            with pytest.raises(DomainError) as caught:
+                start()
+            assert caught.value.code == "AGENT_MESSAGE_CANCELLED"
+            assert runtime.created == 0 and runtime.sent == []
+            return
+
+        original = {
+            "before_native_create": "_create_native_conversation",
+            "before_send": "_claim_bootstrap_dispatch",
+            "after_send": "_activate_bootstrapped_conversation",
+        }[cancel_stage]
+        real = getattr(conversations, original)
+
+        def cancel_then_continue(*args, **kwargs):
+            if cancel_stage == "before_send" and not kwargs.get("dispatching"):
+                return real(*args, **kwargs)
+            result = conversations.cancel_bootstrap(db, workspace.id, key)
+            cancel_then_continue.result = result
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(conversations, original, cancel_then_continue)
+        if cancel_stage == "after_send":
+            # The first user event is already native: it cannot be retracted.
+            result = start()
+            assert cancel_then_continue.result == {"cancelled": False}
+            assert result["accepted"] is True and runtime.sent == ["撤回我"]
+            assert db.get(AgentConversationBinding, draft_id) is not None
+            return
+        with pytest.raises(DomainError) as caught:
+            start()
+        assert caught.value.code == "AGENT_MESSAGE_CANCELLED"
+        assert cancel_then_continue.result == {"cancelled": True}
+        assert runtime.sent == []
+        assert db.scalar(select(AgentConversationBinding)) is None
+        assert db.scalar(select(AgentConversationCommand)) is None
+        assert conversations.list_conversations(db, workspace.id) == []
 
 
 def test_agent_workspace_bootstrap_rejects_reuse_of_deleted_draft_id(
@@ -5988,6 +6143,7 @@ def test_agent_workspace_repairs_legacy_finish_fork_once_before_sending(
         repaired_conversation_id = binding.openhands_conversation_id
         assert repaired_conversation_id != runtime.damaged_conversation_id
         assert first["cursor"] == "user-1"
+        assert first["event_id"] == "user-1"
         assert runtime.fork_calls == [
             (
                 "10000000-0000-4000-8000-000000000099",
@@ -6001,6 +6157,7 @@ def test_agent_workspace_repairs_legacy_finish_fork_once_before_sending(
 
         second = conversations.message(db, workspace.id, binding_id, "第二次继续")
         assert second["cursor"] == "user-2"
+        assert second["event_id"] == "user-2"
         assert len(runtime.fork_calls) == 1
         assert runtime.switched_conversation_ids == [
             repaired_conversation_id,
@@ -6703,6 +6860,7 @@ def test_agent_workspace_rewrites_only_the_active_branch_last_user_message(
             db, workspace.id, created["id"], "user-event", "after"
         )
         assert result["accepted"] is True
+        assert result["event_id"] == "user-event"
         assert runtime.calls == [("navigate", "root-event"), ("send", "after")]
 
 

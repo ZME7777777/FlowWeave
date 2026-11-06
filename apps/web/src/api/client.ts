@@ -3,7 +3,7 @@ import type { MarketSources, MarketSkillSearch, MarketSkill, CapabilityPackageFi
 import type {
   AuthUser, LdapDirectory, LdapUser, PlatformUser,
   AgentProfileVersion, ArtifactInput, ArtifactVersion, ArtifactVersionPage, RuntimeArtifactAuditPage, CapabilityAsset, CapabilityImportResult, FlowDefinition, FlowRun, FlowRunAutomaticRecord, FlowRunAutomaticRecordUpdate, FlowRunAutomaticRecordWrite, FlowRunConversation, FlowRunRuntimeOverview, FlowRunRuntimeResource, FlowRunSummary, FlowWrite, MessageAttachmentInput, OpenHandsConversationEventBatch, McpSource, SkillSource, SkillVersionComparison,
-  BlockedNodeDelete, BulkDeleteResult, CapabilityBulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, GateRemediationResult, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderUsage, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt, FlowRunAutomaticRecordSummary, ProviderBulkDeleteResult,
+  BlockedNodeDelete, BulkDeleteResult, CapabilityBulkDeleteResult, CodexDeviceAuthorization, CodexOAuthStatus, GateRemediationResult, ModelProtocol, ModelProvider, ModelProviderDiscoveryWrite, ModelProviderUsage, ModelProviderWrite, NodeAsset, NodeAssetWrite, NodeAttempt, FlowRunAutomaticRecordSummary, ProviderBulkDeleteResult,
   AgentAttachment, AgentConversation, AgentConversationAnnotation, AgentConversationContext, AgentConversationHead, AgentConversationInputReadiness, AgentConversationReference, AgentConversationSchedule, AgentConversationScheduleOccurrence, AgentPendingConfirmation, AgentWorkDirectory, AgentWorkDirectoryList, AgentWorkspace, AgentWorkspaceCapability, AgentWorkspaceDetails, AgentWorkspaceMcpReadiness, AgentWorkspaceReference, AgentWorkspaceRuntime, AutomaticRecordConfigDocument, CapabilityCollection, CapabilityCollectionWrite, Case, ContextBundleManifest, MarketplaceCatalog, NodeDirectory, NodeRun, OpenHandsConversationEvent, PluginSourceResolution, RunEvent, RuntimeConfirmationBatch, TerminalEnvironment, TerminalEnvironmentWrite, EnvironmentSetupSession, GatePolicy, WebsiteCredential, WebsiteCredentialWrite, FlowRunSchedule, FlowRunScheduleOccurrencePage, FlowRunScheduleWrite, FlowRunScheduleTemplate, FlowRunStepwiseRecord, FlowRunStepwiseRecordWrite, StepwiseNodeDraft, StepwiseRecordConfigDocument, StepwiseRuntimePortsWrite,
 } from '../types';
 import { deploymentBasePath } from '../deploymentPath';
@@ -243,7 +243,7 @@ async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
         // Runtime replacement and other control-plane state may recover without
         // changing the route. Never let the browser reuse a stale dynamic GET.
         cache: requestInit.method === undefined || requestInit.method === 'GET' ? 'no-store' : requestInit.cache,
-        headers: { 'Content-Type': 'application/json', ...requestInit.headers },
+        headers: { ...(requestInit.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }), ...requestInit.headers },
       });
       if (!response.ok) {
         const error = await responseError(response);
@@ -327,6 +327,9 @@ const conversationReferencePayload = (references: AgentConversationReference[]) 
     ...(selection ? { selection } : {}),
   };
 });
+export interface CaseCopyReport { copied: Array<{ item: string; reason: string }>; skipped: Array<{ item: string; reason: string }> }
+export interface CaseBundle { format: 'flowweave.case-bundle'; version: 1; exported_at?: string; cases: Array<Record<string, unknown>> }
+
 export const api = {
   authMe: () => request<AuthUser>('/auth/me'),
   currentUserProfile: () => request<{ display_name: string | null; email: string | null }>('/auth/profile'),
@@ -400,6 +403,18 @@ export const api = {
     if (options.bindingId) query.set('binding_id', options.bindingId);
     if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
     await request<void>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/git/sync?${query}`, json('POST'));
+  },
+  agentWorkspaceGitBranches: (id: string, repositoryPath: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
+    const query = new URLSearchParams({ repository_path: repositoryPath });
+    if (options.bindingId) query.set('binding_id', options.bindingId);
+    if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
+    return request<import('../types').WorkspaceGitBranches>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/git/branches?${query}`);
+  },
+  switchAgentWorkspaceGitBranch: (id: string, repositoryPath: string, body: import('../types').WorkspaceGitSwitchWrite, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
+    const query = new URLSearchParams({ repository_path: repositoryPath });
+    if (options.bindingId) query.set('binding_id', options.bindingId);
+    if (options.workDirectoryId) query.set('work_directory_id', options.workDirectoryId);
+    return request<import('../types').WorkspaceGitRepository>(`/agent-workspaces/${encodeURIComponent(id)}/workspace/git/switch?${query}`, json('POST', body));
   },
   agentWorkspaceGitLog: (id: string, repositoryPath: string, options: { bindingId?: string; workDirectoryId?: string } = {}) => {
     const query = new URLSearchParams({ repository_path: repositoryPath });
@@ -525,8 +540,58 @@ export const api = {
   },
   pinnedAgentConversations: (workspaceId: string) =>
     request<import('../types').AgentConversation[]>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/pinned-conversations`),
-  agentConversationActivity: (workspaceId: string, activeBindingId?: string) => {
-    const query = activeBindingId ? `?active_binding_id=${encodeURIComponent(activeBindingId)}` : '';
+  sendAgentChildMessage: (parentId: string, childId: string, submissionId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspaceReferences: AgentWorkspaceReference[] = [], annotations: AgentConversationAnnotation[] = []) =>
+    request<{ accepted: boolean; cursor?: string }>(`${childSessionBase(parentId, childId)}/messages`, json('POST', { submission_id: submissionId, content, attachments: attachmentReferences(attachments), references: references.map(reference => ({ source_binding_id: reference.source_binding_id, source_event_id: reference.event_id, ...(reference.selection ? { selection: reference.selection } : {}) })), workspace_references: workspaceReferencePayload(workspaceReferences), annotations }, submissionId)),
+  controlAgentChild: (parentId: string, childId: string, operation: 'interrupt' | 'resume' | 'condense') =>
+    request<{ accepted: boolean; task_id?: string; cursor?: string }>(`${childSessionBase(parentId, childId)}/control`, json('POST', { operation }, true)),
+  switchAgentChildModel: (parentId: string, childId: string, model_provider_id: string, model_name: string, reasoning_effort: string | null) =>
+    request<{ model_provider_id: string; model_name: string; reasoning_effort: string | null }>(`${childSessionBase(parentId, childId)}/model`, json('POST', { model_provider_id, model_name, reasoning_effort })),
+  uploadAgentChildAttachment: (parentId: string, childId: string, file: File) => {
+    const body = new FormData();
+    body.append('file', file);
+    return request<AgentAttachment>(`${childSessionBase(parentId, childId)}/attachments`, { method: 'POST', body, timeoutMs: 60_000 });
+  },
+  deleteAgentChildAttachment: (parentId: string, childId: string, path: string) =>
+    request<void>(`${childSessionBase(parentId, childId)}/attachments?path=${encodeURIComponent(path)}`, { method: 'DELETE' }),
+  agentChildResultReference: (parentId: string, childId: string, eventId: string) =>
+    request<{ source_binding_id: string; source_event_id: string; content: string }>(`${childSessionBase(parentId, childId)}/result-reference/${encodeURIComponent(eventId)}`),
+  agentChildFilePreview: async (parentId: string, childId: string, path: string, signal?: AbortSignal) => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), INTERACTIVE_REQUEST_TIMEOUT_MS);
+    try {
+      const content = await requestText(`${childSessionBase(parentId, childId)}/file?path=${encodeURIComponent(path)}`, signal ? AbortSignal.any([signal, controller.signal]) : controller.signal);
+      return { content, totalBytes: new TextEncoder().encode(content).length, nextOffset: undefined };
+    } finally { window.clearTimeout(timer); }
+  },
+  agentChildPendingConfirmation: (parentId: string, childId: string) =>
+    request<AgentPendingConfirmation>(`${childSessionBase(parentId, childId)}/pending-confirmation`),
+  decideAgentChildConfirmation: (parentId: string, childId: string, expected_pending_digest: string, accept: boolean, reason: string) =>
+    request<{ accepted: boolean }>(`${childSessionBase(parentId, childId)}/pending-confirmation/decision`, json('POST', { expected_pending_digest, accept, reason })),
+  agentChildCredentials: (parentId: string, childId: string) =>
+    request<import('../types').AgentConversationCredentialSyncState>(`${childSessionBase(parentId, childId)}/credentials`),
+  registerAgentChildCapabilities: (parentId: string, childId: string, capability_version_ids: string[]) =>
+    request<import('../types').AgentConversationCapabilityRegistration>(`${childSessionBase(parentId, childId)}/capabilities/batch`, json('POST', { capability_version_ids })),
+  agentChildMcpReadiness: (parentId: string, childId: string, versionId: string) =>
+    request<import('../types').AgentSessionMcpReadiness>(`${childSessionBase(parentId, childId)}/capabilities/${encodeURIComponent(versionId)}/mcp-readiness`, json('POST', {})),
+  syncAgentChildCredentials: (parentId: string, childId: string, credential_ids: string[]) =>
+    request<import('../types').AgentConversationCredentialSyncState>(`${childSessionBase(parentId, childId)}/credentials/sync`, json('POST', { credential_ids })),
+  agentChildConversations: (parentId: string, signal?: AbortSignal) =>
+    request<import('../types').AgentChildConversation[]>(`/agent-session-children/${encodeURIComponent(parentId)}`, { signal }),
+  agentChildConversation: (parentId: string, childId: string, signal?: AbortSignal) =>
+    request<AgentConversation>(`${childSessionBase(parentId, childId)}`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
+  agentChildContext: (parentId: string, childId: string, signal?: AbortSignal) =>
+    request<AgentConversationContext>(`${childSessionBase(parentId, childId)}/context`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
+  agentChildHydration: (parentId: string, childId: string, signal?: AbortSignal, cursor?: string) =>
+    request<import('../types').AgentConversationHydration>(`${childSessionBase(parentId, childId)}/hydration${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
+  agentChildEvents: (parentId: string, childId: string, historyCursor: string, signal?: AbortSignal) =>
+    request<OpenHandsConversationEventBatch>(`${childSessionBase(parentId, childId)}/events?history_cursor=${encodeURIComponent(historyCursor)}`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
+  setAgentChildUnread: (parentId: string, childId: string, unread: boolean) =>
+    request<{ id: string; unread: boolean; unread_origin?: 'MANUAL' | 'SYSTEM' | null }>(`${childSessionBase(parentId, childId)}/unread`, json('PUT', { unread })),
+  agentConversationActivity: (workspaceId: string, activeBindingId?: string, activeChildId?: string) => {
+    const params = new URLSearchParams();
+    if (activeBindingId) params.set('active_binding_id', activeBindingId);
+    if (activeChildId) params.set('active_child_id', activeChildId);
+    const query = params.size ? `?${params}` : '';
     return request<import('../types').AgentConversationActivity>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-activity${query}`);
   },
   startAgentConversationSearch: (workspaceId: string, query: string, workDirectoryIds?: string[], includeRoot = true) =>
@@ -541,11 +606,13 @@ export const api = {
   registerAgentConversationCapabilities: (workspaceId: string, bindingId: string, capability_version_ids: string[]) =>
     request<import('../types').AgentConversationCapabilityRegistration>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/capabilities/batch`, json('POST', { capability_version_ids })),
   bootstrapAgentConversation: (workspaceId: string, conversation_id: string, model_provider_id: string, model_name: string, reasoning_effort: string | null, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], work_directory_id?: string, capability_version_ids?: string[], credential_ids?: string[], idempotencyKey = conversation_id, annotations: AgentConversationAnnotation[] = [], goal_objective?: string) =>
-    request<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`, json('POST', { conversation_id, model_provider_id, model_name, reasoning_effort, content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), work_directory_id, capability_version_ids, credential_ids, annotations, goal_objective }, idempotencyKey)),
+    request<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null; event_id?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations`, json('POST', { conversation_id, model_provider_id, model_name, reasoning_effort, content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), work_directory_id, capability_version_ids, credential_ids, annotations, goal_objective }, idempotencyKey)),
   createAgentSidebarConversation: (workspaceId: string, sourceBindingId: string, conversation_id: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = []) =>
     request<{ conversation: AgentConversation; accepted: boolean; cursor?: string | null; expires_at: string }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(sourceBindingId)}/sidebar`, json('POST', { conversation_id, content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references) }, conversation_id)),
   agentSidebarConversation: (workspaceId: string, bindingId: string) =>
     request<{ binding_id: string; source_binding_id?: string; expires_at: string; expired: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/sidebars/${encodeURIComponent(bindingId)}`),
+  agentSidebarConversationForSource: (workspaceId: string, sourceBindingId: string) =>
+    request<{ binding_id: string; source_binding_id: string; expires_at: string; expired: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(sourceBindingId)}/sidebar`),
   deleteAgentSidebarConversation: (workspaceId: string, bindingId: string) =>
     request<void>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/sidebars/${encodeURIComponent(bindingId)}`, json('DELETE', undefined, true)),
   agentConversation: (workspaceId: string, bindingId: string) =>
@@ -563,7 +630,7 @@ export const api = {
   restoreAgentConversation: (workspaceId: string, bindingId: string) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/restore`, json('POST')),
   deleteAgentConversation: (workspaceId: string, bindingId: string) =>
-    request<void>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`, json('DELETE', undefined, true)),
+    request<import('../types').AgentConversationDeleteResult>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}`, json('DELETE', undefined, true)),
   agentConversationEvents: (workspaceId: string, bindingId: string, cursor?: string, historyCursor?: string, diagnosticTrigger?: string, signal?: AbortSignal) => {
     const query = new URLSearchParams();
     if (cursor) query.set('cursor', cursor);
@@ -577,12 +644,16 @@ export const api = {
     request<AgentConversationHead>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/head`),
   agentPendingConfirmation: (workspaceId: string, bindingId: string) =>
     request<AgentPendingConfirmation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/pending-confirmation`),
+  agentPendingQuestion: (workspaceId: string, bindingId: string) =>
+    request<import('../types').AgentPendingQuestion>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/pending-question`),
   decideAgentConfirmation: (workspaceId: string, bindingId: string, expected_pending_digest: string, accept: boolean, reason: string) =>
     request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/pending-confirmation/decision`, json('POST', { expected_pending_digest, accept, reason })),
+  cancelAgentConversationBootstrap: (workspaceId: string, submissionId: string) =>
+    request<{ cancelled: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversation-bootstraps/${encodeURIComponent(submissionId)}/cancel`, json('POST', {})),
   cancelAgentMessageSubmission: (workspaceId: string, bindingId: string, submissionId: string) =>
     request<{ cancelled: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(submissionId)}/cancel`, json('POST', {})),
-  sendAgentMessage: (workspaceId: string, bindingId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], annotations: AgentConversationAnnotation[] = [], idempotencyKey?: string) =>
-    request<{ accepted: boolean; cursor?: string | null; compacted?: boolean; queued_during_turn?: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations }, idempotencyKey)),
+  sendAgentMessage: (workspaceId: string, bindingId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], annotations: AgentConversationAnnotation[] = [], idempotencyKey?: string, answered_question?: string) =>
+    request<{ accepted: boolean; cursor?: string | null; event_id?: string | null; compacted?: boolean; queued_during_turn?: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations, ...(answered_question ? { answered_question } : {}) }, idempotencyKey)),
   uploadAgentAttachment: (workspaceId: string, bindingId: string, file: File, onProgress?: UploadProgressHandler): Promise<AgentAttachment> =>
     uploadFormData(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/attachments/uploads`, `/agent-workspaces/${encodeURIComponent(workspaceId)}/attachments/uploads`, file, { filename: file.name, mime_type: file.type, total_size: file.size }, onProgress, bindingId),
   uploadAgentWorkspaceAttachment: (workspaceId: string, file: File, workDirectoryId?: string, conversationId?: string, onProgress?: UploadProgressHandler): Promise<AgentAttachment> =>
@@ -613,7 +684,7 @@ export const api = {
   forkAgentConversation: (workspaceId: string, bindingId: string, event_id: string) =>
     request<AgentConversation>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/fork`, json('POST', { event_id }, true)),
   rerunAgentMessage: (workspaceId: string, bindingId: string, eventId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], annotations: AgentConversationAnnotation[] = []) =>
-    request<{ accepted: boolean; cursor?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(eventId)}/rerun`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations })),
+    request<{ accepted: boolean; cursor?: string | null; event_id?: string | null }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(eventId)}/rerun`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations })),
   interruptAgentConversation: (workspaceId: string, bindingId: string) =>
     request<{ accepted: boolean }>(`/agent-workspaces/${encodeURIComponent(workspaceId)}/conversations/${encodeURIComponent(bindingId)}/interrupt`, json('POST')),
   agentConversationInputReadiness: (workspaceId: string, bindingId: string) =>
@@ -626,6 +697,9 @@ export const api = {
   deleteDirectory: (id: string) => request<void>(`/node-directories/${encodeURIComponent(id)}`, json('DELETE')),
   cases: () => request<Case[]>('/cases'),
   createCase: (body: import('../types').CaseBasics) => request<Case>('/cases', json('POST', body)),
+  copyCase: (id: string) => request<Case & { copy_report?: CaseCopyReport }>(`/cases/${encodeURIComponent(id)}/copy`, json('POST')),
+  exportCases: (caseIds: string[]) => request<CaseBundle>('/cases/export', json('POST', { case_ids: caseIds })),
+  importCases: (bundle: CaseBundle) => request<Array<Case & { copy_report?: CaseCopyReport }>>('/cases/import', json('POST', bundle)),
   updateCase: (id: string, body: import('../types').CaseBasics & { expected_row_version: number }) =>
     request<Case>(`/cases/${encodeURIComponent(id)}`, json('PUT', body)),
   uploadCaseMaterial: async (id: string, expectedRowVersion: number, file: File): Promise<Case> => {
@@ -646,6 +720,10 @@ export const api = {
     request<{ items: import('../types').CaseArtifactMaterial[]; next_offset: number | null }>(`/cases/${encodeURIComponent(id)}/artifact-materials?${new URLSearchParams({ offset: String(offset), limit: String(limit) })}`),
   setCaseCoordinationState: (id: string, expected_row_version: number, state: 'ACTIVE' | 'PAUSED') =>
     request<Case>(`/cases/${encodeURIComponent(id)}/coordination-state`, json('PUT', { expected_row_version, state })),
+  confirmCaseConclusion: (id: string, expected_row_version: number) =>
+    request<Case>(`/cases/${encodeURIComponent(id)}/conclusion/confirm`, json('POST', { expected_row_version })),
+  rejectCaseConclusion: (id: string, expected_row_version: number, note?: string) =>
+    request<Case>(`/cases/${encodeURIComponent(id)}/conclusion/reject`, json('POST', { expected_row_version, ...(note?.trim() ? { note: note.trim() } : {}) })),
   caseStageTemplates: (caseId: string) => request<import('../types').CaseStageTemplate[]>(`/cases/${encodeURIComponent(caseId)}/stage-templates`),
   setCaseStageState: (caseId: string, stageId: string, expected_case_row_version: number, state: import('../types').CaseStage['state']) =>
     request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/state`, json('PUT', { expected_case_row_version, state })),
@@ -653,6 +731,8 @@ export const api = {
     request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/flow-run`, json('PUT', { flow_run_id, execution_mode })),
   startCase: (caseId: string, body: { session: 'CURRENT' | 'NEW'; note?: string; expected_row_version: number }, idempotencyKey: string) =>
     request<Case>(`/cases/${encodeURIComponent(caseId)}/start`, json('POST', body, idempotencyKey)),
+  rerunCaseStage: (caseId: string, stageId: string) =>
+    request<Case>(`/cases/${encodeURIComponent(caseId)}/stages/${encodeURIComponent(stageId)}/rerun`, json('POST')),
   executeCaseControlPlan: (caseId: string, planId: string) =>
     request<import('../types').CaseControlPlan>(`/cases/${encodeURIComponent(caseId)}/control-plans/${encodeURIComponent(planId)}/execute`, json('POST')),
   retryCaseControlPlan: (caseId: string, planId: string) =>
@@ -761,12 +841,14 @@ export const api = {
   providers: () => request<ModelProvider[]>('/model-providers'),
   createProvider: (body: ModelProviderWrite) => request<ModelProvider>('/model-providers', json('POST', body)),
   updateProvider: (id: string, body: ModelProviderWrite) => request<ModelProvider>(`/model-providers/${id}`, json('PUT', body)),
+  setPrimaryProvider: (id: string, primary: boolean) => request<ModelProvider>(`/model-providers/${id}/primary`, json(primary ? 'POST' : 'DELETE')),
   deleteProvider: (id: string) => request<void>(`/model-providers/${id}`, json('DELETE')),
   deleteProviders: (ids: string[]) => request<ProviderBulkDeleteResult>('/model-providers', json('DELETE', { ids })),
   testProvider: (id: string) => request<{ connection_state: string; model_count: number }>(`/model-providers/${id}/test`, json('POST')),
+  previewProviderUsage: (body: import('../types').ModelProviderUsagePreviewWrite, signal?: AbortSignal) => request<ModelProviderUsage>('/model-providers/preview-usage', { ...json('POST', body), signal }),
   providerUsage: (id: string) => request<ModelProviderUsage>(`/model-providers/${id}/usage`),
-  discoverProviderModels: (id: string) => request<{ models: string[]; provider?: ModelProvider }>(`/model-providers/${id}/discover-models`, json('POST')),
-  previewProviderModels: (body: ModelProviderDiscoveryWrite) => request<{ models: string[] }>('/model-providers/discover-models', json('POST', body)),
+  discoverProviderModels: (id: string) => request<{ models: string[]; protocols?: Record<string, ModelProtocol>; provider?: ModelProvider }>(`/model-providers/${id}/discover-models`, json('POST')),
+  previewProviderModels: (body: ModelProviderDiscoveryWrite) => request<{ models: string[]; protocols?: Record<string, ModelProtocol> }>('/model-providers/discover-models', json('POST', body)),
   startCodexOAuth: (id: string) => request<CodexDeviceAuthorization>(`/model-providers/${id}/oauth/device/start`, json('POST')),
   pollCodexOAuth: (id: string) => request<CodexOAuthStatus>(`/model-providers/${id}/oauth/device/poll`, json('POST')),
   codexOAuthStatus: (id: string) => request<CodexOAuthStatus>(`/model-providers/${id}/oauth/status`),
@@ -1127,6 +1209,37 @@ export function subscribeToAgentWorkspaceStream(
   onEvent: (event: AgentStreamEvent) => void,
   onStatus?: (status: 'connecting' | 'live' | 'recovering' | 'disabled') => void,
 ): () => void {
+  return subscribeToSessionStream(afterSeq => agentWorkspaceStreamUrl(workspaceId, bindingId, afterSeq), onEvent, onStatus);
+}
+
+export function childSessionFileUrl(parentId: string, childId: string, path: string): string {
+  const url = absoluteApiUrl(`${childSessionBase(parentId, childId)}/file`);
+  url.searchParams.set('path', path);
+  return url.toString();
+}
+
+function childSessionBase(parentId: string, childId: string) {
+  return `/agent-session-children/${encodeURIComponent(parentId)}/${encodeURIComponent(childId)}`;
+}
+
+export function subscribeToChildSessionStream(
+  parentId: string, childId: string,
+  onEvent: (event: AgentStreamEvent) => void,
+  onStatus?: (status: 'connecting' | 'live' | 'recovering' | 'disabled') => void,
+): () => void {
+  return subscribeToSessionStream(afterSeq => {
+    const url = absoluteApiUrl(`${childSessionBase(parentId, childId)}/stream`);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    if (afterSeq !== undefined) url.searchParams.set('after_seq', String(afterSeq));
+    return url.toString();
+  }, onEvent, onStatus);
+}
+
+function subscribeToSessionStream(
+  streamUrl: (afterSeq?: number) => string,
+  onEvent: (event: AgentStreamEvent) => void,
+  onStatus?: (status: 'connecting' | 'live' | 'recovering' | 'disabled') => void,
+): () => void {
   let disposed = false;
   let socket: WebSocket | undefined;
   let reconnectTimer: number | undefined;
@@ -1137,7 +1250,7 @@ export function subscribeToAgentWorkspaceStream(
   const connect = () => {
     if (disposed) return;
     onStatus?.(reconnectAttempt ? 'recovering' : 'connecting');
-    socket = new WebSocket(agentWorkspaceStreamUrl(workspaceId, bindingId, afterSeq));
+    socket = new WebSocket(streamUrl(afterSeq));
     socket.onopen = () => { reconnectAttempt = 0; onStatus?.('live'); };
     socket.onmessage = message => {
       try {
@@ -1191,14 +1304,17 @@ export const nodeSessionApi = {
     if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
     return request<import('../types').AgentConversationPage>(`${nodeSessionBase(flowRunId, attemptId)}?${query}`);
   },
-  activity: (flowRunId: string, attemptId: string, activeBindingId?: string) => {
-    const query = activeBindingId ? `?active_binding_id=${encodeURIComponent(activeBindingId)}` : '';
+  activity: (flowRunId: string, attemptId: string, activeBindingId?: string, activeChildId?: string) => {
+    const params = new URLSearchParams();
+    if (activeBindingId) params.set('active_binding_id', activeBindingId);
+    if (activeChildId) params.set('active_child_id', activeChildId);
+    const query = params.size ? `?${params}` : '';
     return request<import('../types').AgentConversationActivity>(`${nodeSessionBase(flowRunId, attemptId)}/activity${query}`);
   },
   create: (flowRunId: string, attemptId: string, title: string | undefined, model_provider_id: string, model_name: string, reasoning_effort: string | null, idempotencyKey = randomId(), work_directory_id?: string) =>
     request<import('../types').AgentConversation>(nodeSessionBase(flowRunId, attemptId), json('POST', { title, model_provider_id, model_name, reasoning_effort, work_directory_id }, idempotencyKey)),
   bootstrap: (flowRunId: string, attemptId: string, content: string, model_provider_id: string, model_name: string, reasoning_effort: string | null, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], work_directory_id?: string, idempotencyKey = randomId(), annotations: AgentConversationAnnotation[] = [], goal_objective?: string) =>
-    request<{ conversation: import('../types').AgentConversation; accepted: boolean; cursor?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/bootstrap`, json('POST', { conversation_id: idempotencyKey, content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), model_provider_id, model_name, reasoning_effort, work_directory_id, annotations, goal_objective }, idempotencyKey)),
+    request<{ conversation: import('../types').AgentConversation; accepted: boolean; cursor?: string | null; event_id?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/bootstrap`, json('POST', { conversation_id: idempotencyKey, content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), model_provider_id, model_name, reasoning_effort, work_directory_id, annotations, goal_objective }, idempotencyKey)),
   get: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`),
   update: (flowRunId: string, attemptId: string, bindingId: string, title: string) =>
@@ -1229,11 +1345,11 @@ export const nodeSessionApi = {
   switchModel: (flowRunId: string, attemptId: string, bindingId: string, model_provider_id: string, model_name: string, reasoning_effort: string | null) =>
     request<{ model_provider_id: string; model_name?: string | null; reasoning_effort?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/model`, json('POST', { model_provider_id, model_name, reasoning_effort })),
   remove: (flowRunId: string, attemptId: string, bindingId: string) =>
-    request<void>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`, json('DELETE', undefined, true)),
+    request<import('../types').AgentConversationDeleteResult>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}`, json('DELETE', undefined, true)),
   cancelMessageSubmission: (flowRunId: string, attemptId: string, bindingId: string, submissionId: string) =>
     request<{ cancelled: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(submissionId)}/cancel`, json('POST', {})),
-  message: (flowRunId: string, attemptId: string, bindingId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], idempotencyKey = randomId(), annotations: AgentConversationAnnotation[] = []) =>
-    request<{ accepted: boolean; cursor?: string | null; compacted?: boolean; queued_during_turn?: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations }, idempotencyKey)),
+  message: (flowRunId: string, attemptId: string, bindingId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], idempotencyKey = randomId(), annotations: AgentConversationAnnotation[] = [], answered_question?: string) =>
+    request<{ accepted: boolean; cursor?: string | null; event_id?: string | null; compacted?: boolean; queued_during_turn?: boolean }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/messages`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations, ...(answered_question ? { answered_question } : {}) }, idempotencyKey)),
   pendingConfirmation: (flowRunId: string, attemptId: string, bindingId: string) =>
     request<import('../types').AgentPendingConfirmation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/pending-confirmation`),
   decideConfirmation: (flowRunId: string, attemptId: string, bindingId: string, expected_pending_digest: string, accept: boolean, reason: string) =>
@@ -1262,7 +1378,7 @@ export const nodeSessionApi = {
   migrate: (flowRunId: string, attemptId: string, bindingId: string, model_provider_id: string, model_name?: string | null, reasoning_effort?: string | null) =>
     request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/streaming-migration`, json('POST', { model_provider_id, model_name, reasoning_effort }, true)),
   rerun: (flowRunId: string, attemptId: string, bindingId: string, eventId: string, content: string, attachments: AgentAttachment[] = [], references: AgentConversationReference[] = [], workspace_references: AgentWorkspaceReference[] = [], annotations: AgentConversationAnnotation[] = []) =>
-    request<{ accepted: boolean; cursor?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(eventId)}/rerun`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations })),
+    request<{ accepted: boolean; cursor?: string | null; event_id?: string | null }>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/messages/${encodeURIComponent(eventId)}/rerun`, json('POST', { content, attachments: attachmentReferences(attachments), references: conversationReferencePayload(references), workspace_references: workspaceReferencePayload(workspace_references), annotations })),
   mcpReadiness: (flowRunId: string, attemptId: string, capabilityVersionId: string) => request<import('../types').AgentSessionMcpReadiness>(`${nodeSessionBase(flowRunId, attemptId)}/capabilities/${encodeURIComponent(capabilityVersionId)}/mcp-readiness`, json('POST')),
   addCapability: (flowRunId: string, attemptId: string, bindingId: string, capability_version_id: string) => request<import('../types').AgentConversation>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/capabilities`, json('POST', { capability_version_id })),
   registerCapabilities: (flowRunId: string, attemptId: string, bindingId: string, capability_version_ids: string[]) => request<import('../types').AgentConversationCapabilityRegistration>(`${nodeSessionBase(flowRunId, attemptId)}/${encodeURIComponent(bindingId)}/capabilities/batch`, json('POST', { capability_version_ids })),
@@ -1297,6 +1413,18 @@ export const nodeSessionApi = {
     if (bindingId) query.set('binding_id', bindingId);
     if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
     await request<void>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/git/sync?${query}`, json('POST'));
+  },
+  gitBranches: (flowRunId: string, attemptId: string, repositoryPath: string, bindingId?: string, workDirectoryId?: string) => {
+    const query = new URLSearchParams({ repository_path: repositoryPath });
+    if (bindingId) query.set('binding_id', bindingId);
+    if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
+    return request<import('../types').WorkspaceGitBranches>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/git/branches?${query}`);
+  },
+  switchGitBranch: (flowRunId: string, attemptId: string, repositoryPath: string, body: import('../types').WorkspaceGitSwitchWrite, bindingId?: string, workDirectoryId?: string) => {
+    const query = new URLSearchParams({ repository_path: repositoryPath });
+    if (bindingId) query.set('binding_id', bindingId);
+    if (workDirectoryId) query.set('work_directory_id', workDirectoryId);
+    return request<import('../types').WorkspaceGitRepository>(`${nodeSessionBase(flowRunId, attemptId)}/workspace/git/switch?${query}`, json('POST', body));
   },
   gitLog: (flowRunId: string, attemptId: string, repositoryPath: string, bindingId?: string, workDirectoryId?: string) => {
     const query = new URLSearchParams({ repository_path: repositoryPath });

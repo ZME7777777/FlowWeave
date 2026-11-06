@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, ArrowDown, Bot, Check, ChevronDown, ChevronRight, CirclePause, CirclePlay, ClipboardList, Clock3, ExternalLink, FileText, GitBranch, GripVertical, Info, Link2, ListChecks, Pencil, Play, Plus, RotateCcw, Search, Settings2, Trash2, Upload, X } from 'lucide-react';
+import { AlertTriangle, ArrowDown, Bot, Boxes, Check, ChevronDown, ChevronRight, CirclePause, CirclePlay, ClipboardList, Clock3, ExternalLink, FileText, GitBranch, GripVertical, Copy, Download, Info, Link2, ListChecks, LoaderCircle, Pencil, Play, Plus, RotateCcw, Search, Settings2, Trash2, Upload, X } from 'lucide-react';
 import { api, caseMaterialFileUrl } from '../api/client';
-import type { Case, CaseBasics, CaseMaterial, CaseSessionConfig, CaseStage, CaseStageExecution } from '../types';
+import type { Case, CaseBasics, CaseMaterial, CaseStage, CaseStageExecution } from '../types';
 import { CapabilityManager } from '../components/agent-session/AgentSessionWorkbench';
 import { CaseSessionPage } from './CaseSessionPage';
 import { useEscapeClose } from '../components/useEscapeClose';
@@ -97,6 +97,7 @@ function MaterialName({ name, file, onRename }: { name: string; file: boolean; o
   return editing ? <span className="case-material-rename">
     <input aria-label={`资料名称 ${name}`} autoFocus value={draft} maxLength={220 - extension.length}
       onChange={event => setDraft(event.target.value)} onKeyDown={event => {
+        if (event.nativeEvent.isComposing || event.keyCode === 229) return;
         if (event.key === 'Enter') { event.preventDefault(); apply(); }
         if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setEditing(false); }
       }}/>{extension && <small>{extension}</small>}
@@ -340,7 +341,7 @@ function ConversationTab({ item, workspaceId, onUpdated }: { item: Case; workspa
   </section>;
 }
 
-function PathTab({ item, artifactCounts, onUpdated, onOpenRun, onOpenRecord }: { item: Case; artifactCounts: Record<string, number>; onUpdated: (item: Case) => void; onOpenRun: (id: string) => void; onOpenRecord: (stage: CaseStage) => void }) {
+function PathTab({ item, artifactCounts, onUpdated, onOpenRecord }: { item: Case; artifactCounts: Record<string, number>; onUpdated: (item: Case) => void; onOpenRecord: (stage: CaseStage) => void }) {
   const [adding, setAdding] = useState(false);
   const [parentId, setParentId] = useState('');
   const [mode, setMode] = useState('');
@@ -406,15 +407,13 @@ function PathTab({ item, artifactCounts, onUpdated, onOpenRun, onOpenRecord }: {
         onClick={() => setSelectedStageId(stage.id)} onFocus={() => setSelectedStageId(stage.id)}
         onKeyDown={event => { if ((event.key === 'Enter' || event.key === ' ') && event.target === event.currentTarget) { event.preventDefault(); setSelectedStageId(stage.id); } }}
         onDragStart={event => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-flowweave-case-stage', stage.id); setDraggingId(stage.id); setStatus(''); }} onDragEnd={endDrag}>
-        <header><div className="case-card-title"><span className={`case-stage-state ${stage.current_execution_flow_run_id ? 'executing' : stage.state.toLowerCase()}`}>{stageExecutionLabel(stage)}</span><span>{stage.execution_mode === 'STEPWISE' ? '逐步运行' : '连续运行'}</span><h3>{stage.name}</h3></div>
+        <header><div className="case-card-title"><span className={`case-stage-state ${stage.current_execution_flow_run_id ? 'executing' : stage.state.toLowerCase()}`}>{stageExecutionLabel(stage)}</span><h3>{stage.name}</h3></div>
           <div className="scenario-card-actions"><button className="ghost case-drag-handle" aria-label={`调整顺序 ${stage.name}`} title="拖拽调整顺序，也可聚焦后按上下方向键" disabled={pathLocked || update.isPending || adding} onKeyDown={event => {
             if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
             event.preventDefault(); const to = index + (event.key === 'ArrowDown' ? 1 : -1);
             if (item.stages[to]) reorder(stage.id, item.stages[to].id, to > index);
           }}><GripVertical size={17}/></button><button className="ghost" aria-label={`删除卡片 ${stage.name}`} disabled={pathLocked || Boolean(stage.current_execution_flow_run_id) || update.isPending} onClick={() => { setStatus(''); update.mutate(item.stages.filter(candidate => candidate.id !== stage.id).map(candidate => ({ id: candidate.id }))); }}><Trash2 size={15}/></button></div>
         </header>
-        {stage.objective && <p className="case-stage-objective">{stage.objective}</p>}
-        <div className="case-stage-progress">{stage.execution?.active_node && <span>当前节点 <b>{stage.execution.active_node.node_name}</b></span>}{stage.execution?.progress && <span>已接受 {stage.execution.progress.accepted} · 活动 {stage.execution.progress.active}</span>}{Boolean(artifactCounts[stage.stage_key]) && <span><FileText size={11}/>正式产物 <b>{artifactCounts[stage.stage_key]}</b></span>}{stage.execution?.automatic_block && <span className="error">待补全 {stage.execution.automatic_block.gates.length} 项门禁配置</span>}</div>
         <StageFlowGraph stage={stage}/>
 
 
@@ -443,6 +442,7 @@ function PathTab({ item, artifactCounts, onUpdated, onOpenRun, onOpenRecord }: {
         <div><dt>执行方式</dt><dd>{selectedStage.execution_mode === 'STEPWISE' ? '逐步运行' : '连续运行'}</dd></div>
         <div><dt>当前节点</dt><dd>{selectedStage.execution?.active_node?.node_name ?? (selectedStage.current_execution_flow_run_id ? '暂无活动节点' : '尚未启动')}</dd></div>
         <div><dt>执行进度</dt><dd>{selectedStage.execution?.progress ? `${selectedStage.execution.progress.accepted} 已接受 · ${selectedStage.execution.progress.active} 活动` : '暂无执行数据'}</dd></div>
+        {selectedStage.execution?.automatic_block && <div><dt>待补全</dt><dd>{selectedStage.execution.automatic_block.gates.length} 项门禁配置</dd></div>}
         <div><dt>正式产物</dt><dd>{artifactCounts[selectedStage.stage_key] ?? 0} 项</dd></div>
       </dl>
       <div className="case-stage-info-actions">
@@ -453,22 +453,22 @@ function PathTab({ item, artifactCounts, onUpdated, onOpenRun, onOpenRecord }: {
   </div>;
 }
 
-function CaseActivity({ item, onOpenRun, onRetry }: { item: Case; onOpenRun: (id: string) => void; onRetry?: (id: string) => void }) {
-  const labels: Record<Case['control_plans'][number]['action'], string> = { CREATE_EXECUTION_COPY: '创建执行副本', CONFIGURE_EXECUTION: '修改执行配置', START_EXECUTION: '启动流程', START_STEPWISE_NODE: '启动逐步节点', ACCEPT_STEPWISE_ATTEMPT: '接受节点结果', REJECT_STEPWISE_ATTEMPT: '拒绝节点结果', CANCEL_STEPWISE_ATTEMPT: '取消投递失败的节点尝试', STOP_EXECUTION: '停止执行', RERUN_STEPWISE_NODE: '重跑节点', COPY_CONTINUOUS_EXECUTION: '复制连续运行', ADVANCE_CASE_STAGE: '进入下一阶段', COMPLETE_CASE: '完成场景' };
+function CaseActivity({ item, onOpenRun, onRetry, onOpenConversation }: { item: Case; onOpenRun: (id: string) => void; onRetry?: (id: string) => void; onOpenConversation?: (planId?: string) => void }) {
+  const labels: Record<Case['control_plans'][number]['action'], string> = { CREATE_EXECUTION_COPY: '创建执行副本', CONFIGURE_EXECUTION: '修改执行配置', START_EXECUTION: '启动流程', START_STEPWISE_NODE: '启动逐步节点', ACCEPT_STEPWISE_ATTEMPT: '接受节点结果', REJECT_STEPWISE_ATTEMPT: '拒绝节点结果', CANCEL_STEPWISE_ATTEMPT: '取消投递失败的节点尝试', STOP_EXECUTION: '停止执行', RERUN_STEPWISE_NODE: '重跑节点', COPY_CONTINUOUS_EXECUTION: '复制连续运行', ADVANCE_CASE_STAGE: '进入下一阶段', COMPLETE_CASE: '完成场景', CONCLUDE_CASE: '提前结束场景' };
   const events = [
-    ...item.control_plans.map(plan => ({ id: `plan-${plan.id}`, planId: plan.id, kind: '控制动作', action: labels[plan.action], state: plan.state, reason: plan.reason, error: plan.error_code, runId: plan.execution_flow_run_id, created: plan.created_at })),
+    ...item.control_plans.map(plan => ({ id: `plan-${plan.id}`, planId: plan.id, kind: '控制动作', action: labels[plan.action] ?? plan.action, state: plan.state, reason: plan.reason, error: plan.error_code, runId: plan.execution_flow_run_id, created: plan.created_at })),
     ...item.decision_proposals.map(proposal => ({ id: `decision-${proposal.id}`, planId: undefined, kind: '执行决策', action: ({ START_STAGE_EXECUTION: '启动阶段', CONTINUE_STEPWISE: '继续逐步运行', STOP_FLOW_RUN: '停止流程', RERUN_STEPWISE_NODE: '重跑节点', COPY_AUTOMATIC_RUN: '复制连续运行' })[proposal.action], state: proposal.state, reason: proposal.reason, error: '', runId: proposal.flow_run_id, created: proposal.created_at })),
     ...item.tasks.map(task => ({ id: `task-${task.id}`, planId: undefined, kind: '观察任务', action: ({ OBSERVE: '观察结果', PROPOSE_REVISION: '建议修订', REVIEW: '复核' })[task.task_type], state: task.state, reason: '', error: '', runId: task.flow_run_id, created: task.created_at })),
   ].sort((left, right) => right.created.localeCompare(left.created));
   const states: Record<string, string> = { PENDING: '待处理', VALIDATED: '已校验', EXECUTING: '执行中', RUNNING: '执行中', SUCCEEDED: '成功', FAILED: '失败', CANCELLED: '已取消', PROPOSED: '已提出', EXECUTED: '已执行', SUPERSEDED: '已替代' };
-  return <section className="case-activity-list">{events.length ? events.map(event => <article key={event.id}><header><b>{event.action}</b><span className={`case-activity-state ${event.state.toLowerCase()}`}>{states[event.state] ?? event.state}</span></header><small>{event.kind} · {new Date(event.created).toLocaleString()}</small>{event.reason && <p>{event.reason}</p>}{event.error && <p className="error">{event.error}</p>}<footer>{event.runId && <button className="ghost" onClick={() => onOpenRun(event.runId!)}><ExternalLink size={12}/>查看执行记录</button>}{onRetry && event.planId && event.state === 'FAILED' && <button className="secondary" onClick={() => onRetry(event.planId!)}>重试失败动作</button>}</footer></article>) : <div className="empty"><Clock3 size={24}/><span>暂无操作记录</span></div>}</section>;
+  return <section className="case-activity-list">{events.length ? events.map(event => <article key={event.id}><b>{event.action}</b><span className={`case-activity-state ${event.state.toLowerCase()}`}>{states[event.state] ?? event.state}</span><small>{new Date(event.created).toLocaleString()}</small>{event.error && <em className="error" title={event.error}>{event.error}</em>}<footer>{onOpenConversation && event.reason && <button className="ghost" title="在 Agent 会话中查看理由" aria-label="在会话中查看" onClick={() => onOpenConversation(event.planId)}><Bot size={13}/>会话</button>}{event.runId && <button className="ghost" title="查看执行记录" aria-label="查看执行记录" onClick={() => onOpenRun(event.runId!)}><ExternalLink size={13}/>记录</button>}{onRetry && event.planId && event.state === 'FAILED' && <button className="secondary" onClick={() => onRetry(event.planId!)}>重试</button>}</footer></article>) : <div className="empty"><Clock3 size={24}/><span>暂无 Agent 动作</span></div>}</section>;
 }
 
-function ScenarioWorkspace({ item, workspaceId, onUpdated, onDelete, onOpenConversation, onOpenRun, onOpenRecord }: { item: Case; workspaceId: string; onUpdated: (item: Case) => void; onDelete: () => void; onOpenConversation: (id: string) => void; onOpenRun: (id: string) => void; onOpenRecord: (stage: CaseStage) => void }) {
+function ScenarioWorkspace({ item, workspaceId, onUpdated, onDelete, onOpenConversation, onOpenRun, onOpenRecord }: { item: Case; workspaceId: string; onUpdated: (item: Case) => void; onDelete: () => void; onOpenConversation: (id: string, planId?: string) => void; onOpenRun: (id: string) => void; onOpenRecord: (stage: CaseStage) => void }) {
   const dialog = useProductDialog();
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState('');
-  const [panel, setPanel] = useState<'basics' | 'agent' | 'activity' | 'rounds' | 'takeover'>();
+  const [panel, setPanel] = useState<'basics' | 'agent' | 'takeover' | 'actions'>();
   useEscapeClose(() => setPanel(undefined), Boolean(panel));
   const currentRound = item.control_rounds?.find(round => round.id === item.current_control_round_id);
   const [openingRound, setOpeningRound] = useState<{ id: string; rowVersion: number }>();
@@ -485,6 +485,11 @@ function ScenarioWorkspace({ item, workspaceId, onUpdated, onDelete, onOpenConve
   const coordination = useMutation({
     mutationFn: (state: 'ACTIVE' | 'PAUSED') => api.setCaseCoordinationState(item.id, item.row_version, state),
     onSuccess: onUpdated,
+  });
+  const [rejectNote, setRejectNote] = useState('');
+  const concludeDecision = useMutation({
+    mutationFn: (decision: 'CONFIRM' | 'REJECT') => decision === 'CONFIRM' ? api.confirmCaseConclusion(item.id, item.row_version) : api.rejectCaseConclusion(item.id, item.row_version, rejectNote),
+    onSuccess: result => { setRejectNote(''); onUpdated(result); },
   });
   const retryPlan = useMutation({
     mutationFn: (planId: string) => api.retryCaseControlPlan(item.id, planId),
@@ -536,32 +541,48 @@ function ScenarioWorkspace({ item, workspaceId, onUpdated, onDelete, onOpenConve
     ...(!item.stages.length || item.stages.some(stage => !stage.flow_run_id) ? ['添加完整的流程路径'] : []),
     ...(!item.session_config?.model_provider_id || !item.session_config.model_name ? ['保存 Agent 配置'] : []),
   ];
-  const newRoundBlock = terminal ? '场景已结束' : item.state === 'PAUSED' ? '场景已暂停' : !workspaceId ? '正在读取工作区' : missing.length ? `请先${missing.join('、')}` : '';
   const pendingRound = currentRound?.state === 'PENDING';
   const startBlock = pendingRound ? '协调会话正在创建' : terminal ? '场景已结束' : item.state === 'PAUSED' ? '场景已暂停' : !workspaceId ? '正在读取工作区' : missing.length ? `请先${missing.join('、')}` : '';
   const hasRun = item.stages.some(stage => stage.current_execution_flow_run_id);
-  const activityCount = item.control_plans.length + item.decision_proposals.length + item.tasks.length;
   const active = item.stages.find(stage => stage.state === 'ACTIVE' || stage.state === 'REVIEW_PENDING');
   const completed = item.stages.filter(stage => stage.state === 'COMPLETED').length;
   const stateLabel = item.control_conversation_binding_id || item.stages.some(stage => stage.current_execution_flow_run_id) ? CASE_STATE[item.state] : terminal ? CASE_STATE[item.state] : '待启动';
   const agentStatus = item.state === 'PAUSED' ? '协调已暂停，后台不会执行新的自主动作' : active?.state === 'REVIEW_PENDING' ? '结果已就绪，等待 Agent 判断' : active?.execution?.active_node ? `Agent 正在跟进：${active.execution.active_node.node_name}` : failedPlans.length || failedDeliveries.length ? `有 ${failedPlans.length + failedDeliveries.length} 项 Agent 动作未成功，需要重试或人工处理` : item.control_conversation_binding_id ? 'Agent 正在监控当前场景' : '启动 Agent 后将持续协调此路径';
-  const panelTitle = panel === 'basics' ? '场景信息' : panel === 'agent' ? 'Agent 配置' : panel === 'rounds' ? '协调会话' : panel === 'takeover' ? '未解决的问题' : '操作记录';
+  const panelTitle = panel === 'basics' ? '场景信息' : panel === 'agent' ? 'Agent 配置' : panel === 'actions' ? 'Agent 动作' : '未解决的问题';
+  // The Agent asks through the formal ask_user tool; the platform parks the Case (WAITING_HUMAN) while the
+  // question is open, so the question text comes from the control conversation itself.
+  const waitingHuman = item.state === 'PAUSED' && item.pause_reason === 'WAITING_HUMAN' && Boolean(item.control_conversation_binding_id) && Boolean(workspaceId);
+  const questionRead = useQuery({
+    queryKey: ['case-control-question', workspaceId, item.control_conversation_binding_id, item.row_version],
+    queryFn: () => api.agentPendingQuestion(workspaceId, item.control_conversation_binding_id!),
+    enabled: waitingHuman,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+  const askedQuestions = questionRead.data?.pending
+    ? [questionRead.data.question, ...(questionRead.data.questions ?? []).map(entry => entry.question)].filter((text): text is string => Boolean(text?.trim()))
+    : [];
+  const pendingQuestion = waitingHuman ? { reason: askedQuestions.length ? askedQuestions.join(' / ') : (item.pause_note || 'Agent 正在等待你在会话中的回复') } : undefined;
+  const conclusionProposed = item.state === 'PAUSED' && item.pause_reason === 'CONCLUSION_PROPOSED';
+  const conclusionProposal = item.state === 'PAUSED' && item.pause_reason === 'CONCLUSION_PROPOSED' ? (item.pause_note || '') : undefined;
   return <main className="scenario-workspace case-single-workspace"><div className="scenario-workspace-inner">
-    <header className="case-workspace-toolbar"><div className="case-workspace-title"><h1 title={item.name}>{item.name}</h1><span className={`case-workspace-state ${item.state.toLowerCase()}`}>{stateLabel}</span><small>{completed}/{item.stages.length} 阶段</small>{active && <small className="case-current-stage" title={`当前阶段：${active.name}`}>{active.name}</small>}</div><div className="scenario-case-actions"><button className="ghost" aria-pressed={panel === 'basics'} onClick={() => setPanel('basics')}><Info size={14}/>场景信息</button><button className="ghost" aria-pressed={panel === 'agent'} onClick={() => setPanel('agent')}><Settings2 size={14}/>Agent 配置</button>{item.control_conversation_binding_id && !terminal && <button className="ghost" disabled={coordination.isPending} onClick={() => coordination.mutate(item.state === 'PAUSED' ? 'ACTIVE' : 'PAUSED')}>{item.state === 'PAUSED' ? <CirclePlay size={14}/> : <CirclePause size={14}/>}{item.state === 'PAUSED' ? '继续协调' : '暂停协调'}</button>}<div ref={startSplit} className="case-start-split"><button className="primary" disabled={start.isPending || Boolean(startBlock)} title={startBlock || '向协调 Agent 发送启动事件，由 Agent 判断并启动流程'} onClick={() => { setError(''); start.mutate('CURRENT'); }}><Play size={13}/> {start.isPending || pendingRound ? '提交中…' : currentRound?.state === 'FAILED' ? '重试启动' : hasRun ? '再次启动' : '启动'}</button>{item.control_conversation_binding_id && <button className="primary case-start-more" aria-label="选择启动方式" aria-haspopup="menu" aria-expanded={startMenuOpen} disabled={start.isPending || Boolean(startBlock)} onClick={() => setStartMenuOpen(open => !open)}><ChevronDown size={13}/></button>}{startMenuOpen && <div className="case-start-menu" role="menu"><button role="menuitem" onClick={() => start.mutate('CURRENT')}>基于当前会话启动<small>在原对话里继续</small></button><button role="menuitem" onClick={() => start.mutate('NEW')}>新建会话启动<small>历史会话保留</small></button></div>}</div>{item.control_conversation_binding_id && <button className="ghost" onClick={() => onOpenConversation(item.control_conversation_binding_id!)}><Bot size={14}/>Agent 会话</button>}<button className="ghost" aria-pressed={panel === 'activity'} title="平台自动动作、Agent 受控动作与手动操作的结果" onClick={() => setPanel('activity')}><Clock3 size={14}/>操作记录{activityCount > 0 && <small className="case-count-badge">{activityCount}</small>}</button>{Boolean(item.control_rounds?.length) && <button className="ghost" onClick={() => setPanel('rounds')}><Bot size={14}/>协调会话</button>}<button className="ghost case-delete-action" type="button" aria-label="删除场景" title="删除场景" disabled={deleting} onClick={() => void deleteCase()}><Trash2 size={14}/></button></div></header>
-    {(error || start.error || live.error || coordination.error || retryPlan.error || materials.error) && <p className="error scenario-delete-error" role="alert">{error || errorMessage(start.error || live.error || coordination.error || retryPlan.error || materials.error)}</p>}
+    <header className="case-workspace-toolbar"><div className="case-workspace-title"><h1 title={item.name}>{item.name}</h1><span className={`case-workspace-state ${item.state.toLowerCase()}`} title={agentStatus}>{stateLabel}</span><small>{completed}/{item.stages.length} 阶段</small>{Boolean(failedPlans.length || failedDeliveries.length) && <button type="button" className="case-issue-chip" title="有 Agent 动作未成功，点击查看并重试" onClick={() => setPanel('takeover')}><AlertTriangle size={12}/>{failedPlans.length + failedDeliveries.length} 项待处理</button>}</div><div className="scenario-case-actions"><button className="ghost" aria-label="场景信息" title="查看并编辑场景名称、目标和资料" aria-pressed={panel === 'basics'} onClick={() => setPanel('basics')}><Info size={14}/>场景信息</button><button className="ghost" aria-label="Agent 动作" title="查看协调 Agent 做过的全部动作及理由" aria-pressed={panel === 'actions'} onClick={() => setPanel('actions')}><ClipboardList size={14}/>Agent 动作{item.control_plans.length > 0 && <span className="case-action-count">{item.control_plans.length}</span>}</button><button className="ghost" aria-label="Agent 配置" title="协调 Agent 使用的模型与能力" aria-pressed={panel === 'agent'} onClick={() => setPanel('agent')}><Settings2 size={14}/>Agent 配置</button>{item.control_conversation_binding_id && !terminal && <button className="ghost" aria-label={item.state === 'PAUSED' ? '继续协调' : '暂停协调'} title={conclusionProposal !== undefined ? '请先在上方处理 Agent 的结束提议' : item.state === 'PAUSED' ? 'Agent 恢复自主动作' : 'Agent 不再执行新的自主动作，已启动的流程不受影响'} disabled={coordination.isPending || conclusionProposed} onClick={() => coordination.mutate(item.state === 'PAUSED' ? 'ACTIVE' : 'PAUSED')}>{item.state === 'PAUSED' ? <CirclePlay size={14}/> : <CirclePause size={14}/>}{item.state === 'PAUSED' ? '继续' : '暂停'}</button>}<div ref={startSplit} className="case-start-split"><button className="primary case-start-main" aria-label={hasRun ? '再次启动' : '启动'} title={startBlock || (hasRun ? '默认在当前 Agent 会话里继续；点右侧箭头可新建会话' : '向协调 Agent 发送启动事件，由 Agent 判断并启动流程')} disabled={start.isPending || Boolean(startBlock)} onClick={() => { setError(''); start.mutate('CURRENT'); }}>{start.isPending || pendingRound ? <LoaderCircle size={14} className="spin"/> : hasRun ? <RotateCcw size={14}/> : <Play size={14}/>}{start.isPending || pendingRound ? '提交中' : hasRun ? '再次启动' : '启动'}</button>{item.control_conversation_binding_id && <button className="primary case-start-more" aria-label="选择启动方式" title="选择启动方式" aria-haspopup="menu" aria-expanded={startMenuOpen} disabled={start.isPending || Boolean(startBlock)} onClick={() => setStartMenuOpen(open => !open)}><ChevronDown size={14}/></button>}{startMenuOpen && <div className="case-start-menu" role="menu"><button role="menuitem" onClick={() => start.mutate('CURRENT')}>基于当前会话<small>默认 · 在原对话里继续</small></button><button role="menuitem" onClick={() => start.mutate('NEW')}>新建会话<small>开始一段新对话，历史保留</small></button></div>}</div><button className="ghost case-delete-action" type="button" aria-label="删除场景" title="删除场景" disabled={deleting} onClick={() => void deleteCase()}><Trash2 size={14}/>删除</button></div></header>
+    {(error || start.error || live.error || coordination.error || concludeDecision.error || retryPlan.error || materials.error) && <p className="error scenario-delete-error" role="alert">{error || errorMessage(start.error || live.error || coordination.error || concludeDecision.error || retryPlan.error || materials.error)}</p>}
 
+    {conclusionProposal !== undefined && <section className="case-question case-conclusion" role="status" aria-label="Agent 提议结束场景"><div><b>Agent 提议结束场景</b><p>{conclusionProposal}</p><input className="case-conclusion-note" aria-label="继续的原因（可选）" placeholder="选择“继续”时可告诉 Agent 原因（可选）" maxLength={2000} value={rejectNote} onChange={event => setRejectNote(event.target.value)}/></div><div className="case-question-actions">{item.control_conversation_binding_id && <button className="ghost" onClick={() => onOpenConversation(item.control_conversation_binding_id!)}><Bot size={13}/>查看会话</button>}<button className="ghost" disabled={concludeDecision.isPending} onClick={() => concludeDecision.mutate('REJECT')}><CirclePlay size={13}/>继续</button><button className="primary danger" disabled={concludeDecision.isPending} onClick={async () => { if (await dialog.confirm({ title: '确认结束场景？', message: '会停止仍在运行的执行并跳过后续阶段，场景将变为已完成且无法恢复。', confirmLabel: '确认结束', tone: 'danger' })) concludeDecision.mutate('CONFIRM'); }}>确认结束</button></div></section>}
+    {pendingQuestion && <section className="case-question" role="status" aria-label="Agent 正在等待你的回答"><div><b>Agent 在等你回答</b><p>{pendingQuestion.reason}</p></div><div className="case-question-actions">{item.control_conversation_binding_id && <button className="ghost" onClick={() => onOpenConversation(item.control_conversation_binding_id!)}><Bot size={13}/>去会话回答</button>}<button className="primary" disabled={coordination.isPending} onClick={() => coordination.mutate('ACTIVE')}><CirclePlay size={13}/>已回答，继续</button></div></section>}
     {currentRound?.state === 'FAILED' && <p className="error scenario-delete-error" role="alert">协调会话创建失败：{currentRound.error_code}。重试会复用本轮配置和会话身份。</p>}
-    <section className={`case-coordination-status ${failedPlans.length || failedDeliveries.length ? 'has-alert' : ''}`} role="status" aria-label="场景协调状态"><span>{failedPlans.length || failedDeliveries.length ? <AlertTriangle size={14}/> : <Bot size={14}/>}<b>{agentStatus}</b>{active && <small>当前阶段：{active.name}</small>}</span>{Boolean(failedPlans.length || failedDeliveries.length) && <button className="secondary" onClick={() => setPanel('takeover')}>处理 {failedPlans.length + failedDeliveries.length} 项未解决问题</button>}</section>
-    {failedDeliveries[0] && <p className="case-feedback-alert" role="alert">Agent 回访未完成：{failedDeliveries[0].error_code ?? failedDeliveries[0].state}。执行事实已保留，可打开 Agent 人工接管。</p>}
-    <div className="case-single-layout"><section className="case-path-panel"><PathTab item={item} artifactCounts={artifactCounts} onUpdated={onUpdated} onOpenRun={onOpenRun} onOpenRecord={onOpenRecord}/></section></div>
-    {panel && createPortal(<div className={`modal-backdrop case-inspector-backdrop${panel === 'activity' ? ' case-drawer-backdrop' : ''}`} onMouseDown={event => { if (event.target === event.currentTarget) setPanel(undefined); }}><section className={`modal case-inspector scenario-workspace case-inspector-${panel}${panel === 'activity' ? ' case-drawer' : ''}`} role="dialog" aria-modal="true" aria-label={panelTitle} onKeyDown={event => {
+
+
+    <div className="case-single-layout"><section className="case-path-panel"><PathTab item={item} artifactCounts={artifactCounts} onUpdated={onUpdated} onOpenRecord={onOpenRecord}/></section></div>
+    {panel && createPortal(<div className={`modal-backdrop case-inspector-backdrop`} onMouseDown={event => { if (event.target === event.currentTarget) setPanel(undefined); }}><section className={`modal case-inspector scenario-workspace case-inspector-${panel}`} role="dialog" aria-modal="true" aria-label={panelTitle} onKeyDown={event => {
       if (event.key !== 'Tab') return;
       const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), a[href]')];
       const first = controls[0], last = controls.at(-1);
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
-    }}><header className="case-inspector-heading"><h2>{panelTitle}</h2><button className="ghost" autoFocus aria-label="关闭场景面板" onClick={() => setPanel(undefined)}><X size={17}/></button></header><div className="case-inspector-body" key={panel}>{panel === 'basics' ? <><BasicsForm item={item} workspaceId={workspaceId} onSaved={onUpdated}/></> : panel === 'agent' ? <ConversationTab item={item} workspaceId={workspaceId} onUpdated={onUpdated}/> : panel === 'rounds' ? <section className="case-round-list"><p>协调会话是 Agent 的对话轮次，不是流程的重跑。需要换模型或重新开始对话时才新建；重跑流程请在流程信息里操作。历史会话保留。</p><button className="secondary" disabled={Boolean(newRoundBlock) || pendingRound || start.isPending} title={newRoundBlock || undefined} onClick={() => { startKey.current = undefined; setPanel(undefined); start.mutate('NEW'); }}>新建协调轮次</button>{item.control_rounds?.map(round => <article key={round.id}><div><b>{round.is_current ? '当前轮次' : '历史轮次'}</b><small>{new Date(round.created_at).toLocaleString()}</small></div><span>{{ PENDING: '创建中', STARTED: '已创建', FAILED: '创建失败', DELETED: '已删除' }[round.state]}</span>{round.binding_id && <button className="ghost" onClick={() => onOpenConversation(round.binding_id!)}>打开会话<ExternalLink size={13}/></button>}</article>)}</section> : panel === 'takeover' ? <section className="case-takeover"><p>这些动作没有成功，也没有被后续重试补上。可以重试，或打开 Agent 会话人工判断。</p>{failedDeliveries.map(delivery => <article key={delivery.id}><b>Agent 回访异常</b><small>{delivery.error_code ?? delivery.state}</small></article>)}<CaseActivity item={{ ...item, decision_proposals: [], tasks: [], control_plans: takeoverPlans }} onOpenRun={onOpenRun} onRetry={planId => retryPlan.mutate(planId)}/>
-{item.control_conversation_binding_id && <button className="primary" onClick={() => onOpenConversation(item.control_conversation_binding_id!)}><Bot size={14}/>打开 Agent 会话</button>}</section> : <CaseActivity item={item} onOpenRun={onOpenRun}/>}</div></section></div>, document.body)}
+    }}><header className="case-inspector-heading"><h2>{panelTitle}</h2><button className="ghost" autoFocus aria-label="关闭场景面板" onClick={() => setPanel(undefined)}><X size={17}/></button></header><div className="case-inspector-body" key={panel}>{panel === 'basics' ? <><BasicsForm item={item} workspaceId={workspaceId} onSaved={onUpdated}/></> : panel === 'agent' ? <ConversationTab item={item} workspaceId={workspaceId} onUpdated={onUpdated}/> : panel === 'actions' ? <section className="case-takeover"><p>Agent 的每个决策都会记录在这里，只列出动作与结果；Agent 给出的理由和细节请在 Agent 会话中查看。</p><CaseActivity item={{ ...item, decision_proposals: [], tasks: [] }} onOpenRun={id => { setPanel(undefined); onOpenRun(id); }} onRetry={planId => retryPlan.mutate(planId)} onOpenConversation={item.control_conversation_binding_id ? planId => { setPanel(undefined); onOpenConversation(item.control_conversation_binding_id!, planId); } : undefined}/></section> : panel === 'takeover' ? <section className="case-takeover"><p>这些动作没有成功，也没有被后续重试补上。可以重试，或打开 Agent 会话人工判断。</p>{failedDeliveries.map(delivery => <article key={delivery.id}><b>Agent 回访异常</b><small>{delivery.error_code ?? delivery.state}</small></article>)}<CaseActivity item={{ ...item, decision_proposals: [], tasks: [], control_plans: takeoverPlans }} onOpenRun={onOpenRun} onRetry={planId => retryPlan.mutate(planId)}/>
+{item.control_conversation_binding_id && <button className="primary" onClick={() => onOpenConversation(item.control_conversation_binding_id!)}><Bot size={14}/>打开 Agent 会话</button>}</section> : null}</div></section></div>, document.body)}
   </div></main>;
 }
 
@@ -570,31 +591,121 @@ export function CasesPage({ onNavigate, sessionRoute }: { onNavigate: (path: str
   const cases = useQuery({ queryKey: ['cases'], queryFn: api.cases });
   const workspace = useQuery({ queryKey: ['default-agent-workspace'], queryFn: () => api.defaultAgentWorkspace() });
   const [selectedId, setSelectedId] = useState<string>();
+  const [sessionConfigOpen, setSessionConfigOpen] = useState(false);
+  const sessionWorkspaceId = workspace.data?.id;
+  const sessionBindingId = sessionRoute?.bindingId;
+  const sessionConversation = useQuery({
+    queryKey: ['case-session-conversation', sessionWorkspaceId, sessionBindingId],
+    queryFn: () => api.agentConversation(sessionWorkspaceId!, sessionBindingId!),
+    enabled: Boolean(sessionWorkspaceId && sessionBindingId),
+  });
   const [creating, setCreating] = useState(false);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const toggleExpanded = useCallback((id: string) => setExpandedIds(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; }), []);
   const [query, setQuery] = useState('');
-  const selected = useMemo(() => cases.data?.find(item => item.id === (sessionRoute?.caseId ?? selectedId)) ?? cases.data?.[0], [cases.data, selectedId, sessionRoute?.caseId]);
-  const replace = useCallback((item: Case) => { qc.setQueryData<Case[]>(['cases'], current => current?.some(candidate => candidate.id === item.id) ? current.map(candidate => candidate.id === item.id && candidate.row_version <= item.row_version ? item : candidate) : [item, ...(current ?? [])]); }, [qc]);
+  const summary = useMemo(() => cases.data?.find(item => item.id === (sessionRoute?.caseId ?? selectedId)) ?? cases.data?.[0], [cases.data, selectedId, sessionRoute?.caseId]);
+  // The list endpoint returns lightweight summaries; the open case loads its full history separately.
+  const detail = useQuery({ queryKey: ['case-detail', summary?.id], queryFn: () => api.case(summary!.id), enabled: Boolean(summary), staleTime: 5000 });
+  const selected = useMemo(() => summary && detail.data?.id === summary.id && detail.data.row_version >= summary.row_version ? detail.data : summary, [summary, detail.data]);
+  const replace = useCallback((item: Case) => { qc.setQueryData<Case>(['case-detail', item.id], current => current && current.row_version > item.row_version ? current : item); qc.setQueryData<Case[]>(['cases'], current => current?.some(candidate => candidate.id === item.id) ? current.map(candidate => candidate.id === item.id && candidate.row_version <= item.row_version ? item : candidate) : [item, ...(current ?? [])]); }, [qc]);
   const routedCaseId = sessionRoute?.caseId;
   useEffect(() => { if (routedCaseId) setExpandedIds(current => current.has(routedCaseId) ? current : new Set(current).add(routedCaseId)); }, [routedCaseId]);
   const remove = (id: string) => { qc.setQueryData<Case[]>(['cases'], current => current?.filter(candidate => candidate.id !== id) ?? []); qc.removeQueries({ queryKey: ['case-live', id] }); setSelectedId(current => current === id ? undefined : current); };
-  return <main className="scenario-space"><aside><header className="scenario-side-head"><b>场景列表</b><button className="primary" aria-label="新建场景" onClick={() => setCreating(true)}><Plus size={14}/><span>新建</span></button></header>
-    <label className="case-sidebar-search"><Search size={13}/><input aria-label="搜索场景" placeholder="搜索场景…" value={query} onChange={event => setQuery(event.target.value)}/></label>
-    {cases.isLoading ? <p className="scenario-empty">正在加载场景…</p> : cases.error ? <p className="error">{cases.error.message}</p> : cases.data?.length ? <div className="scenario-tree">{cases.data.filter(item => !query.trim() || `${item.name} ${item.objective} ${item.description ?? ''}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())).map(item => {
+  const importInput = useRef<HTMLInputElement>(null);
+  const [checkedIds, setCheckedIds] = useState<Set<string>>(() => new Set());
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [batchNotice, setBatchNotice] = useState('');
+  const batchDialog = useProductDialog();
+  const visibleCases = useMemo(() => (cases.data ?? []).filter(item => !query.trim() || `${item.name} ${item.objective} ${item.description ?? ''}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())), [cases.data, query]);
+  const checkedCases = visibleCases.filter(item => checkedIds.has(item.id));
+  const toggleChecked = useCallback((id: string) => setCheckedIds(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; }), []);
+  const exitBatch = useCallback(() => { setCheckedIds(new Set()); setBatchNotice(''); }, []);
+  const runBatch = async (label: string, work: (item: Case) => Promise<void>) => {
+    setBatchBusy(true); setBatchNotice('');
+    const failures: string[] = [];
+    for (const item of checkedCases) { try { await work(item); } catch (error) { failures.push(`${item.name}：${error instanceof Error ? error.message : String(error)}`); } }
+    setBatchBusy(false);
+    await qc.invalidateQueries({ queryKey: ['cases'] });
+    if (failures.length) setBatchNotice(`${label}：${checkedCases.length - failures.length} 成功，${failures.length} 失败 — ${failures.join('；')}`);
+    else setCheckedIds(new Set());
+  };
+  const batchImport = async (file: File) => {
+    setBatchBusy(true); setBatchNotice('');
+    try {
+      const parsed = JSON.parse(await file.text());
+      const imported: Array<Case & { copy_report?: { skipped: Array<{ item: string; reason: string }> } }> = [];
+      const failures: string[] = [];
+      if (parsed && !Array.isArray(parsed) && parsed.format === 'flowweave.case-bundle') {
+        // Current format: one server-side transaction per Case, same path as "复制".
+        for (const entry of parsed.cases as Array<Record<string, unknown>>) {
+          try {
+            const body = { ...parsed, cases: [entry] };
+            // The gateway rejects bodies above 40 MB with an opaque 413; say what to do instead.
+            if (JSON.stringify(body).length > 36 * 1024 * 1024) throw new Error('该场景的文件资料过大（导入上限约 27 MB 原始文件），请改为导入后在场景内单独上传');
+            imported.push(...await api.importCases(body));
+          } catch (error) { failures.push(`${String(entry.name)}：${error instanceof Error ? error.message : String(error)}`); }
+        }
+      } else {
+        // Legacy export (metadata only): keep old files importable.
+        const list: Array<Record<string, any>> = Array.isArray(parsed) ? parsed : [parsed];
+        if (!list.length || list.some(entry => !entry || typeof entry.name !== 'string' || typeof entry.objective !== 'string' || !Array.isArray(entry.stages))) throw new Error('文件格式不正确，需要由“导出”生成的场景 JSON');
+        for (const entry of list) {
+          try {
+            imported.push(await api.createCase({ name: String(entry.name).slice(0, 220), description: entry.description ?? '', objective: entry.objective, work_directory_id: null, materials: (entry.materials ?? []).filter((material: { kind?: string }) => material.kind === 'LINK'), stages: entry.stages.map((stage: Record<string, string>) => ({ stage_key: stage.stage_key, name: stage.name, objective: stage.objective })) } as never));
+          } catch (error) { failures.push(`${entry.name}：${error instanceof Error ? error.message : String(error)}`); }
+        }
+      }
+      imported.forEach(item => replace(item));
+      await qc.invalidateQueries({ queryKey: ['cases'] });
+      const partial = imported.flatMap(item => (item.copy_report?.skipped ?? []).map(entry => `${item.name}：${entry.item}（${entry.reason}）`));
+      const parts = [`已导入 ${imported.length} 个场景`];
+      if (partial.length) parts.push(`以下内容未带入，需手动配置 — ${partial.join('；')}`);
+      if (failures.length) parts.push(`${failures.length} 个失败 — ${failures.join('；')}`);
+      setBatchNotice(parts.join('；'));
+    } catch (error) { setBatchNotice(`导入失败：${error instanceof Error ? error.message : String(error)}`); }
+    finally { setBatchBusy(false); }
+  };
+  const batchCopy = async () => {
+    const partial: string[] = [];
+    await runBatch('批量复制', async item => {
+      const created = await api.copyCase(item.id);
+      replace(created);
+      const skipped = created.copy_report?.skipped ?? [];
+      if (skipped.length) partial.push(`${item.name}：${skipped.map(entry => `${entry.item}（${entry.reason}）`).join('、')}`);
+    });
+    // A partial copy is still a created Case; say exactly what was not carried over.
+    if (partial.length) setBatchNotice(`已复制，但以下内容未带入，需手动配置 — ${partial.join('；')}`);
+  };
+  const batchExport = async () => {
+    setBatchBusy(true); setBatchNotice('');
+    try {
+      const bundle = await api.exportCases(checkedCases.map(item => item.id));
+      const url = URL.createObjectURL(new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json;charset=utf-8' }));
+      const link = document.createElement('a'); link.href = url; link.download = `cases-${bundle.cases.length}.json`; link.click(); URL.revokeObjectURL(url);
+    } catch (error) { setBatchNotice(`批量导出失败：${error instanceof Error ? error.message : String(error)}`); }
+    finally { setBatchBusy(false); }
+  };
+  const batchDelete = async () => {
+    if (!checkedCases.length || !await batchDialog.confirm({ title: `删除 ${checkedCases.length} 个场景？`, message: '会永久删除所选 Case、阶段控制元数据、协调会话及专属工作目录，无法恢复。关联 FlowRun 历史会保留。进行中的执行、运行中会话或未完成受控计划会阻止对应场景删除。', confirmLabel: '批量删除', tone: 'danger' })) return;
+    await runBatch('批量删除', async item => { await api.deleteCase(item.id); remove(item.id); });
+  };
+  return <main className="scenario-space"><aside><header className="scenario-side-head"><label className="case-sidebar-search"><Search size={13}/><input aria-label="搜索场景" placeholder="搜索场景…" value={query} onChange={event => setQuery(event.target.value)}/></label><button className="primary" aria-label="新建场景" onClick={() => setCreating(true)}><Plus size={14}/><span>新建</span></button></header>
+    <div className="case-batch-bar"><label className="case-batch-all"><input type="checkbox" aria-label="全选场景" checked={visibleCases.length > 0 && checkedCases.length === visibleCases.length} onChange={event => setCheckedIds(event.target.checked ? new Set(visibleCases.map(item => item.id)) : new Set())}/><span>{checkedCases.length ? `已选 ${checkedCases.length}` : '全选'}</span></label><button type="button" aria-label="批量复制" title="批量复制" disabled={!checkedCases.length || batchBusy} onClick={batchCopy}><Copy size={13}/><span>复制</span></button><button type="button" aria-label="批量导出" title="批量导出" disabled={!checkedCases.length || batchBusy} onClick={batchExport}><Download size={13}/><span>导出</span></button><button type="button" aria-label="导入场景" title="导入场景（由导出生成的 JSON）" disabled={batchBusy} onClick={() => importInput.current?.click()}><Upload size={13}/><span>导入</span></button><input ref={importInput} type="file" accept="application/json,.json" hidden onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void batchImport(file); }}/><button type="button" className="danger" aria-label="批量删除" title="批量删除" disabled={!checkedCases.length || batchBusy} onClick={batchDelete}><Trash2 size={13}/><span>删除</span></button></div>{batchNotice && <p className="error case-batch-notice">{batchNotice}</p>}
+    {cases.isLoading ? <p className="scenario-empty">正在加载场景…</p> : cases.error ? <p className="error">{cases.error.message}</p> : cases.data?.length ? <div className="scenario-tree">{visibleCases.map(item => {
       const isSelected = !creating && selected?.id === item.id;
       const completed = item.stages.filter(stage => stage.state === 'COMPLETED').length;
       const expanded = expandedIds.has(item.id);
-      return <section className="scenario-case-wrap" key={item.id}><div className={`scenario-case-row${isSelected ? ' active' : ''}`}><button className={`scenario-case-head ${isSelected ? 'active' : ''}`} onClick={() => { setSelectedId(item.id); setCreating(false); if (sessionRoute) onNavigate('/', true); }}><i className={item.control_conversation_binding_id || item.stages.some(stage => stage.current_execution_flow_run_id) ? item.state.toLowerCase() : 'draft'}/><span><b>{item.name}</b><small>{item.control_conversation_binding_id || item.stages.some(stage => stage.current_execution_flow_run_id) || item.state === 'COMPLETED' || item.state === 'ARCHIVED' ? CASE_STATE[item.state] : '待启动'} · {completed}/{item.stages.length} 阶段</small></span></button><button type="button" className={`scenario-case-toggle${expanded ? ' expanded' : ''}`} aria-label={`${expanded ? '收起' : '展开'}场景 ${item.name}`} aria-expanded={expanded} onClick={() => toggleExpanded(item.id)}><ChevronRight size={15}/></button></div>{expanded && item.control_conversation_binding_id && (() => {
+      return <section className="scenario-case-wrap" key={item.id}><div className={`scenario-case-row${isSelected ? ' active' : ''}`}>{<input type="checkbox" className="scenario-case-check" aria-label={`选择场景 ${item.name}`} checked={checkedIds.has(item.id)} onChange={() => toggleChecked(item.id)}/>}<button className={`scenario-case-head ${isSelected ? 'active' : ''}`} onClick={() => { setSelectedId(item.id); setCreating(false); if (sessionRoute) onNavigate('/', true); }}><i className={item.control_conversation_binding_id || item.stages.some(stage => stage.current_execution_flow_run_id) ? item.state.toLowerCase() : 'draft'}/><span><b>{item.name}</b><small>{item.control_conversation_binding_id || item.stages.some(stage => stage.current_execution_flow_run_id) || item.state === 'COMPLETED' || item.state === 'ARCHIVED' ? CASE_STATE[item.state] : '待启动'} · {completed}/{item.stages.length} 阶段</small></span></button><button type="button" className={`scenario-case-toggle${expanded ? ' expanded' : ''}`} aria-label={`${expanded ? '收起' : '展开'}场景 ${item.name}`} aria-expanded={expanded} onClick={() => toggleExpanded(item.id)}><ChevronRight size={15}/></button></div>{expanded && item.control_conversation_binding_id && (() => {
         const round = item.control_rounds?.find(candidate => candidate.binding_id === item.control_conversation_binding_id);
         const title = round?.display_title || 'Case Agent';
         const active = sessionRoute?.caseId === item.id && sessionRoute.bindingId === item.control_conversation_binding_id;
         return <button className={`scenario-session${active ? ' active' : ''}`} title={title} aria-current={active ? 'page' : undefined} onClick={() => onNavigate(`/cases/${encodeURIComponent(item.id)}/conversations/${encodeURIComponent(item.control_conversation_binding_id!)}`)}><span><b>{title}</b></span></button>;
       })()}</section>;
-    })}</div> : <div className="scenario-empty"><ClipboardList size={21}/><b>暂无场景</b></div>}</aside>
+    })}</div> : <div className="scenario-empty"><ClipboardList size={21}/><b>暂无场景</b></div>}{sessionRoute && !creating && workspace.data && <footer className="agent-workbench-rail-footer scenario-session-footer"><button type="button" aria-label="会话配置" title="会话配置" onClick={() => setSessionConfigOpen(true)}><Boxes size={13}/><span><b>会话配置</b></span><ChevronRight size={12}/></button></footer>}</aside>
+    {sessionConfigOpen && sessionRoute && workspace.data && <CapabilityManager workspaceId={workspace.data.id} bindingId={sessionRoute.bindingId} conversationCapabilities={sessionConversation.data?.capabilities} onClose={() => setSessionConfigOpen(false)}/>}
     {sessionRoute && selected?.id === sessionRoute.caseId && !creating ? <main className="scenario-workspace scenario-conversation"><CaseSessionPage key={`${sessionRoute.caseId}:${sessionRoute.bindingId}`} caseId={sessionRoute.caseId} bindingId={sessionRoute.bindingId} onNavigate={onNavigate} onReturn={() => onNavigate('/', true)}/></main>
       : creating ? <main className="scenario-workspace case-basics-workspace"><div className="scenario-workspace-inner"><header className="scenario-casebar"><h1>新建 Case</h1></header><div className="scenario-workspace-content">{workspace.error && <p className="error">{errorMessage(workspace.error)}</p>}<BasicsForm key="new-case" workspaceId={workspace.data?.id ?? ''} onCancel={() => { setCreating(false); void cases.refetch(); }} onSaved={item => { replace(item); setSelectedId(item.id); setCreating(false); }}/></div></div></main>
-      : selected ? <ScenarioWorkspace key={selected.id} item={selected} workspaceId={workspace.data?.id ?? ''} onUpdated={replace} onDelete={() => remove(selected.id)} onOpenConversation={bindingId => onNavigate(`/cases/${encodeURIComponent(selected.id)}/conversations/${encodeURIComponent(bindingId)}`)} onOpenRun={id => openFlowRunFromCase(`/flow-runs/${encodeURIComponent(id)}`, onNavigate)} onOpenRecord={stage => {
+      : selected ? <ScenarioWorkspace key={selected.id} item={selected} workspaceId={workspace.data?.id ?? ''} onUpdated={replace} onDelete={() => remove(selected.id)} onOpenConversation={(bindingId, planId) => onNavigate(`/cases/${encodeURIComponent(selected.id)}/conversations/${encodeURIComponent(bindingId)}${planId ? `?plan=${encodeURIComponent(planId)}` : ''}`)} onOpenRun={id => void api.flowRun(id).then(run => openFlowRunFromCase(run.parent_flow_run_id && run.run_mode ? `/flow-runs/${encodeURIComponent(run.parent_flow_run_id)}/records/${run.run_mode === 'AUTOMATIC' ? 'automatic' : 'stepwise'}/${encodeURIComponent(run.id)}` : `/flow-runs/${encodeURIComponent(id)}`, onNavigate)).catch(() => openFlowRunFromCase(`/flow-runs/${encodeURIComponent(id)}`, onNavigate))} onOpenRecord={stage => {
         const execution = stage.execution;
         const parentRunId = execution?.parent_flow_run_id;
         const mode = execution?.run_mode;

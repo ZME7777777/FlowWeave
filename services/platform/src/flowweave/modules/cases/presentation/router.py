@@ -11,12 +11,15 @@ from flowweave.modules.cases import public as service
 from flowweave.shared.errors import DomainError
 from flowweave.shared.http import Db, IdempotencyKey, command_key, run_sync
 from flowweave.shared.schemas import (
+    CaseBundleImportWrite,
+    CaseConclusionDecisionWrite,
     CaseControlConversationWrite,
     CaseControlPlanWrite,
     CaseControlSuggestionWrite,
     CaseCoordinationStateWrite,
     CaseCreateWrite,
     CaseDecisionProposalWrite,
+    CaseExportWrite,
     CaseFlowRunWrite,
     CasePathWrite,
     CaseSessionConfigWrite,
@@ -61,6 +64,21 @@ async def create_case(payload: CaseCreateWrite, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.create_case(session, payload))
 
 
+@router.post("/cases/export")
+async def export_cases(payload: CaseExportWrite, db: Db) -> dict[str, Any]:
+    return await run_sync(db, lambda session: service.export_cases(session, payload.case_ids))
+
+
+@router.post("/cases/import", status_code=201)
+async def import_cases(payload: CaseBundleImportWrite, db: Db) -> list[dict[str, Any]]:
+    return await run_sync(db, lambda session: service.import_cases(session, payload))
+
+
+@router.post("/cases/{case_id}/copy", status_code=201)
+async def copy_case(case_id: str, db: Db) -> dict[str, Any]:
+    return await run_sync(db, lambda session: service.copy_case(session, case_id))
+
+
 @router.put("/cases/{case_id}")
 async def update_case(case_id: str, payload: CaseUpdateWrite, db: Db) -> dict[str, Any]:
     return await run_sync(db, lambda session: service.update_case(session, case_id, payload))
@@ -77,6 +95,30 @@ async def coordination_state(
             case_id,
             payload.expected_row_version,
             payload.state,
+        ),
+    )
+
+
+@router.post("/cases/{case_id}/conclusion/confirm")
+async def confirm_conclusion(
+    case_id: str, payload: CaseConclusionDecisionWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.confirm_case_conclusion(
+            session, case_id, payload.expected_row_version
+        ),
+    )
+
+
+@router.post("/cases/{case_id}/conclusion/reject")
+async def reject_conclusion(
+    case_id: str, payload: CaseConclusionDecisionWrite, db: Db
+) -> dict[str, Any]:
+    return await run_sync(
+        db,
+        lambda session: service.reject_case_conclusion(
+            session, case_id, payload.expected_row_version, payload.note
         ),
     )
 

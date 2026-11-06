@@ -102,6 +102,15 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
     const timer = window.setTimeout(() => persistDraftRef.current(scopeForPersist), COMPOSER_DRAFT_PERSIST_DELAY_MS);
     return () => window.clearTimeout(timer);
   }, [draft, scope]);
+  useEffect(() => {
+    const persist = () => persistDraftRef.current(scope);
+    window.addEventListener('pagehide', persist);
+    window.addEventListener('beforeunload', persist);
+    return () => {
+      window.removeEventListener('pagehide', persist);
+      window.removeEventListener('beforeunload', persist);
+    };
+  }, [scope]);
   const resizeInput = useCallback(() => {
     const textarea = input.current;
     if (!textarea || textarea.getBoundingClientRect().width <= 0) return;
@@ -234,7 +243,7 @@ export const AgentComposerInput = forwardRef<ComposerHandle, {
     <textarea ref={input} data-overflowing={inputOverflowing || undefined} aria-label={ariaLabel} aria-autocomplete="list" aria-controls={hasMenu ? 'agent-composer-capabilities' : undefined} aria-expanded={hasMenu} value={draft} maxLength={200_000} placeholder={placeholder} disabled={disabled} onChange={event => { setSelectionStart(event.target.selectionStart); updateDraft(event.target.value); }} onSelect={event => setSelectionStart(event.currentTarget.selectionStart)} onPaste={onPaste} onKeyDown={event => {
       if (isImeComposition(event)) return;
       if (event.key === 'Enter' && (event.metaKey || event.ctrlKey || event.altKey) && !event.shiftKey) { event.preventDefault(); onDirectSubmit?.(draftRef.current); return; }
-      if (hasMenu && event.key === 'Escape') { updateDraft(`${draft.slice(0, trigger!.start)}${draft.slice(trigger!.end)}`); setSelectionStart(trigger!.start); return; }
+      if (hasMenu && event.key === 'Escape') { event.preventDefault(); updateDraft(`${draft.slice(0, trigger!.start)}${draft.slice(trigger!.end)}`); setSelectionStart(trigger!.start); return; }
       if (hasSuggestions && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab'].includes(event.key)) {
         event.preventDefault();
         if (event.key === 'ArrowDown') { setActiveIndex(index => (index + 1) % visible.length); return; }

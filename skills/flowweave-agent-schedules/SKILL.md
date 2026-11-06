@@ -52,7 +52,7 @@ Last run: <平台状态>
    ```bash
    flowweave agent workspace <workspace-id>
    flowweave agent work-directories <workspace-id>
-   flowweave resource model-providers list
+   flowweave model list
    flowweave agent schedules <workspace-id>
    ```
 
@@ -63,7 +63,7 @@ Last run: <平台状态>
      --data-file ./.tmp/agent-schedule.json --dry-run
    ```
 
-3. 更新、暂停或恢复前重新读取任务，以响应中的 `row_version` 防止覆盖并发修改：
+3. 更新、暂停或恢复前重新读取任务，以响应中的 `row_version` 防止覆盖并发修改。更新体使用 `AgentConversationSchedulePatchWrite`，提交完整业务提示词、Cron、会话模式、模型、能力和认证配置及 `expected_row_version`。工作区模式和所属目录在创建后固定，更新体不接受 `workspace_mode`、`work_directory_id` 或旧的 `binding_id`。
 
    ```bash
    flowweave agent schedule-update <workspace-id> <schedule-id> \
@@ -78,6 +78,7 @@ Last run: <平台状态>
 
    ```bash
    flowweave agent schedule-occurrences <workspace-id> <schedule-id>
+   flowweave agent schedule-conversations <workspace-id> <schedule-id>
    ```
 
 ## 状态变更
@@ -88,3 +89,5 @@ Last run: <平台状态>
 flowweave agent schedule-trigger <workspace-id> <schedule-id> --dry-run
 flowweave agent schedule-delete <workspace-id> <schedule-id> --dry-run
 ```
+
+失败 occurrence 可在读取并确认后使用 `agent schedule-occurrence-delete <workspace-id> <schedule-id> --occurrence <occurrence-id> --dry-run` 删除。平台仅允许删除已失败且没有关联会话的记录。运行会话沿用普通会话的能力注册、认证同步和读取入口。

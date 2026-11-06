@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from typing import Any, Literal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from flowweave.runtime.base import (
     RuntimeAskAgentResult,
@@ -24,6 +24,7 @@ from flowweave.runtime.base import (
     RuntimeMCPProbeResult,
     RuntimeMessageSearchResult,
     RuntimePendingConfirmation,
+    RuntimePendingQuestion,
     RuntimePluginValidationRequest,
     RuntimePluginValidationResult,
     RuntimeProvider,
@@ -34,11 +35,106 @@ from flowweave.runtime.base import (
     RuntimeWorkspaceSnapshot,
     StartAttemptRequest,
 )
+from flowweave.runtime.child_creation import (
+    NativeChildConfiguration,
+    NativeChildInvocation,
+    NativeChildLaunchRequest,
+    NativeChildPreparation,
+)
+from flowweave.runtime.child_governance import (
+    NativeChildPreparationOverrides,
+    NativeChildResolution,
+    NativeGovernedChildPreparation,
+    NativeParentConfiguration,
+)
+from flowweave.runtime.child_interaction import (
+    NativeCommandInvocation,
+    NativeCommandRequest,
+    NativeCommandResult,
+    NativeQueryInvocation,
+    NativeQueryRequest,
+    NativeQueryResult,
+)
 from flowweave.shared.errors import DomainError
 
 
 class MockRuntime:
     """Deterministic adapter used by tests and local product demos."""
+
+    @staticmethod
+    def _child_unsupported() -> DomainError:
+        return DomainError(
+            "RUNTIME_CHILD_UNSUPPORTED", "Mock Runtime 不执行 OpenHands 原生子会话", 409
+        )
+
+    def parent_conversation_configuration(self, handle: RuntimeHandle) -> NativeParentConfiguration:
+        raise self._child_unsupported()
+
+    def verify_child_query(
+        self, handle: RuntimeHandle, request: NativeQueryRequest
+    ) -> NativeQueryInvocation:
+        raise self._child_unsupported()
+
+    def query_children(
+        self, handle: RuntimeHandle, request: NativeQueryRequest
+    ) -> NativeQueryResult:
+        raise self._child_unsupported()
+
+    def verify_child_command(
+        self, handle: RuntimeHandle, request: NativeCommandRequest
+    ) -> NativeCommandInvocation:
+        raise self._child_unsupported()
+
+    def command_child(
+        self, handle: RuntimeHandle, request: NativeCommandRequest
+    ) -> NativeCommandResult:
+        raise self._child_unsupported()
+
+    def send_child_message(
+        self,
+        handle: RuntimeHandle,
+        submission_id: UUID,
+        content: str,
+        image_urls: tuple[str, ...] = (),
+    ) -> str:
+        raise self._child_unsupported()
+
+    def resolve_child_launcher(
+        self, handle: RuntimeHandle, request: NativeChildLaunchRequest
+    ) -> NativeChildResolution:
+        raise self._child_unsupported()
+
+    def prepare_governed_child_conversation(
+        self,
+        handle: RuntimeHandle,
+        creation_id: UUID,
+        request: NativeChildLaunchRequest,
+        overrides: NativeChildPreparationOverrides,
+    ) -> NativeGovernedChildPreparation:
+        raise self._child_unsupported()
+
+    def verify_child_launcher(
+        self, handle: RuntimeHandle, request: NativeChildLaunchRequest
+    ) -> NativeChildInvocation:
+        raise self._child_unsupported()
+
+    def prepare_child_conversation(
+        self, handle: RuntimeHandle, creation_id: UUID, request: NativeChildLaunchRequest
+    ) -> NativeChildPreparation:
+        raise self._child_unsupported()
+
+    def read_child_preparation(
+        self, handle: RuntimeHandle, creation_id: UUID
+    ) -> NativeChildPreparation | None:
+        raise self._child_unsupported()
+
+    def release_child_conversation(
+        self, handle: RuntimeHandle, creation_id: UUID, request: NativeChildLaunchRequest
+    ) -> NativeChildPreparation:
+        raise self._child_unsupported()
+
+    def child_conversation_configuration(self, handle: RuntimeHandle) -> NativeChildConfiguration:
+        raise self._child_unsupported()
 
     def __init__(self) -> None:
         self._results: dict[str, RuntimeResult] = {}
@@ -49,6 +145,19 @@ class MockRuntime:
         self._git_identities: dict[str, tuple[str, str]] = {}
         self._profile_git_roots: set[str] = set()
         self._loaded_plugins: dict[str, set[str]] = {}
+        self._conversation_marketplaces: dict[str, tuple[dict[str, Any], ...]] = {}
+
+    def workspace_git_operation(
+        self,
+        handle: RuntimeHandle,
+        repository_path: str,
+        action: str,
+        *,
+        ref: str = "",
+        expected_head: str = "",
+        expected_ref: str = "",
+    ) -> None:
+        raise DomainError("AGENT_WORKSPACE_GIT_UNAVAILABLE", "模拟环境未连接 Git 远端", 503)
 
     def workspace_git_identity(
         self,
@@ -127,6 +236,9 @@ class MockRuntime:
         self._results[handle.job_id] = RuntimeResult(status="RUNNING", cursor="1")
         self._events[handle.job_id] = []
         self._conversation_secrets[handle.job_id] = dict(request.conversation_secrets)
+        self._conversation_marketplaces[handle.conversation_id] = (
+            request.agent_spec.agent_context.registered_marketplaces
+        )
         return handle
 
     def update_conversation_secrets(
@@ -152,6 +264,7 @@ class MockRuntime:
         self._results.pop(handle.job_id, None)
         self._events.pop(handle.job_id, None)
         self._conversation_secrets.pop(handle.job_id, None)
+        self._conversation_marketplaces.pop(handle.conversation_id, None)
 
     def start(self, request: StartAttemptRequest) -> RuntimeHandle:
         handle = RuntimeHandle(
@@ -193,6 +306,9 @@ class MockRuntime:
             )
         self._results[handle.job_id] = result
         self._conversation_secrets[handle.job_id] = dict(request.conversation_secrets)
+        self._conversation_marketplaces[handle.conversation_id] = (
+            request.agent_spec.agent_context.registered_marketplaces
+        )
         return handle
 
     def read_events(self, handle: RuntimeHandle) -> RuntimeEventBatch:
@@ -279,6 +395,14 @@ class MockRuntime:
 
     def switch_model(self, handle: RuntimeHandle, provider: RuntimeProvider) -> None:
         del handle, provider
+
+    def restore_condenser_credentials(
+        self, handle: RuntimeHandle, provider: RuntimeProvider
+    ) -> None:
+        del handle, provider
+
+    def conversation_marketplaces(self, handle: RuntimeHandle) -> tuple[dict[str, Any], ...]:
+        return self._conversation_marketplaces.get(handle.conversation_id, ())
 
     def load_plugin(self, handle: RuntimeHandle, plugin_ref: str) -> None:
         self._loaded_plugins.setdefault(handle.conversation_id or "", set()).add(plugin_ref)
@@ -400,6 +524,10 @@ class MockRuntime:
         del handle
         return None
 
+    def get_pending_question(self, handle: RuntimeHandle) -> RuntimePendingQuestion | None:
+        del handle
+        return None
+
     def respond_to_confirmation(
         self,
         handle: RuntimeHandle,
@@ -489,6 +617,9 @@ class MockRuntime:
         )
         self._results[fork_handle.job_id] = RuntimeResult(status="IDLE", cursor=fork_handle.cursor)
         inherited_condenser = self._conversation_condensers.get(handle.conversation_id)
+        self._conversation_marketplaces[target_conversation_id] = self.conversation_marketplaces(
+            handle
+        )
         if inherited_condenser is not None:
             self._conversation_condensers[target_conversation_id] = inherited_condenser
         return RuntimeForkResult(

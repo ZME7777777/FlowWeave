@@ -22,6 +22,7 @@ from flowweave.modules.runs.infrastructure.models import (
     ArtifactVersion,
     CandidateOutputSet,
     FlowRun,
+    GateEvaluation,
     NodeAttempt,
     NodeRun,
     RunSnapshot,
@@ -196,8 +197,13 @@ def test_separate_native_contracts_and_schema_have_no_identity_overrides(flow_ca
         headers={"Authorization": "Bearer " + g.flow_token},
         json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
     ).json()["result"]["tools"]
-    assert [tool["name"] for tool in listed] == ["read_case_flow", "manage_case_flow"]
-    assert [tool["annotations"]["readOnlyHint"] for tool in listed] == [True, False]
+    assert [tool["name"] for tool in listed] == [
+        "read_case_flow",
+        "read_case_node_session",
+        "manage_case_flow",
+    ]
+    assert [tool["annotations"]["readOnlyHint"] for tool in listed] == [True, True, False]
+    assert "case_id" not in listed[2]["inputSchema"]["properties"]
     assert "case_id" not in listed[1]["inputSchema"]["properties"]
     refs = g.db.scalars(select(CaseFlowToolGrant)).all()
     assert len(refs) == 1
@@ -454,6 +460,8 @@ def review_ready(g):
         version_no=1,
         artifact_type="URL",
         uri="https://example.test/result",
+        content_hash="d" * 64,
+        byte_size=0,
         source="RUNTIME",
     )
     g.db.add(artifact)
@@ -768,6 +776,8 @@ def test_agent_completes_final_stage_only_with_current_accepted_artifact_evidenc
         version_no=1,
         artifact_type="URL",
         uri="https://example.test/result",
+        content_hash="d" * 64,
+        byte_size=0,
         source="RUNTIME",
     )
     g.db.add(artifact)
@@ -1245,6 +1255,115 @@ def test_advancing_the_last_stage_names_complete_case_as_the_required_action(flo
     assert result["error_code"] == "CASE_FINAL_STAGE_REQUIRES_COMPLETION"
 
 
+def test_agent_can_conclude_the_case_early_without_a_completed_run(flow_case):
+    """Stopping is a judgment the Agent may make on a running, unfinished execution."""
+
+    g = flow_case
+    g.execution.state = "RUNNING"
+    g.db.commit()
+    result = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(g, "CONCLUDE_CASE", reason="first node proved the premise invalid"),
+        )
+    )
+    assert result["state"] == "SUCCEEDED", result
+    refresh(g)
+    # A proposal only: nothing is cancelled or skipped and the Case is not terminal.
+    assert g.item.state == "PAUSED" and g.item.pause_reason == "CONCLUSION_PROPOSED"
+    assert g.item.pause_note == "first node proved the premise invalid"
+    assert g.stage.state in {"ACTIVE", "REVIEW_PENDING"}
+    assert g.execution.state == "RUNNING"
+    assert all(
+        stage.state != "SKIPPED"
+        for stage in g.db.scalars(select(CaseStage).where(CaseStage.case_id == g.item.id))
+    )
+    # A plain resume cannot dodge the human's decision.
+    with pytest.raises(DomainError) as blocked:
+        service.set_case_coordination_state(g.db, g.item.id, g.item.row_version, "ACTIVE")
+    assert blocked.value.code == "CASE_CONCLUSION_DECISION_REQUIRED"
+
+
+def _propose_conclusion(g):
+    g.execution.state = "RUNNING"
+    g.db.commit()
+    result = projection(
+        rpc(g, "manage_case_flow", action(g, "CONCLUDE_CASE", reason="goal already answered"))
+    )
+    assert result["state"] == "SUCCEEDED", result
+    refresh(g)
+
+
+def test_human_confirmation_really_ends_the_case(flow_case, monkeypatch):
+    g = flow_case
+    cancelled = []
+    monkeypatch.setattr(
+        service.orchestration, "cancel_run", lambda db, run_id, key: cancelled.append(run_id)
+    )
+    _propose_conclusion(g)
+    service.confirm_case_conclusion(g.db, g.item.id, g.item.row_version)
+    refresh(g)
+    assert g.item.state == "COMPLETED" and g.item.pause_reason is None
+    assert g.stage.state == "COMPLETED" and cancelled == [g.execution.id]
+    later = g.db.scalars(
+        select(CaseStage).where(CaseStage.case_id == g.item.id, CaseStage.id != g.stage.id)
+    ).all()
+    assert all(stage.state == "SKIPPED" for stage in later if stage.position > g.stage.position)
+    with pytest.raises(DomainError) as again:
+        service.confirm_case_conclusion(g.db, g.item.id, g.item.row_version)
+    assert again.value.code == "CASE_NO_CONCLUSION_PROPOSED"
+
+
+def test_human_rejection_resumes_untouched_and_tells_the_coordinator(flow_case, monkeypatch):
+    g = flow_case
+    monkeypatch.setattr(
+        service.orchestration, "cancel_run", lambda *a: pytest.fail("rejection must not cancel")
+    )
+    _propose_conclusion(g)
+    service.reject_case_conclusion(g.db, g.item.id, g.item.row_version, "still need region B")
+    refresh(g)
+    assert g.item.state == "ACTIVE" and g.item.pause_reason is None
+    assert "否决" in g.item.resume_note and "region B" in g.item.resume_note
+    assert g.stage.state in {"ACTIVE", "REVIEW_PENDING"} and g.execution.state == "RUNNING"
+    with pytest.raises(DomainError) as again:
+        service.reject_case_conclusion(g.db, g.item.id, g.item.row_version)
+    assert again.value.code == "CASE_NO_CONCLUSION_PROPOSED"
+
+
+def test_open_ask_user_question_pauses_the_case_and_a_reply_resumes_it(flow_case):
+    g = flow_case
+    binding = g.item.control_conversation_binding_id = str(uuid4())
+    g.db.flush()
+    assert service.note_case_control_waiting(g.db, "someone-elses-binding") is False
+    assert service.note_case_control_waiting(g.db, binding) is True
+    g.db.commit()
+    refresh(g)
+    assert g.item.state == "PAUSED" and g.item.pause_reason == "WAITING_HUMAN"
+    assert g.stage.state in {"ACTIVE", "REVIEW_PENDING"}
+    # Re-observing the same open question is idempotent.
+    assert service.note_case_control_waiting(g.db, binding) is False
+    assert service.note_case_control_reply(g.db, binding, "evt-1") is True
+    g.db.commit()
+    refresh(g)
+    assert g.item.state == "ACTIVE" and g.item.pause_reason is None
+    assert "evt-1" in g.item.resume_note and "已在会话中回复" in g.item.resume_note
+    assert service.note_case_control_reply(g.db, binding, "evt-2") is False
+
+
+def test_plain_resume_of_a_waiting_case_does_not_claim_an_answer(flow_case):
+    g = flow_case
+    g.item.control_conversation_binding_id = str(uuid4())
+    g.db.flush()
+    assert service.note_case_control_waiting(g.db, g.item.control_conversation_binding_id)
+    g.db.commit()
+    refresh(g)
+    service.set_case_coordination_state(g.db, g.item.id, g.item.row_version, "ACTIVE")
+    g.db.commit()
+    refresh(g)
+    assert g.item.state == "ACTIVE" and "未在会话中回复" in g.item.resume_note
+
+
 def test_stepwise_final_stage_is_completed_by_the_agent_with_accepted_artifact_evidence(flow_case):
     g = flow_case
     stepwise(g)
@@ -1322,3 +1441,318 @@ def test_stepwise_final_stage_is_completed_by_the_agent_with_accepted_artifact_e
     refresh(g)
     assert g.stage.state == "COMPLETED"
     assert g.item.state == "COMPLETED"
+
+
+def test_create_execution_copy_accepts_a_copy_name() -> None:
+    """The coordinator names the first copy it creates, exactly like later copies."""
+
+    from flowweave.modules.cases.application.flow_tools import FlowActionArguments
+
+    args = FlowActionArguments.model_validate(
+        {
+            "action": "CREATE_EXECUTION_COPY",
+            "idempotency_key": "create-collect-1",
+            "reason": "资料满足启动条件",
+            "expected_case_row_version": 6,
+            "expected_stage_key": "collect",
+            "expected_run_row_version": 1,
+            "expected_snapshot_version": 1,
+            "copy_name": "收集执行",
+        }
+    )
+    assert args.copy_name == "收集执行"
+
+
+def test_copy_name_is_still_rejected_for_unrelated_actions() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    from flowweave.modules.cases.application.flow_tools import FlowActionArguments
+
+    with pytest.raises(ValidationError, match="copy_name"):
+        FlowActionArguments.model_validate(
+            {
+                "action": "START_EXECUTION",
+                "idempotency_key": "start-1",
+                "reason": "启动",
+                "expected_case_row_version": 6,
+                "expected_stage_key": "collect",
+                "expected_execution_flow_run_id": "run-1",
+                "expected_run_row_version": 1,
+                "expected_snapshot_version": 1,
+                "copy_name": "不应出现",
+            }
+        )
+
+
+def test_completing_before_the_execution_finishes_reports_the_real_reason(flow_case):
+    """A stage that is not ready is a precondition failure, never a VERSION_CONFLICT."""
+
+    g = flow_case
+    assert g.stage.state == "ACTIVE"
+    result = projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(g, "COMPLETE_CASE", evidence_artifact_version_ids=[str(uuid4())]),
+        )
+    )
+    assert result["error_code"] == "CASE_STAGE_STATE_NOT_READY"
+    assert result["error_code"] != "VERSION_CONFLICT"
+
+
+def test_plan_survives_a_session_rollback_so_a_failure_can_still_be_recorded(flow_case):
+    """The failure handler must not crash when a rollback removed the just-created plan row."""
+
+    g = flow_case
+    plan = service.CaseControlPlan(
+        case_id=g.item.id,
+        stage_id=g.stage.id,
+        action="START_EXECUTION",
+        idempotency_key="rollback-probe-1",
+        reason="probe",
+        input_snapshot_json={"requested": {}},
+    )
+    g.db.add(plan)
+    g.db.flush()
+    snapshot = service._plan_snapshot(plan)
+    assert snapshot["idempotency_key"] == "rollback-probe-1"
+    g.db.rollback()  # discards the uncommitted plan, exactly like a stale-version claim does
+
+    restored = service._restore_plan_after_rollback(g.db, plan, snapshot)
+    restored.state = "FAILED"
+    restored.error_code = "ANY_ERROR"
+    g.db.commit()
+    stored = g.db.get(service.CaseControlPlan, snapshot["id"])
+    assert stored is not None and stored.state == "FAILED"
+    assert stored.idempotency_key == "rollback-probe-1"
+
+
+def test_tool_result_describes_the_plan_after_the_session_replaced_its_row(flow_case):
+    """manage_flow must read the plan back after dispatch instead of trusting the stale ORM row."""
+
+    import inspect
+
+    from flowweave.modules.cases.application import flow_tools
+
+    source = inspect.getsource(flow_tools.manage_flow)
+    assert "db.get(CaseControlPlan, plan_id)" in source
+    assert "return action_result(plan)" not in source
+
+
+def test_gates_section_exposes_platform_and_author_gates_with_untrusted_text_bounded(flow_case):
+    g = flow_case
+    review_ready(g)
+    g.attempt.gate_policies_json = [
+        {
+            "id": "__platform__",
+            "stage": "END",
+            "position": -10,
+            "gate_type": "PLATFORM_OUTPUT_CONTRACT",
+            "enabled": True,
+            "config": {"system_owned": True},
+        },
+        {
+            "id": "author-1",
+            "stage": "END",
+            "position": 1,
+            "gate_type": "PROMPT",
+            "enabled": True,
+            "config": {"business_result_contract": {"node_kind": "COLLECTION"}},
+        },
+        {"id": "never-run", "stage": "START", "position": 1, "gate_type": "PYTHON"},
+    ]
+    for key, position, decision, extra in (
+        ("__platform__", -10, "PASS", {}),
+        ("author-1", 1, "FAIL", {"business_status": "NO_FINDINGS"}),
+    ):
+        for number in (1, 2):
+            g.db.add(
+                GateEvaluation(
+                    attempt_id=g.attempt.id,
+                    policy_snapshot_key=key,
+                    stage="END",
+                    policy_position=position,
+                    evaluation_attempt=number,
+                    state="FINISHED",
+                    decision="ERROR" if number == 1 else decision,
+                    input_hash="c" * 64,
+                    result_json={
+                        "summary": "x" * 5000 if number == 2 else "old",
+                        "reasons": ["missing evidence"],
+                        "evidence": [{"kind": "BUSINESS_RESULT", **extra}],
+                        "details": {},
+                    },
+                )
+            )
+    g.db.commit()
+
+    gates = projection(rpc(g, "read_case_flow", {"section": "gates"}))["items"]
+    assert [item["instance_key"] for item in gates] == ["first"]
+    by_id = {gate["policy_id"]: gate for gate in gates[0]["gates"]}
+    assert by_id["__platform__"]["origin"] == "PLATFORM"
+    assert by_id["author-1"]["origin"] == "AUTHOR"
+    latest = by_id["author-1"]["evaluation"]
+    assert latest["decision"] == "FAIL" and latest["evaluation_attempt"] == 2
+    assert latest["evaluations_total"] == 2
+    assert latest["evidence"][0]["business_status"] == "NO_FINDINGS"
+    assert len(latest["summary"]) < 1600 and latest["summary"].endswith("[truncated]")
+    assert by_id["never-run"]["evaluation"] is None
+
+    nodes = projection(rpc(g, "read_case_flow", {"section": "nodes"}))["items"]
+    decisions = nodes[0]["execution"]["latest_attempt"]["gate_decisions"]
+    assert {item["decision"] for item in decisions} == {"PASS", "FAIL"}
+
+
+def _author_gate_failure(g, on_fail, *, attempts=1):
+    """Give node ``first`` a failed END gate whose author declared ``on_fail``."""
+
+    review_ready(g)
+    config = {"prompt": "check"}
+    if on_fail is not None:
+        config["on_fail"] = on_fail
+    g.attempt.gate_policies_json = [
+        {
+            "id": "author-gate",
+            "stage": "END",
+            "position": 1,
+            "gate_type": "PROMPT",
+            "config": config,
+        }
+    ]
+    latest = g.attempt
+    for number in range(2, attempts + 1):
+        latest = NodeAttempt(
+            node_run_id=g.node.id,
+            attempt_no=number,
+            snapshot_id=g.execution.active_snapshot_id,
+            state="END_BLOCKED",
+            startup_prompt="again",
+            agent_preset_json=g.preset,
+            gate_policies_json=g.attempt.gate_policies_json,
+        )
+        g.db.add(latest)
+        g.db.flush()
+    g.db.add(
+        GateEvaluation(
+            attempt_id=latest.id,
+            policy_snapshot_key="author-gate",
+            stage="END",
+            policy_position=1,
+            evaluation_attempt=1,
+            state="FINISHED",
+            decision="FAIL",
+            input_hash="e" * 64,
+            result_json={"summary": "no evidence", "reasons": ["missing"]},
+        )
+    )
+    g.attempt.state = "ACCEPTED"
+    g.node.state = "ACCEPTED"
+    g.node.accepted_attempt_id = g.attempt.id
+    g.execution.automation_plan_json = {
+        "start_node_key": "first",
+        "node_drafts": {
+            "second": {
+                "row_version": 2,
+                "startup_mode": "PROMPT",
+                "startup_prompt": "successor",
+                "agent_preset": g.preset,
+                "input_bindings": {},
+                "gates": [],
+            }
+        },
+    }
+    g.db.commit()
+
+
+def _rerun(g):
+    return projection(
+        rpc(
+            g,
+            "manage_case_flow",
+            action(g, "RERUN_STEPWISE_NODE", flow_node_key="first", node_run_id=g.node.id),
+        )
+    )
+
+
+def test_author_rerun_policy_allows_reruns_until_the_declared_rounds_are_used(flow_case):
+    g = flow_case
+    _author_gate_failure(g, {"action": "RERUN", "max_rounds": 2}, attempts=1)
+    read = projection(rpc(g, "read_case_flow", {"section": "nodes"}))["items"][0]
+    state = read["execution"]["latest_attempt"]["author_failure_policy"]
+    assert state["action"] == "RERUN" and state["rounds_remaining"] == 2
+    got = _rerun(g)
+    assert got["state"] == "SUCCEEDED", got
+
+
+def test_author_rerun_policy_blocks_once_rounds_are_exhausted(flow_case):
+    g = flow_case
+    _author_gate_failure(g, {"action": "RERUN", "max_rounds": 1}, attempts=2)
+    state = projection(rpc(g, "read_case_flow", {"section": "gates"}))["items"][0][
+        "author_failure_policy"
+    ]
+    assert state["exhausted"] is True and "ask_user" in state["instruction"]
+    blocked = _rerun(g)
+    assert blocked["state"] == "FAILED"
+    assert blocked["error_code"] == "CASE_GATE_POLICY_RERUN_EXHAUSTED"
+
+
+def test_author_stop_policy_forbids_rerun(flow_case):
+    g = flow_case
+    _author_gate_failure(g, {"action": "STOP"})
+    blocked = _rerun(g)
+    assert blocked["state"] == "FAILED" and blocked["error_code"] == "CASE_GATE_POLICY_STOP"
+
+
+def test_undeclared_gate_failure_leaves_the_coordinator_free_to_rerun(flow_case):
+    g = flow_case
+    _author_gate_failure(g, None, attempts=3)
+    nodes = projection(rpc(g, "read_case_flow", {"section": "nodes"}))["items"][0]
+    assert nodes["execution"]["latest_attempt"]["author_failure_policy"] is None
+    assert _rerun(g)["state"] == "SUCCEEDED"
+
+
+def test_node_session_projection_pairs_results_by_action_id_only():
+    from flowweave.modules.cases.application.flow_tools import project_session_events
+
+    events = [
+        {"id": "u1", "event_type": "MESSAGE", "payload": {"source": "user", "content": "收集异常"}},
+        {
+            "id": "c1",
+            "event_type": "TOOL_CALL",
+            "payload": {
+                "action_id": "a1",
+                "tool_name": "terminal",
+                "summary": "查询",
+                "details": {"command": "es-query --host wrong*"},
+            },
+        },
+        {
+            "id": "c2",
+            "event_type": "TOOL_CALL",
+            "payload": {"action_id": "a2", "tool_name": "terminal", "details": {"command": "ls"}},
+        },
+        # Result order is reversed and the text mentions the other call: pairing is by id.
+        {"id": "r2", "event_type": "TOOL_RESULT", "payload": {"action_id": "a2", "content": "x"}},
+        {
+            "id": "r1",
+            "event_type": "TOOL_RESULT",
+            "payload": {"action_id": "a1", "content": "全部 0 条 " + "z" * 5000},
+        },
+        {"id": "f", "event_type": "COMPLETED", "payload": {"content": "已闭合"}},
+    ]
+    view = project_session_events(events)
+    assert view["task"] == "收集异常" and view["final_reply"] == "已闭合"
+    first, second = view["calls"]
+    assert first["command"] == "es-query --host wrong*" and first["result"].startswith("全部 0 条")
+    assert first["result"].endswith("[truncated]") and second["result"] == "x"
+
+
+def test_answered_question_round_trips_through_the_message_envelope():
+    from flowweave.modules.agent_sessions.application import conversations as c
+
+    prompt, _ = c._message_payload("先灰度", (), answered_question="是否发布到生产？")
+    assert c.project_answered_question(prompt) == "是否发布到生产？"
+    assert c._project_conversation_references(prompt)[0] == "先灰度"
+    plain, _ = c._message_payload("先灰度", ())
+    assert plain == "先灰度" and c.project_answered_question(plain) is None

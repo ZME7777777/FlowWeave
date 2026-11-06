@@ -1,6 +1,6 @@
 ---
 name: flowweave
-description: FlowWeave 平台基准技能。用于建立统一的用户登录、资源模型、CLI 配置与安全操作方式，再创建节点、能力、环境、流程、周期调度、FlowRun 或 Agent 工作区。
+description: FlowWeave 平台基准技能。用于统一用户登录、资源模型、CLI 配置与操作边界，再管理节点、能力市场、环境、流程、调度、场景、FlowRun、Agent 工作区或原生子会话。
 ---
 
 # FlowWeave 平台基准
@@ -47,9 +47,13 @@ flowweave config show
 
 `--base-url` 必须包含实际部署前缀，例如 `/flowweave`。基础配置只保存 URL；登录会话单独保存在权限为 `0600`、且与该 URL 精确绑定的本地认证文件中。默认交互式登录会隐藏密码；非交互环境只用 `--password-stdin`，不得把密码、会话 Cookie 或 token 写进命令参数、Skill、请求文件或日志。用 `flowweave auth status` 核对当前身份，用 `flowweave auth logout` 撤销会话。若 CLI 尚未可从 npm 获取，先确认包的发布可见性；不要改用未审计的本地脚本替代发行包。
 
+本文命令对应 `@flowweave-ai/cli` 的 Node.js 客户端。先检查 `flowweave --help` 是否包含 `auth`，若仅有 `resource` 且使用 `config.toml`，说明 PATH 命中了开发用的旧 Python 同名入口，应切换到 npm 安装入口。已安装版本缺少新增快捷命令时，按在线 OpenAPI 使用已登录 Node.js 客户端的 `api`、`upload` 或 `ws` 调用对应公开路径。
+
 ## 统一调用方式
 
-页面高频操作有快捷命令：`node`、`node-directory`、`capability`、`event-trigger`、`environment`、`credential`、`flow`、`run`、`schedule`、`case`、`model`、`agent`。`credential` 是网站凭据资源，不是 `auth` 用户登录。`schedule` 只管理 FlowRun 周期调度；顶层 Agent Workspace 的会话定时任务使用 `agent schedules` 和 `agent schedule-*`，并转 `flowweave-agent-schedules`。`agent` 与 `run` 还覆盖各自范围内的工作区目录、Git 历史、条目创建、会话原生状态读取及服务器端置顶；Agent 还提供会话管理批量读取/删除，`capability download` 可取回已冻结的 Skill ZIP。当前 CLI 还提供 Agent Runtime replacement、临时侧栏会话与逐步节点草稿的安全快捷命令。它们之外的原子操作并未缺失：按以下优先级使用通用入口。
+页面高频操作有快捷命令 `node`、`node-directory`、`capability`、`event-trigger`、`environment`、`credential`、`flow`、`run`、`schedule`、`case`、`model`、`agent` 和 `child`。`credential` 管理网站凭据，CLI 用户登录使用 `auth`。`schedule` 管理 FlowRun 周期调度，Agent 自动化使用 `agent schedules` 和 `agent schedule-*`。两类调度当前均按北京时间 `Asia/Shanghai` 匹配五段 Cron。`child` 通过父 binding 统一处理 Agent Workspace 和 FlowRun 节点下的原生 Task 子会话。
+
+`agent` 与 `run` 提供工作区、Git 历史、会话原生状态、置顶、技能批量注册与升级、上下文压缩等快捷入口。`capability` 覆盖用户市场来源、技能验证、插件发布和冻结包下载，`case` 覆盖配置复制／导入导出与提前结论确认，`model primary|unprimary` 管理主要供应商。其余原子操作按以下入口调用。
 
 ```bash
 # 先查看当前服务真正暴露的路径和 schema
@@ -78,7 +82,7 @@ flowweave ws /some-stream --max-messages 20
 
 删除前先读取精确资源 ID，并先用 `--dry-run` 核对请求。节点目录删除会保留节点资产和子目录并提升到父级，若会造成同名目录冲突则被平台拒绝；不要把“删除目录”理解成删除其中全部节点。认证可用 `flowweave credential delete-many --id <id> --id <id>` 批量删除，Secret 一经删除无法恢复。
 
-Agent Workspace 的工作目录删除由已绑定会话保护；文件删除只接受当前授权范围内的普通文件或空目录，不能删除工作区根、隐藏路径、符号链接或会话私有附件。环境发布可以用 `flowweave environment publish <setup-session-id> --description '说明'` 记录可选版本说明；该说明随发布版本冻结，后续不能修改。
+Agent Workspace 的工作目录删除会级联清理其历史版本关联会话和私有附件，默认同时删除所选目录文件。保留磁盘文件时显式传 `-q delete_files=false`，该模式仍会删除平台记录和原生会话，操作前须确认范围。工作区文件删除支持递归目录树，范围限当前授权路径中的普通文件和目录，根目录、隐藏路径、符号链接和会话私有附件受保护。环境发布可以用 `flowweave environment publish <setup-session-id> --description '说明'` 记录可选版本说明，该说明随发布版本冻结。
 
 ## 生命周期推荐顺序
 
@@ -109,6 +113,7 @@ Agent Workspace 的工作目录删除由已绑定会话保护；文件删除只�
 - 节点执行、Attempt、Artifact、人工门禁与节点会话：`flowweave-flowrun-workbench`
 - 大模型供应商、测试和 Codex OAuth：`flowweave-model-providers`
 - 顶层 Agent Workspace、会话、消息、工作目录与附件：`flowweave-agent-workspace`
+- Agent Workspace 或 FlowRun 节点下的原生 Task 子会话、消息、控制与配置同步：`flowweave-agent-children`
 - 顶层 Agent Workspace 会话定时任务、暂停/恢复、手动触发和 occurrence：`flowweave-agent-schedules`
 - CLI 用户登录、身份检查或退出：`flowweave-auth`
 - 认证条目与批量删除：使用本 Skill 的 `credential` 快捷命令；不把 Secret 写入 Skill、命令历史或请求快照。

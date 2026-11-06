@@ -196,6 +196,7 @@ def test_failed_preparation_can_retry_but_dispatch_or_cancel_cannot(submission_s
 
 
 def test_http_cancel_wins_during_real_message_worker_preparation(
+    submission_scope,
     client,
     settings,
     db_session_factory,
@@ -281,14 +282,23 @@ def test_cancellation_migration_roundtrip_preserves_existing_bindings(
     binding, sessions = submission_scope
     config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
     config.attributes["database_url"] = settings.database_url
+    from alembic.script import ScriptDirectory
+
+    expected_head = ScriptDirectory.from_config(config).get_current_head()
     command.downgrade(config, "0184_cascade_directory_archives")
     with sessions() as db:
         assert "agent_message_submissions" not in inspect(db.get_bind()).get_table_names()
-        assert db.get(AgentConversationBinding, binding) is not None
+        assert (
+            db.execute(
+                text("SELECT id FROM agent_conversation_bindings WHERE id = :binding"),
+                {"binding": binding},
+            ).scalar_one()
+            == binding
+        )
     command.upgrade(config, "head")
     with sessions() as db:
         assert db.get(AgentConversationBinding, binding) is not None
         assert (
             db.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-            == "0185_message_submission_cancel"
+            == expected_head
         )

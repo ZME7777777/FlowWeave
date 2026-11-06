@@ -44,9 +44,16 @@ async function setup(page: Page, initial: NodeAsset[] = [node], directory = fals
   await page.goto('/'); await page.getByRole('button', { name: '节点中心', exact: true }).click();
   return { writes, reject: (value: boolean) => { reject = value; }, hold: () => { hold = true; }, release: () => { hold = false; release?.(); } };
 }
-const openNode = async (page: Page, name = node.name) => page.getByTestId('node-card').filter({ hasText: name }).click();
-const openInputs = async (_page: Page) => {};
-const openOutputs = async (_page: Page) => {};
+const openNode = async (page: Page, name = node.name) => { await page.getByTestId('node-card').filter({ hasText: name }).click(); await editPrompts(page); };
+
+const editPrompts = async (page: Page) => {
+  for (const section of await page.locator('.node-prompt-section').all()) {
+    const edit = section.getByRole('button', { name: '编辑', exact: true });
+    if (await edit.getAttribute('aria-pressed') === 'false') await edit.click();
+  }
+};
+const openInputs = async (page: Page) => page.getByRole('tab', { name: /^输入/ }).click();
+const openOutputs = async (page: Page) => page.getByRole('tab', { name: /^输出/ }).click();
 
 async function expectSaved(page: Page) {
   await expect(page.getByRole('button', { name: '保存节点', exact: true })).toBeEnabled();
@@ -56,7 +63,7 @@ async function expectSaved(page: Page) {
 test('selecting a node opens a compact workspace with side-by-side prompts', async ({ page }) => {
   const state = await setup(page); await openNode(page);
   await expect(page.getByRole('heading', { name: node.name, exact: true })).toBeVisible();
-  await expect(page.getByRole('tab')).toHaveCount(0);
+  await expect(page.getByRole('tab')).toHaveCount(2);
   await expect(page.getByRole('textbox', { name: '启动触发提示词', exact: true })).toHaveValue(node.executor!.startup_prompt);
   await expect(page.getByRole('textbox', { name: '上下文提示词', exact: true })).toHaveValue(node.executor!.context_prompt);
   await expect(page.locator('.node-center-detail .node-detail-editor')).toBeVisible();
@@ -64,8 +71,10 @@ test('selecting a node opens a compact workspace with side-by-side prompts', asy
   await expect(page.locator('.node-center-detail')).not.toContainText('NODE FORM');
   await openInputs(page);
   await expect(page.getByRole('region', { name: '输入字段' })).toBeVisible();
+  await expect(page.getByRole('region', { name: '输出字段' })).toHaveCount(0);
   await openOutputs(page);
   await expect(page.getByRole('region', { name: '输出字段' })).toBeVisible();
+  await expect(page.getByRole('region', { name: '输入字段' })).toHaveCount(0);
   expect(state.writes).toHaveLength(0);
 });
 
@@ -83,6 +92,21 @@ test('created metadata shares one read-only header without save status', async (
   const geometry = await header.evaluate(element => { const title = element.querySelector('h2')!.getBoundingClientRect(); const description = element.querySelector('p')!.getBoundingClientRect(); return Math.abs((title.top + title.height / 2) - (description.top + description.height / 2)); });
   expect(geometry).toBeLessThan(2);
   expect(state.writes).toHaveLength(0);
+});
+
+test('prompts open in preview first and the input/output switch is a segmented control', async ({ page }) => {
+  await setup(page);
+  await page.getByTestId('node-card').filter({ hasText: node.name }).click();
+  for (const section of await page.locator('.node-prompt-section').all()) await expect(section.getByRole('button', { name: '预览', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.node-prompt-preview:visible')).toHaveCount(2);
+  const tabs = page.locator('.node-field-tabs');
+  await expect(tabs).toBeVisible();
+  const [inputs, outputs] = [page.getByRole('tab', { name: /^输入/ }), page.getByRole('tab', { name: /^输出/ })];
+  await expect(inputs).toHaveAttribute('aria-selected', 'true');
+  await expect(tabs).toHaveCSS('border-radius', '8px');
+  await expect(inputs).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+  await expect(outputs).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  await outputs.click(); await expect(outputs).toHaveAttribute('aria-selected', 'true');
 });
 
 test('prompt tabs, Markdown preview and enlarged editor share the same draft', async ({ page }) => {
@@ -262,15 +286,15 @@ test('canceling settings navigation creates no temporary tab and confirmed navig
   await setup(page); await openNode(page);
   await page.getByRole('textbox', { name: '启动触发提示词', exact: true }).fill('未保存节点名称');
   await page.getByRole('button', { name: '账户与设置', exact: true }).click();
-  await page.getByRole('menuitem', { name: '大模型配置', exact: true }).click();
+  await page.getByRole('menuitem', { name: '供应商配置', exact: true }).click();
   await page.getByRole('alertdialog').getByRole('button', { name: '继续编辑', exact: true }).click();
   await expect(page.locator('.context-tab')).toHaveCount(0);
   await expect(page.getByRole('textbox', { name: '启动触发提示词', exact: true })).toHaveValue('未保存节点名称');
   await page.getByRole('button', { name: '账户与设置', exact: true }).click();
-  await page.getByRole('menuitem', { name: '大模型配置', exact: true }).click();
+  await page.getByRole('menuitem', { name: '供应商配置', exact: true }).click();
   await page.getByRole('alertdialog').getByRole('button', { name: '放弃修改', exact: true }).click();
-  await expect(page.locator('.context-tab.active')).toContainText('大模型配置');
-  await page.getByRole('button', { name: '关闭大模型配置', exact: true }).click();
+  await expect(page.locator('.context-tab.active')).toContainText('供应商配置');
+  await page.getByRole('button', { name: '关闭供应商配置', exact: true }).click();
   await expect(page.getByRole('button', { name: '节点中心', exact: true })).toHaveClass('active');
   await expect(page.getByRole('alertdialog')).toHaveCount(0);
 });
@@ -405,6 +429,7 @@ test('cancel clears a new draft without creating or leaving the editor', async (
   await expect(cancel).toBeDisabled();
   await page.getByLabel('节点名称', { exact: true }).fill('取消的新节点');
   await page.getByLabel('节点说明', { exact: true }).fill('取消的说明');
+  await editPrompts(page);
   await page.getByRole('textbox', { name: '启动触发提示词', exact: true }).fill('取消的步骤');
   await expect(cancel).toBeEnabled(); await cancel.click();
   await expect(page.getByLabel('节点名称', { exact: true })).toHaveValue('');

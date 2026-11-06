@@ -45,6 +45,7 @@ from flowweave.modules.gates.public import (
     GateExecutionPlan,
     GateResult,
     execute_gate_plan,
+    resolve_failure_policy,
 )
 from flowweave.modules.runs.application.git_settings import (
     default_git_identity,
@@ -73,6 +74,8 @@ from flowweave.runtime.manifest import (
     runtime_node,
 )
 from flowweave.runtime.protocol_profiles import (
+    FlowRunProtocolProfile,
+    child_manifest_for_protocol_profile,
     llm_timeout_policy_for_flow_run_protocol_profile,
     subagent_policy_for_flow_run_protocol_profile,
 )
@@ -160,12 +163,14 @@ def _hash(value: Any) -> str:
 
 
 def _compile_runtime_manifest(
-    definition: dict[str, Any], *, server_identity: OpenHandsServerIdentity
+    definition: dict[str, Any],
+    *,
+    server_identity: OpenHandsServerIdentity,
+    protocol_profile: FlowRunProtocolProfile | str = FlowRunProtocolProfile.OH_FW_V1,
 ) -> dict[str, Any]:
-    """Freeze only Flow-owned node identity.
+    """Freeze node identity and the selected V3 child capability, when enabled.
 
-    Agent model, capabilities and OpenHands policy are frozen on each shared
-    Conversation binding when that Conversation is explicitly started.
+    Models, selected capabilities and binding authority remain conversation-scoped.
     """
 
     nodes: dict[str, dict[str, str]] = {}
@@ -185,8 +190,10 @@ def _compile_runtime_manifest(
         if not asset_id:
             raise DomainError("SNAPSHOT_INVALID", "Snapshot node asset id is missing", 409)
         nodes[instance_key] = {"node_asset_id": asset_id}
+    children = child_manifest_for_protocol_profile(protocol_profile)
     return {
         "schema_version": 3,
+        **({"child_conversations": children} if children is not None else {}),
         # This is provenance for the Environment Version selected by this
         # FlowRun, not the current control-plane baseline.  A Run must never
         # claim it was frozen against a newer Agent Server than its immutable
@@ -2791,17 +2798,43 @@ def _record_gate_results(
             _dispatch_automatic_advance(db, attempt)
             return
         # A business FAIL is a valid Gate judgement. It is not authorization
-        # for FlowWeave to create, fork, or direct an author Conversation.
-        # Keep the blocked Attempt until an operator explicitly acts.
-        run.state = FlowRunState.WAITING_HUMAN
-        _event(
-            db,
-            run.id,
-            "AUTOMATIC_GATE_REVIEW_REQUIRED",
-            {"stage": stage, "state": next_state, "decision": "FAIL"},
-            node_run.id,
-            attempt.id,
+        # for FlowWeave to create, fork, or direct an author Conversation (FR-241).
+        # Keep the blocked Attempt until an operator explicitly acts, unless the
+        # flow designer declared on the failing gate that the execution must end.
+        failed_policy_ids = [
+            str(prepared.policy.get("id"))
+            for prepared, result in evaluations
+            if result.decision == "FAIL"
+        ]
+        declared = (
+            resolve_failure_policy(
+                cast(list[dict[str, Any]], getattr(attempt, "gate_policies_json", None) or []),
+                failed_policy_ids,
+            )
+            if failed_policy_ids
+            else None
         )
+        if declared is not None and declared.action == "STOP" and stage == "END":
+            _event(
+                db,
+                run.id,
+                "AUTOMATIC_GATE_STOPPED",
+                {
+                    "stage": stage,
+                    "state": next_state,
+                    "decision": "FAIL",
+                    "failure_policy": declared.as_dict(),
+                },
+                node_run.id,
+                attempt.id,
+            )
+            cancel_run(db, run.id, f"gate-policy-stop:{attempt.id}:{stage}")
+            return
+        run.state = FlowRunState.WAITING_HUMAN
+        payload: dict[str, Any] = {"stage": stage, "state": next_state, "decision": "FAIL"}
+        if declared is not None:
+            payload["failure_policy"] = declared.as_dict()
+        _event(db, run.id, "AUTOMATIC_GATE_REVIEW_REQUIRED", payload, node_run.id, attempt.id)
         return
     if next_state == AttemptState.WAITING_START_CONFIRMATION and run.schedule_id is not None:
         # Scheduled step records have a frozen launch configuration.  They
@@ -3069,6 +3102,7 @@ def _prepare_gate_plan(
                 environment_version_id=environment.id,
                 runtime_protocol_profile=environment.runtime_protocol_profile,
             ),
+            protocol_profile=environment.runtime_protocol_profile,
             llm_timeout_policy=llm_timeout_policy_for_flow_run_protocol_profile(
                 environment.runtime_protocol_profile
             ),
@@ -4370,7 +4404,11 @@ def copy_node_run(
             schema_version=3,
             definition_json=definition,
             definition_hash=_hash(definition),
-            runtime_manifest_json=_compile_runtime_manifest(definition, server_identity=identity),
+            runtime_manifest_json=_compile_runtime_manifest(
+                definition,
+                server_identity=identity,
+                protocol_profile=environment.runtime_protocol_profile,
+            ),
             runtime_manifest_hash="",
             environment_version_id=run.environment_version_id,
         )
@@ -4476,7 +4514,11 @@ def start_flow(
     )
     db.add(run)
     db.flush()
-    runtime_manifest = _compile_runtime_manifest(definition, server_identity=server_identity)
+    runtime_manifest = _compile_runtime_manifest(
+        definition,
+        server_identity=server_identity,
+        protocol_profile=environment.runtime_protocol_profile,
+    )
     snapshot = RunSnapshot(
         flow_run_id=run.id,
         version=1,
@@ -4584,7 +4626,11 @@ def _create_stepwise_record_runtime(
 
 
 def _create_nested_stepwise_run_record(
-    db: Session, parent_run_id: str, payload: StepwiseRunRecordWrite
+    db: Session,
+    parent_run_id: str,
+    payload: StepwiseRunRecordWrite,
+    *,
+    allow_terminal_parent: bool = False,
 ) -> FlowRun:
     """Create one empty, manually advanced execution record.
 
@@ -4597,7 +4643,10 @@ def _create_nested_stepwise_run_record(
     parent = _locked_run(db, parent_run_id)
     if parent.run_mode != "MANUAL" or parent.parent_flow_run_id is not None:
         raise illegal("stepwise records require a top-level standard FlowRun", state=parent.state)
-    if parent.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
+    if not allow_terminal_parent and parent.state in {
+        FlowRunState.COMPLETED,
+        FlowRunState.CANCELLED,
+    }:
         raise illegal("terminal FlowRun cannot create a stepwise record", state=parent.state)
     if not parent.environment_version_id:
         raise DomainError(
@@ -5256,43 +5305,74 @@ def save_stepwise_runtime_ports(
             field.pop("template_url", None)
         nodes[node_key]["runtime_port_overrides"] = {"inputs": inputs, "outputs": outputs}
 
-    runtime_mappings: list[dict[str, Any]] = []
-    if payload.port_mappings:
-        configured_nodes = set(payload.node_ports)
-        runtime_mappings = [
-            {**item.model_dump(), "runtime_port": True} for item in payload.port_mappings
-        ]
-        mapping_nodes = {item["source_instance_key"] for item in runtime_mappings} | {
-            item["target_instance_key"] for item in runtime_mappings
-        }
-        unknown_mapping_nodes = sorted(mapping_nodes - set(nodes))
-        if unknown_mapping_nodes:
-            raise DomainError(
-                "RUN_PORTS_INVALID",
-                "runtime mappings reference an unknown node",
-                422,
-                {"nodes": unknown_mapping_nodes},
+    def _identity(item: Any) -> tuple[str, str, str, str]:
+        get = item.get if isinstance(item, dict) else lambda key: getattr(item, key)
+        return (
+            str(get("source_instance_key") or ""),
+            str(get("source_output_key") or ""),
+            str(get("target_instance_key") or ""),
+            str(get("target_input_key") or ""),
+        )
+
+    runtime_mappings: list[dict[str, Any]] = [
+        {**item.model_dump(), "runtime_port": True} for item in payload.port_mappings
+    ]
+    removals = {_identity(item) for item in payload.remove_port_mappings}
+    touched_nodes = {item["source_instance_key"] for item in runtime_mappings} | {
+        item["target_instance_key"] for item in runtime_mappings
+    }
+    touched_nodes |= {key for identity in removals for key in (identity[0], identity[2])}
+    unknown_mapping_nodes = sorted(touched_nodes - set(nodes))
+    if unknown_mapping_nodes:
+        raise DomainError(
+            "RUN_PORTS_INVALID",
+            "runtime mappings reference an unknown node",
+            422,
+            {"nodes": unknown_mapping_nodes},
+        )
+    changed_mapping_nodes = sorted(touched_nodes & started_nodes)
+    if changed_mapping_nodes:
+        raise DomainError(
+            "RUN_PORTS_STARTED_NODE_IMMUTABLE",
+            "runtime mappings cannot change nodes that already have execution records",
+            409,
+            {"node_keys": changed_mapping_nodes},
+        )
+    existing_runtime = {
+        _identity(item)
+        for item in definition.get("port_mappings", [])
+        if isinstance(item, dict) and item.get("runtime_port")
+    }
+    missing_removals = sorted(removals - existing_runtime)
+    if missing_removals:
+        raise DomainError(
+            "RUN_PORTS_INVALID",
+            "a runtime mapping to remove does not exist",
+            422,
+            {"mappings": [list(identity) for identity in missing_removals]},
+        )
+
+    def _port_exists(node_key: str, key: str, *, output: bool) -> bool:
+        node = nodes.get(node_key) or {}
+        fields = _runtime_output_fields(node) if output else _runtime_input_fields(node)
+        return any(str(field.get("field_key") or "") == key for field in fields)
+
+    configured_nodes = set(payload.node_ports)
+    kept: list[dict[str, Any]] = []
+    for item in definition.get("port_mappings", []):
+        if isinstance(item, dict) and item.get("runtime_port"):
+            identity = _identity(item)
+            replaced = bool(runtime_mappings) and (
+                identity[0] in configured_nodes or identity[2] in configured_nodes
             )
-        changed_mapping_nodes = sorted(mapping_nodes & started_nodes)
-        if changed_mapping_nodes:
-            raise DomainError(
-                "RUN_PORTS_STARTED_NODE_IMMUTABLE",
-                "runtime mappings cannot change nodes that already have execution records",
-                409,
-                {"node_keys": changed_mapping_nodes},
+            # Deleting a run-level port also deletes the connections that used it.
+            dangling = not _port_exists(identity[0], identity[1], output=True) or not _port_exists(
+                identity[2], identity[3], output=False
             )
-        definition["port_mappings"] = [
-            item
-            for item in definition.get("port_mappings", [])
-            if isinstance(item, dict)
-            and (
-                not item.get("runtime_port")
-                or (
-                    str(item.get("source_instance_key") or "") not in configured_nodes
-                    and str(item.get("target_instance_key") or "") not in configured_nodes
-                )
-            )
-        ] + runtime_mappings
+            if identity in removals or replaced or dangling:
+                continue
+        kept.append(item)
+    definition["port_mappings"] = kept + runtime_mappings
     _validate_runtime_definition_ports(definition)
     environment = lock_referenceable_version(db, run.environment_version_id or "")
     if environment is None:
@@ -5307,7 +5387,11 @@ def save_stepwise_runtime_ports(
         environment_version_id=environment.id,
         runtime_protocol_profile=environment.runtime_protocol_profile,
     )
-    manifest = _compile_runtime_manifest(definition, server_identity=identity)
+    manifest = _compile_runtime_manifest(
+        definition,
+        server_identity=identity,
+        protocol_profile=environment.runtime_protocol_profile,
+    )
     snapshot = RunSnapshot(
         flow_run_id=run.id,
         version=active.version + 1,
@@ -5581,13 +5665,20 @@ def copy_nested_stepwise_run_record(
     parent_run_id: str,
     source_record_id: str,
     payload: StepwiseRunRecordCopyWrite,
+    *,
+    as_template: bool = False,
 ) -> dict[str, Any]:
-    """Copy a stepwise record's first-node initial configuration into a new record."""
+    """Copy a stepwise record's first-node initial configuration into a new record.
+
+    ``as_template`` is for cloning a Case launch template. A template is only a configuration
+    source and is never executed in place, so the parent being COMPLETED/CANCELLED is no
+    obstacle; the copy is still a DRAFT record that starts no node.
+    """
 
     parent = _locked_run(db, parent_run_id)
     if parent.run_mode != "MANUAL" or parent.parent_flow_run_id is not None:
         raise illegal("stepwise records require a top-level standard FlowRun", state=parent.state)
-    if parent.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
+    if not as_template and parent.state in {FlowRunState.COMPLETED, FlowRunState.CANCELLED}:
         raise illegal("terminal FlowRun cannot copy a stepwise record", state=parent.state)
     source = _locked_run(db, source_record_id)
     is_legacy_parent_record = source.id == parent.id
@@ -5602,6 +5693,7 @@ def copy_nested_stepwise_run_record(
         db,
         parent.id,
         StepwiseRunRecordWrite(name=payload.name, start_node_key=source_start_node_key),
+        allow_terminal_parent=as_template,
     )
     source_drafts = _stepwise_node_drafts(source)
     copied_input_count = 0
@@ -5715,7 +5807,11 @@ def create_automatic_run_draft(
     )
     plan["git_identity"] = default_git_identity(db)
     run.automation_plan_json = plan
-    runtime_manifest = _compile_runtime_manifest(definition, server_identity=server_identity)
+    runtime_manifest = _compile_runtime_manifest(
+        definition,
+        server_identity=server_identity,
+        protocol_profile=environment.runtime_protocol_profile,
+    )
     snapshot = RunSnapshot(
         flow_run_id=run.id,
         version=1,
@@ -7566,6 +7662,7 @@ def _runtime_request(db: Session, attempt: NodeAttempt) -> StartAttemptRequest:
         host_root=host_root,
         runtime_root=runtime_root,
         runtime_server_identity=server_identity,
+        protocol_profile=environment.runtime_protocol_profile,
         load_memory=memory_enabled,
         llm_timeout_policy=llm_timeout_policy_for_flow_run_protocol_profile(
             environment.runtime_protocol_profile
@@ -7930,6 +8027,7 @@ def process_start_runtime(
     flow_run_id = _node_run(db, attempt.node_run_id).flow_run_id
     request = _runtime_request(db, attempt)
     allocation = None
+    governed_parent = False
     if request.environment_image and get_settings().runtime_adapter != "mock":
         environment = lock_referenceable_version(db, request.environment_version_id)
         if environment is None:
@@ -7977,11 +8075,52 @@ def process_start_runtime(
             runtime_resource_name=allocation.resource_name,
             runtime_base_url=allocation.base_url,
         )
+        if environment.runtime_protocol_profile in {"OH_FW_V3", "OH_FW_V4", "OH_FW_V5"}:
+            from flowweave.modules.agent_sessions.application.child_parent import (
+                attach_parent_capability,
+            )
+
+            parent = agent_sessions.flow_node_binding_for_attempt(
+                db, attempt.id, require_provisioning=True
+            )
+            snapshot = _snapshot(db, attempt.snapshot_id)
+            connection = sandboxes.active_node_runtime_connection(
+                db, flow_run_id=flow_run_id, node_attempt_id=attempt.id
+            )
+            if connection.runtime_session_id != parent.runtime_session_id:
+                raise DomainError(
+                    "RUNTIME_CONVERSATION_SESSION_DRIFT", "父会话 Runtime 身份已变化", 409
+                )
+            request = replace(
+                request,
+                agent_spec=attach_parent_capability(
+                    db,
+                    parent,
+                    request.agent_spec,
+                    profile=environment.runtime_protocol_profile,
+                    identity=server_identity,
+                    generation=connection.generation,
+                    runtime_image_digest=environment.image_digest,
+                    runtime_manifest=snapshot.runtime_manifest_json or {},
+                    expected_manifest_digest=snapshot.runtime_manifest_hash,
+                ),
+            )
+            governed_parent = environment.runtime_protocol_profile in {"OH_FW_V4", "OH_FW_V5"}
+            if lease is not None or governed_parent:
+                # This new immutable write must survive the read-transaction
+                # rollback below, before the native parent can call its gateway.
+                _require_current_lease(db, lease)
+                db.commit()
     if request.input_attachments or any(
         cast(dict[str, Any], item.get("artifact") or {}).get("artifact_type") == "FILE"
         for item in request.bindings
     ):
         request = _upload_runtime_input_attachments(db, request)
+    if governed_parent:
+        # Attachment preparation may have opened another transaction. The
+        # first native Tool must never wait on its own parent transaction.
+        _require_current_lease(db, lease)
+        db.commit()
     _release_worker_read_transaction(db, lease)
     handle: RuntimeHandle | None = None
     try:
@@ -11022,7 +11161,11 @@ def sync_snapshot(
     if _hash(definition) == current.definition_hash:
         return run_detail(db, run.id)
     action = _action(db, run.id, "SYNC_SNAPSHOT", idempotency_key)
-    runtime_manifest = _compile_runtime_manifest(definition, server_identity=server_identity)
+    runtime_manifest = _compile_runtime_manifest(
+        definition,
+        server_identity=server_identity,
+        protocol_profile=environment.runtime_protocol_profile,
+    )
     snapshot = RunSnapshot(
         flow_run_id=run.id,
         version=current.version + 1,
@@ -11312,11 +11455,16 @@ def _delete_run_records(db: Session, run_id: str, *, allow_schedule_record: bool
         if attempt_ids
         else []
     )
+    from flowweave.modules.agent_sessions.application.child_relations import (
+        ordinary_conversation_clause,
+    )
+
     conversations = list(
         db.scalars(
             select(AgentConversationBinding).where(
                 AgentConversationBinding.host_kind == "FLOW_NODE",
                 AgentConversationBinding.flow_run_id == run.id,
+                ordinary_conversation_clause(),
             )
         )
     )

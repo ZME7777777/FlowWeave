@@ -11,6 +11,8 @@ flowweave health --ready
 
 配置只保存基础 URL 到 `~/.config/flowweave/config.json`（可由 `FLOWWEAVE_CONFIG_PATH` 覆盖）。登录会话单独保存到同目录的 `auth.json`（可由 `FLOWWEAVE_AUTH_PATH` 覆盖），文件权限为 `0600`，并且只会发送给登录时的同一平台地址。使用 `flowweave auth status` 检查当前身份，使用 `flowweave auth logout` 撤销服务端会话并删除本地文件。默认登录会隐藏密码输入；非交互环境使用 `--password-stdin`，不要把密码写进命令参数、脚本或日志。
 
+仓库开发环境还存在旧的 Python 同名入口，使用 `config.toml` 和 `resource` 命令。面向平台用户及 skills 的客户端为本 npm 包，`flowweave --help` 应包含 `auth`。若 PATH 命中了 Python 入口，需切换到 npm 安装入口。本文新增快捷命令随 CLI 发行版本提供，较旧安装可先通过已登录 Node.js 客户端的通用 `api`／`upload`／`ws` 调用对应公开契约。
+
 页面域命令包括 `node`、`node-directory`、`capability`、`event-trigger`、`environment`、`credential`、`flow`、`run`、`schedule`、`case`、`model` 和 `agent`。它们分别覆盖节点资产、能力仓库、运行事件触发器、终端环境、网站认证条目、流程编排、FlowRun、FlowRun 周期调度、大模型配置与 Agent 工作台的常用原子操作。`credential` 管理网站凭据，不等于 `auth` 用户登录；Agent 会话定时任务通过 `agent schedules` 与 `agent schedule-*` 管理，不能与顶层 `schedule` 混用。每个命令的 JSON 请求体与在线 OpenAPI 一致；运行 `flowweave <域> --help` 查看映射。
 
 工作区浏览支持按需详情、增量目录、受授权的 Git 历史/提交/Diff 与创建普通文件或目录：使用 `agent workspace-details [--full-index]|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create` 处理顶层 Agent Workspace；在 FlowRun 节点范围内使用对应的 `run workspace-* <run-id> --attempt <attempt-id>`。`--full-index` 只在用户确实需要完整索引时使用，默认优先按目录读取。Git 操作只接受由工作区 API 返回的 `repository_path`、commit 和文件路径，不能从本地或显示名称猜测。`agent hydration|head` 与 `run hydration|head` 读取会话原生状态；它们不修改 Conversation。
@@ -29,7 +31,7 @@ flowweave health --ready
 
 周期任务使用 `schedule list/templates/occurrences/create/pause/resume/trigger/delete`。先用 `schedule templates` 读取可作为冻结母版的已就绪连续运行记录；创建请求必须使用在线 `FlowRunScheduleWrite` schema：只提交任务名称、母版 `source_flow_run_id` 和五段 `cron_expression`，节点、环境、输入和启动提示词均来自该记录的冻结母版。`schedule occurrences <schedule-id> --page 1 --page-size 10` 按需读取该调度的执行历史及其 FlowRun/NodeRun，而不预加载所有记录。暂停或恢复前从 `schedule list` 读取当前 `row_version`，再传入 `--expected-row-version`。手动触发会新增一次 occurrence，不会改写既有运行；删除生成的 FlowRun 不会删除调度，而有生成记录的调度删除会被平台拒绝。环境发布现在会返回 `202`：发布后读取对应 Environment，等待新版本进入 `READY`，不要重复提交同一 Setup Session。
 
-Agent 会话定时任务使用 `agent schedules <workspace-id>`、`agent schedule-create <workspace-id> --data-file ./.tmp/agent-schedule.json`、`agent schedule-update <workspace-id> <schedule-id> --data-file ./.tmp/agent-schedule.json`、`agent schedule-pause|schedule-resume <workspace-id> <schedule-id> --expected-row-version <n>`、`agent schedule-trigger|schedule-delete` 和 `agent schedule-occurrences`。创建体包含 `name`、`binding_id`、`prompt` 和五段 UTC `cron_expression`。来源必须是已读取的、活动的顶层 Agent Workspace 会话；每次触发从其冻结的模型、能力和工作目录配置新建独立会话，而不是向来源会话发送消息。更新、暂停和恢复先读取当前 `row_version`；从 occurrence 读取实际状态与新会话 binding ID。手动触发和删除会改变状态，必须取得用户对精确 ID 的明确授权，并先用 `--dry-run` 核对请求。
+Agent 自动化使用 `agent schedules <workspace-id>`、`agent schedule-create`、`agent schedule-update`、`agent schedule-pause|schedule-resume`、`agent schedule-trigger|schedule-delete` 和 `agent schedule-occurrences|schedule-conversations`。创建体包含 `name`、`prompt`、按北京时间 `Asia/Shanghai` 匹配的五段 `cron_expression`、模型与可选能力／认证配置。`workspace_mode` 可为默认 `AUTOMATION` 或带 `work_directory_id` 的 `EXISTING`，`conversation_mode` 可为默认 `NEW` 或 `CONTINUE`。更新使用完整 `AgentConversationSchedulePatchWrite` 和当前 `expected_row_version`，工作区模式与目录在创建后固定。运行身份从 occurrence 或运行会话列表读取。已失败且没有会话的 occurrence 可用 `agent schedule-occurrence-delete ... --occurrence <id>` 删除，操作前读取目标并核对 dry-run。
 
 能力命令还支持受治理的 OpenHands Plugin Marketplace：`capability marketplace` 读取服务端固定到完整 commit 的公开目录；使用返回的 `source`、`commit`、`repo_path` 与插件名称调用 `capability marketplace-resolve --data-file ./marketplace-plugin.json`，随后读取 `capability plugin-resolution <resolution-id>`，并以当前 `state_version` 调用 `capability plugin-publish <resolution-id> --data '{"expected_state_version": 1}'`。自定义受信任 Marketplace 可先用 `capability marketplace-preview --data-file ./marketplace.json` 审阅目录。Skill 的已冻结 ZIP 使用 `capability download <capability-id> --output ./skill.zip` 下载；输出文件不能已存在，避免覆盖本地审计产物。Agent Definition 只能以 UTF-8 `.md`/`.markdown` 的 OpenHands YAML frontmatter + Markdown 正文通过 `capability validate|import --type AGENT_DEFINITION --file <file>` 导入。Hook 使用受控表单参数：`capability validate --type HOOK --file ./hook.md --hook-name <name> --hook-event <event> --hook-mode <PROMPT|SCRIPT>`；可选 `--hook-description` 与工具事件的 `--hook-matcher` 会被编译为 OpenHands 原生 `hook_config`，不能提交任意 Hook JSON。
 
@@ -45,9 +47,17 @@ npx skills add ZME7777777/FlowWeave -g -y
 
 仓库尚未发布该 npm 包前，进入 `packages/cli` 后运行 `npm pack` 生成 tarball，并以 `npm install -g ./flowweave-ai-cli-*.tgz` 安装。发布到 npm registry 需要拥有 `@flowweave-ai` scope 的发布权限；本仓库不会自动发布。
 
-## 0.8.0：Agent 会话定时任务
+## 当前平台新增入口
 
-`agent schedules` 和 `agent schedule-create|schedule-update|schedule-pause|schedule-resume|schedule-trigger|schedule-delete|schedule-occurrences` 已同步 Agent Workspace 的公开定时会话接口。定时任务使用五段 UTC Cron，来源会话只提供冻结配置；每次运行都创建新的独立会话。更新和状态变更必须携带当前 `row_version`，以避免覆盖并发修改。
+`capability market-sources|market-sources-update|market-skills|market-plugins|market-skill-validate` 管理用户市场来源并执行受治理验证，验证后用原有 `capability commit` 提交。普通配置候选使用 `capability configurable`，平台内置 MCP 由业务生命周期装配。
+
+`agent capabilities-register` 和 `run capabilities-register` 接受 `capability_version_ids`，支持动态安装 Skill/MCP/Plugin 与同一独立 Skill 的更高版本。HTTP 成功后仍须检查 `completed`、`loaded_capability_version_ids`、`already_loaded_capability_version_ids` 与 `failure`，部分成功时只重试未成功项。`agent credentials|credentials-sync` 使用受管凭据 ID，`agent readiness|context|pending-question|condense` 读取或控制原生会话。节点会话同样可用 `run readiness|context|condense --attempt <id> --binding <id>`。
+
+`child list <parent-binding-id>` 从父会话读取原生 Task 子会话，`child get|events|hydration|readiness|context`、`child send|interrupt|resume|condense|model`、`child capabilities-register|credentials|credentials-sync|pending-confirmation|confirm|read|unread` 均继续传入父 binding 与子 binding。两类宿主共用此入口，子会话创建由原生 Task 生命周期完成。
+
+`agent activity|management-workspaces` 读取活动与管理分组，`agent archive|restore|read|unread` 管理单条会话，`agent work-directory-archive|work-directory-restore` 管理工作区。`agent sidebar-current` 按主 binding 恢复有效侧栏会话。工作区恢复涉及整组会话，执行前确认恢复范围。`model primary|unprimary <provider-id>` 设置或取消主要供应商。
+
+`case copy|export|import` 复用平台场景配置复制契约，`case conclusion-confirm|conclusion-reject` 携带 `expected_row_version` 处理用户对提前结论的选择。`run stepwise-config-export|stepwise-config-import` 管理逐步记录配置，`run stepwise-runtime-ports` 以当前 `expected_active_snapshot_version` 保存运行端口和连接，提交的节点端口是完整集合，遗漏会删除对应端口。
 
 ## 0.7.0：会话管理、置顶与 Skill 下载
 

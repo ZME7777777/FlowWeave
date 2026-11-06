@@ -143,6 +143,24 @@ def _deliver_agent_conversation_schedule(
     deliver_occurrence(db, aggregate_id)
 
 
+def _delete_agent_conversation_family(
+    db: Session, _aggregate_id: str, _payload: dict[str, Any], lease: Lease
+) -> None:
+    from flowweave.modules.agent_sessions.application.child_deletion import process
+
+    process(db, lease)
+
+
+def _cleanup_deleted_conversation_attachments(
+    db: Session, _aggregate_id: str, payload: dict[str, Any], _lease: Lease
+) -> None:
+    from flowweave.modules.agent_sessions.application.child_deletion import (
+        sweep_deleted_attachments,
+    )
+
+    sweep_deleted_attachments(db, payload)
+
+
 def _expire_agent_sidebar_conversation(
     db: Session, aggregate_id: str, _payload: dict[str, Any], _lease: Lease
 ) -> None:
@@ -285,6 +303,11 @@ def _replace_flow_run_runtime(
         int(payload["failed_generation"]),
         lease,
         commit=False,
+        **(
+            {"node_attempt_id": payload["node_attempt_id"]}
+            if payload.get("node_attempt_id")
+            else {}
+        ),
     )
 
 
@@ -337,6 +360,8 @@ def _deliver_case_feedback(
 
 
 HANDLERS: dict[str, Handler] = {
+    "DELETE_AGENT_CONVERSATION_FAMILY": _delete_agent_conversation_family,
+    "CLEANUP_DELETED_CONVERSATION_ATTACHMENTS": _cleanup_deleted_conversation_attachments,
     "DELIVER_CASE_FEEDBACK": _deliver_case_feedback,
     "BOOTSTRAP_CASE_CONTROL_ROUND": _bootstrap_case_control_round,
     "EVALUATE_READINESS": _readiness,
@@ -444,6 +469,11 @@ def record_terminal_failure(db: Session, task_id: str, error: str) -> None:
             task.aggregate_id,
             error,
             replacement_task_id=task.id,
+            **(
+                {"node_attempt_id": task.payload_json["node_attempt_id"]}
+                if (task.payload_json or {}).get("node_attempt_id")
+                else {}
+            ),
         )
     elif task.task_type == "RESOLVE_PLUGIN_SOURCE":
         fail_plugin_source_resolution(db, task.aggregate_id, error)

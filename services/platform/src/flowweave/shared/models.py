@@ -4,6 +4,7 @@ New code imports mappings from each module's ``infrastructure.models``.
 """
 
 from flowweave.modules.agent_sessions.infrastructure.models import (
+    AgentChildConversation,
     AgentConversationBinding,
     AgentConversationCapability,
     AgentConversationCommand,
@@ -125,6 +126,7 @@ from flowweave.shared.domain.enums import AttemptState, FlowRunState, NodeRunSta
 __all__ = (
     "ArtifactVersion",
     "CandidateOutputSet",
+    "AgentChildConversation",
     "AgentConversationBinding",
     "AgentConversationCapability",
     "AgentWorkspaceCapability",

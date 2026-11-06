@@ -158,19 +158,49 @@ def terminal_assistant_message_ids(batch: RuntimeEventBatch) -> frozenset[str]:
     events_by_id = {event.cursor: event for event in batch.events}
     terminal_ids: set[str] = set()
     result = batch.result
+    # While an OpenHands Goal loop is still active, a finished run is only one
+    # round: the Judge may send another follow-up. Nothing is final until the
+    # loop itself reports complete, capped or interrupted.
+    goal_active = False
+    for event in batch.events:
+        goal_status = event.payload.get("goal_status")
+        if isinstance(goal_status, dict):
+            goal_active = goal_status.get("active") is True
     if (
-        result is not None
+        not goal_active
+        and result is not None
         and result.status == "COMPLETED"
         and result.completion_event_kind == "ASSISTANT_MESSAGE"
         and result.completion_event_id in events_by_id
     ):
         terminal_ids.add(result.completion_event_id)
 
+    # An idle branch has no running turn, so its leaf assistant MESSAGE is the finished turn's
+    # reply even though no later user message points back at it. A fork stops exactly there,
+    # and ``batch.result`` is empty because nothing ran in the new conversation.
+    leaf = events_by_id.get(batch.cursor or "")
+    readiness = batch.readiness
+    if (
+        not goal_active
+        and leaf is not None
+        and leaf.event_type == "MESSAGE"
+        and str(leaf.payload.get("source") or "").lower() in {"agent", "assistant"}
+        and readiness is not None
+        and readiness.ready
+        and readiness.execution_status.strip().lower() in {"idle", "finished"}
+        and (result is None or result.status != "RUNNING")
+    ):
+        terminal_ids.add(leaf.cursor)
+
     for event in batch.events:
         if event.event_type != "MESSAGE" or str(event.payload.get("source") or "").lower() not in {
             "user",
             "human",
         }:
+            continue
+        if event.payload.get("goal_followup"):
+            # The Goal loop's own follow-up after a failed audit: the reply it
+            # answers was a round, not the turn's final reply.
             continue
         parent_id = event.payload.get("parent_id")
         visited: set[str] = set()

@@ -12,7 +12,7 @@ import tarfile
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
@@ -21,6 +21,7 @@ from urllib.parse import unquote, urlparse
 from uuid import UUID, uuid4
 
 import httpx
+from pydantic import BaseModel, ValidationError
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from websockets.sync.client import connect as sync_connect
@@ -53,6 +54,7 @@ from flowweave.runtime.base import (
     RuntimeMessageSearchResult,
     RuntimePendingAction,
     RuntimePendingConfirmation,
+    RuntimePendingQuestion,
     RuntimePluginValidationRequest,
     RuntimePluginValidationResult,
     RuntimeProvider,
@@ -65,10 +67,46 @@ from flowweave.runtime.base import (
     RuntimeWorkspaceSnapshot,
     StartAttemptRequest,
 )
+from flowweave.runtime.child_contract import (
+    CHILD_HTTP_OPERATIONS,
+    CHILD_TOOL_NAMES,
+    V3_SOURCE_COMMIT,
+)
+from flowweave.runtime.child_creation import (
+    NativeChildConfiguration,
+    NativeChildInvocation,
+    NativeChildLaunchRequest,
+    NativeChildPreparation,
+    child_contract_error,
+)
+from flowweave.runtime.child_governance import (
+    NativeChildPreparationOverrides,
+    NativeChildResolution,
+    NativeGovernedChildPreparation,
+    NativeParentConfiguration,
+)
+from flowweave.runtime.child_governance_contract import (
+    V4_CHILD_HTTP_OPERATIONS,
+    V4_SOURCE_COMMIT,
+    V5_SOURCE_COMMIT,
+)
+from flowweave.runtime.child_interaction import (
+    NativeChildInstructionSource,
+    NativeCommandInvocation,
+    NativeCommandRequest,
+    NativeCommandResult,
+    NativeListPage,
+    NativeQueryInvocation,
+    NativeQueryRequest,
+    NativeQueryResult,
+    NativeReadPage,
+    NativeWaitResult,
+)
 from flowweave.runtime.contract import OPTIONAL_HTTP_OPERATIONS
 from flowweave.runtime.git_identity import GIT_IDENTITY_SCRIPT
 from flowweave.runtime.model_catalog import declared_context_window
 from flowweave.runtime.read_budget import formal_read_budget, hydration_time_left
+from flowweave.runtime.workspace_git import WORKSPACE_GIT_SCRIPT
 from flowweave.shared.errors import DomainError
 from flowweave.shared.infrastructure.docker_controller import (
     DockerControllerClient,
@@ -788,6 +826,7 @@ class OpenHandsRuntime:
         missing_ok: bool = False,
         background: bool = False,
         control: bool = False,
+        native_child: bool = False,
         base_url: str,
         session_api_key: str,
         **kwargs: Any,
@@ -824,6 +863,14 @@ class OpenHandsRuntime:
             outcome = "ok"
             return cast(dict[str, Any], value)
         except httpx.HTTPStatusError as exc:
+            if native_child:
+                status = exc.response.status_code
+                raise DomainError(
+                    "RUNTIME_CHILD_REQUEST_REJECTED",
+                    "OpenHands 子会话请求被拒绝",
+                    status if 400 <= status < 500 else 502,
+                    {"status_code": status, "outcome_unknown": status >= 500},
+                ) from None
             # OpenHands initializes configured MCP servers before accepting the
             # first user event.  Preserve only this explicit, stable failure
             # class so callers can distinguish a known MCP outage from an
@@ -844,12 +891,21 @@ class OpenHandsRuntime:
                         503,
                         {"error_kind": "connection"},
                     ) from exc
-            if exc.response.status_code == 400 and path.endswith("/load_plugin"):
+            if path.endswith("/load_plugin") and exc.response.status_code in {400, 404}:
+                # The native loader also uses 404 for missing marketplaces and
+                # plugins. Confirm the Conversation before classifying that 404.
+                if exc.response.status_code == 404:
+                    self._request(
+                        "GET",
+                        path.removesuffix("/load_plugin"),
+                        base_url=base_url,
+                        session_api_key=session_api_key,
+                    )
                 raise DomainError(
-                    "AGENT_CONVERSATION_MARKETPLACE_UNAVAILABLE",
-                    "此历史会话创建时未注册能力市场，无法原地动态加载；请新建会话后继续使用能力。",
+                    "RUNTIME_PLUGIN_LOAD_REJECTED",
+                    "会话能力加载失败，请检查能力市场注册及所选版本后重试。",
                     409,
-                    {"status_code": 400, "path": path},
+                    {"status_code": exc.response.status_code},
                 ) from exc
             # OpenHands 1.44 returns 400, rather than 404, when its DELETE
             # conversation endpoint cannot find the native Conversation.  Its
@@ -887,27 +943,27 @@ class OpenHandsRuntime:
                     "OpenHands formal Runtime read exceeded its deadline",
                     504,
                     {"outcome_unknown": True, "transport_failure": "timeout"},
-                ) from exc
+                ) from (None if native_child else exc)
             raise DomainError(
                 "EXECUTOR_UNAVAILABLE",
                 "OpenHands Agent Server request exceeded its deadline",
                 503,
                 {"outcome_unknown": True, "transport_failure": "timeout"},
-            ) from exc
+            ) from (None if native_child else exc)
         except httpx.HTTPError as exc:
             raise DomainError(
                 "EXECUTOR_UNAVAILABLE",
                 "OpenHands Agent Server connection was interrupted before a response",
                 503,
                 {"outcome_unknown": True, "transport_failure": "connection"},
-            ) from exc
+            ) from (None if native_child else exc)
         except ValueError as exc:
             raise DomainError(
                 "OPENHANDS_RESPONSE_INVALID",
                 "OpenHands Agent Server returned an invalid response",
                 502,
-                {"outcome_unknown": False},
-            ) from exc
+                {"outcome_unknown": native_child and method != "GET"},
+            ) from (None if native_child else exc)
         finally:
             duration = time.monotonic() - started_at
             if metrics := current_metrics():
@@ -1427,7 +1483,7 @@ class OpenHandsRuntime:
         model = provider.model
         if "/" in model:
             return model
-        if provider.auth_type == "ANTHROPIC_API_KEY":
+        if provider.api_protocol == "ANTHROPIC":
             return f"anthropic/{model}"
         return f"openai/{model}"
 
@@ -2112,10 +2168,15 @@ class OpenHandsRuntime:
             "tools": configured_tools,
             "tool_concurrency_limit": spec.tool_concurrency_limit,
         }
-        if structured_finish is not None:
+        default_tools = (
+            ["ThinkTool"] if structured_finish is not None else ["FinishTool", "ThinkTool"]
+        )
+        if spec.ask_user:
+            default_tools.append("AskUserTool")
+        if structured_finish is not None or spec.ask_user:
             # FinishTool is a native default. Replacing it with an explicit
             # structured schema requires omitting the default copy.
-            agent["include_default_tools"] = ["ThinkTool"]
+            agent["include_default_tools"] = default_tools
         if spec.critic is not None:
             critic: dict[str, Any] = {
                 "kind": spec.critic.kind,
@@ -2166,6 +2227,32 @@ class OpenHandsRuntime:
                 )
             },
         }
+        child_tools = set(CHILD_TOOL_NAMES) & {tool.name for tool in spec.tools}
+        child_profile = None
+        if child_tools:
+            source = spec.runtime_contract.source_commit if spec.runtime_contract else None
+            child_profile = {V4_SOURCE_COMMIT: "OH_FW_V4", V5_SOURCE_COMMIT: "OH_FW_V5"}.get(
+                source, "OH_FW_V3"
+            )
+            operations = (
+                V4_CHILD_HTTP_OPERATIONS
+                if child_profile in {"OH_FW_V4", "OH_FW_V5"}
+                else CHILD_HTTP_OPERATIONS
+            )
+            if (
+                child_tools != set(CHILD_TOOL_NAMES)
+                or spec.runtime_contract is None
+                or source not in {V3_SOURCE_COMMIT, V4_SOURCE_COMMIT, V5_SOURCE_COMMIT}
+                or not set(operations) <= set(spec.runtime_contract.required_http_operations)
+            ):
+                raise self._incompatible("governed_parent_contract_required")
+            # These private-to-deployment factories are lazily imported by the
+            # formal creation API, rather than advertised by the base preset.
+            payload["tool_module_qualnames"] = {
+                name: "openhands.tools.child_conversation."
+                + ("governed" if index == 0 else "queries" if index < 4 else "commands")
+                for index, name in enumerate(CHILD_TOOL_NAMES)
+            }
         # Conversation secrets are a native OpenHands request field.  Keep
         # these values out of Runtime manifests, image configuration, and the
         # persisted FlowWeave conversation locator.
@@ -2254,7 +2341,11 @@ class OpenHandsRuntime:
         self._negotiate_runtime_contract(
             spec.runtime_contract,
             required_tools=(
-                tuple(tool.name for tool in spec.tools if tool.name != "FinishTool")
+                tuple(
+                    tool.name
+                    for tool in spec.tools
+                    if tool.name != "FinishTool" and tool.name not in child_tools
+                )
                 if spec.runtime_contract is not None
                 else tuple(tool.name for tool in spec.tools)
             ),
@@ -2297,6 +2388,7 @@ class OpenHandsRuntime:
             runtime_resource_name=request.runtime_resource_name,
             output_contract={item["field_key"]: item for item in self._contracts[conversation_id]},
             workspace_root=request.workspace_root,
+            protocol_profile=child_profile,
             llm_timeout_policy=spec.llm_timeout_policy,
         )
         created_agent = created.get("agent")
@@ -2316,6 +2408,273 @@ class OpenHandsRuntime:
 
     def create_conversation(self, request: StartAttemptRequest) -> RuntimeHandle:
         return self._create(request, run=False)
+
+    def _child_request(
+        self, handle: RuntimeHandle, method: str, suffix: str = "", **kwargs: Any
+    ) -> dict[str, Any]:
+        # An unset Workspace profile is not permission to use the latest protocol.
+        if handle.protocol_profile not in {"OH_FW_V3", "OH_FW_V4", "OH_FW_V5"}:
+            raise DomainError(
+                "RUNTIME_CHILD_UNSUPPORTED", "当前冻结 Runtime 协议不支持受治理子会话", 409
+            )
+        try:
+            conversation_id = UUID(handle.conversation_id)
+        except ValueError:
+            raise child_contract_error() from None
+        return self._request(
+            method,
+            f"/api/conversations/{conversation_id}{suffix}",
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+            control=method != "GET",
+            native_child=True,
+            timeout=kwargs.pop("timeout", 30.0),
+            **kwargs,
+        )
+
+    @staticmethod
+    def _child_response[T: BaseModel](
+        model: type[T], value: dict[str, Any], *, outcome_unknown: bool = False
+    ) -> T:
+        # Pydantic validation errors may contain upstream task/token values.
+        try:
+            return model.model_validate(value)
+        except ValidationError:
+            raise child_contract_error(outcome_unknown=outcome_unknown) from None
+
+    @staticmethod
+    def _require_child_governance(handle: RuntimeHandle) -> None:
+        if handle.protocol_profile not in {"OH_FW_V4", "OH_FW_V5"}:
+            raise DomainError(
+                "RUNTIME_CHILD_UNSUPPORTED", "当前冻结 Runtime 协议不支持子准备凭据治理", 409
+            )
+
+    def parent_conversation_configuration(self, handle: RuntimeHandle) -> NativeParentConfiguration:
+        self._require_child_governance(handle)
+        value = self._child_request(handle, "GET", params={"include_skills": "true"})
+        result = self._child_response(NativeParentConfiguration, value)
+        if result.id != UUID(handle.conversation_id):
+            raise child_contract_error()
+        return result
+
+    def resolve_child_launcher(
+        self, handle: RuntimeHandle, request: NativeChildLaunchRequest
+    ) -> NativeChildResolution:
+        self._require_child_governance(handle)
+        value = self._child_request(
+            handle, "POST", "/children/launcher/resolve", json=request.verifier_payload()
+        )
+        resolved = self._child_response(NativeChildResolution, value)
+        if (
+            resolved.identity.parent_conversation_id != UUID(handle.conversation_id)
+            or resolved.invocation.request_digest != request.request_digest()
+        ):
+            raise child_contract_error()
+        return resolved
+
+    def prepare_governed_child_conversation(
+        self,
+        handle: RuntimeHandle,
+        creation_id: UUID,
+        request: NativeChildLaunchRequest,
+        overrides: NativeChildPreparationOverrides,
+    ) -> NativeGovernedChildPreparation:
+        self._require_child_governance(handle)
+        value = self._child_request(
+            handle,
+            "POST",
+            f"/children/preparations/{creation_id}/governed",
+            json={**request.preparation_payload(), "overrides": overrides.wire_payload()},
+        )
+        prepared = self._child_preparation_response(handle, creation_id, value, request)
+        if not isinstance(prepared, NativeGovernedChildPreparation) or (
+            prepared.governance_id != overrides.governance_id
+        ):
+            raise child_contract_error(outcome_unknown=True)
+        return prepared
+
+    def verify_child_query(
+        self, handle: RuntimeHandle, request: NativeQueryRequest
+    ) -> NativeQueryInvocation:
+        self._require_child_governance(handle)
+        value = self._child_request(
+            handle, "POST", "/children/queries/verify", json=request.wire_payload()
+        )
+        claim = self._child_response(NativeQueryInvocation, value)
+        if (
+            claim.policy.parent_conversation_id != UUID(handle.conversation_id)
+            or claim.query != request.query
+        ):
+            raise child_contract_error()
+        return claim
+
+    def query_children(
+        self, handle: RuntimeHandle, request: NativeQueryRequest
+    ) -> NativeQueryResult:
+        self._require_child_governance(handle)
+        # The platform reserves a bounded long-read slot for native wait.
+        value = self._child_request(
+            handle, "POST", "/children/queries", json=request.wire_payload(), timeout=35.0
+        )
+        expected = {
+            "list": NativeListPage,
+            "read": NativeReadPage,
+            "wait": NativeWaitResult,
+        }[request.query.operation]
+        result = self._child_response(expected, value)
+        snapshots = result.items if isinstance(result, NativeListPage) else [result.snapshot]
+        if (isinstance(result, NativeListPage) and len(result.items) > request.query.limit) or any(
+            item.parent_conversation_id != UUID(handle.conversation_id)
+            or (
+                request.query.conversation_id is not None
+                and item.conversation_id != request.query.conversation_id
+            )
+            for item in snapshots
+        ):
+            raise child_contract_error()
+        if isinstance(result, NativeReadPage) and (
+            len(result.items) > request.query.limit
+            or sum(len(item.text or "") for item in result.items) > request.query.max_chars
+        ):
+            raise child_contract_error()
+        return result
+
+    def verify_child_command(
+        self, handle: RuntimeHandle, request: NativeCommandRequest
+    ) -> NativeCommandInvocation:
+        self._require_child_governance(handle)
+        value = self._child_request(
+            handle, "POST", "/children/commands/verify", json=request.wire_payload()
+        )
+        claim = self._child_response(NativeCommandInvocation, value)
+        if (
+            claim.policy.parent_conversation_id != UUID(handle.conversation_id)
+            or claim.command != request.command
+        ):
+            raise child_contract_error()
+        return claim
+
+    def command_child(
+        self, handle: RuntimeHandle, request: NativeCommandRequest
+    ) -> NativeCommandResult:
+        self._require_child_governance(handle)
+        value = self._child_request(
+            handle, "POST", "/children/commands", json=request.wire_payload()
+        )
+        result = self._child_response(NativeCommandResult, value, outcome_unknown=True)
+        if (
+            result.conversation_id != request.command.conversation_id
+            or result.operation != request.command.operation
+        ):
+            raise child_contract_error(outcome_unknown=True)
+        return result
+
+    def send_child_message(
+        self,
+        handle: RuntimeHandle,
+        submission_id: UUID,
+        content: str,
+        image_urls: tuple[str, ...] = (),
+    ) -> str:
+        self._require_child_governance(handle)
+        parts: list[dict[str, Any]] = [{"type": "text", "text": content}]
+        if image_urls:
+            parts.append({"type": "image", "image_urls": list(image_urls)})
+        result = self._child_request(
+            handle,
+            "POST",
+            "/events",
+            json={
+                "role": "user",
+                "content": parts,
+                "run": True,
+                "submission_id": str(submission_id),
+            },
+        )
+        event_id = result.get("event_id")
+        if not isinstance(event_id, str) or not event_id:
+            raise child_contract_error(outcome_unknown=True)
+        return event_id
+
+    def verify_child_launcher(
+        self, handle: RuntimeHandle, request: NativeChildLaunchRequest
+    ) -> NativeChildInvocation:
+        value = self._child_request(
+            handle, "POST", "/children/launcher/verify", json=request.verifier_payload()
+        )
+        invocation = self._child_response(NativeChildInvocation, value)
+        if (
+            invocation.policy.parent_conversation_id != UUID(handle.conversation_id)
+            or invocation.request_digest != request.request_digest()
+        ):
+            raise child_contract_error()
+        return invocation
+
+    def _child_preparation_response(
+        self,
+        handle: RuntimeHandle,
+        creation_id: UUID,
+        value: dict[str, Any],
+        request: NativeChildLaunchRequest | None = None,
+    ) -> NativeChildPreparation:
+        prepared = self._child_response(
+            NativeGovernedChildPreparation
+            if handle.protocol_profile in {"OH_FW_V4", "OH_FW_V5"}
+            else NativeChildPreparation,
+            value,
+            outcome_unknown=request is not None,
+        )
+        identity = prepared.receipt.identity
+        if (
+            identity.parent_conversation_id != UUID(handle.conversation_id)
+            or identity.creation_id != creation_id
+            or (request and prepared.receipt.request_digest != request.request_digest())
+        ):
+            raise child_contract_error(outcome_unknown=request is not None)
+        return prepared
+
+    def prepare_child_conversation(
+        self, handle: RuntimeHandle, creation_id: UUID, request: NativeChildLaunchRequest
+    ) -> NativeChildPreparation:
+        value = self._child_request(
+            handle,
+            "POST",
+            f"/children/preparations/{creation_id}",
+            json=request.preparation_payload(),
+        )
+        return self._child_preparation_response(handle, creation_id, value, request)
+
+    def read_child_preparation(
+        self, handle: RuntimeHandle, creation_id: UUID
+    ) -> NativeChildPreparation | None:
+        try:
+            value = self._child_request(handle, "GET", f"/children/preparations/{creation_id}")
+        except DomainError as exc:
+            if (
+                exc.code == "RUNTIME_CHILD_REQUEST_REJECTED"
+                and exc.details.get("status_code") == 404
+            ):
+                return None
+            raise
+        return self._child_preparation_response(handle, creation_id, value)
+
+    def release_child_conversation(
+        self, handle: RuntimeHandle, creation_id: UUID, request: NativeChildLaunchRequest
+    ) -> NativeChildPreparation:
+        value = self._child_request(
+            handle,
+            "POST",
+            f"/children/preparations/{creation_id}/release",
+            json=request.preparation_payload(),
+        )
+        return self._child_preparation_response(handle, creation_id, value, request)
+
+    def child_conversation_configuration(self, handle: RuntimeHandle) -> NativeChildConfiguration:
+        value = self._child_request(handle, "GET", params={"include_skills": "true"})
+        configuration = self._child_response(NativeChildConfiguration, value)
+        if configuration.id != UUID(handle.conversation_id):
+            raise child_contract_error()
+        return configuration
 
     def update_conversation_secrets(
         self,
@@ -3277,6 +3636,17 @@ class OpenHandsRuntime:
             "source": source,
             "content": redact_secret_text(event_text),
         }
+        instruction = item.get("parent_instruction")
+        if instruction is not None:
+            try:
+                payload["parent_instruction"] = NativeChildInstructionSource.model_validate(
+                    instruction
+                ).model_dump(mode="json")
+            except ValueError:
+                raise child_contract_error() from None
+            sender = item.get("sender")
+            if isinstance(sender, str):
+                payload["sender"] = sender
         timestamp = item.get("timestamp")
         if isinstance(timestamp, str) and timestamp:
             payload["timestamp"] = timestamp[:80]
@@ -3333,6 +3703,9 @@ class OpenHandsRuntime:
         goal_status = cls._goal_status(item)
         if goal_status is not None:
             payload["goal_status"] = goal_status
+        goal_followup = item.get("_flowweave_goal_followup")
+        if isinstance(goal_followup, dict):
+            payload["goal_followup"] = goal_followup
         if kind == "CondensationRequest":
             payload["event_name"] = kind
         elif kind == "Condensation":
@@ -3528,6 +3901,143 @@ class OpenHandsRuntime:
         next_cursor = str(items[-1].get("id")) if items and items[-1].get("id") else cursor
         return items, next_cursor
 
+    @classmethod
+    def _annotate_goal_followups(cls, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Mark the user message OpenHands' Goal loop sends after a failed audit.
+
+        ``_run_goal_loop`` first persists ``goal`` status (active, with the
+        Judge verdict) and then sends the follow-up as a ``source=user``
+        MessageEvent under the same parent. That message is a loop control
+        input, not something the person typed, so identify it by this formal
+        structure and take ``missing`` from the structured verdict. Message
+        text is never parsed, and no persisted data is rewritten, so
+        conversations created before this change are recognised too.
+        """
+
+        pending: dict[str, dict[str, Any]] = {}
+        result: list[dict[str, Any]] = []
+        for item in items:
+            kind = item.get("kind")
+            parent_id = item.get("parent_id")
+            parent = parent_id if isinstance(parent_id, str) else None
+            if kind == "ConversationStateUpdateEvent" and item.get("key") == "goal":
+                value = item.get("value")
+                if isinstance(value, dict) and parent is not None:
+                    status = cast(dict[str, Any], value)
+                    verdict = status.get("verdict")
+                    if (
+                        status.get("active") is True
+                        and status.get("status") == "running"
+                        and isinstance(verdict, dict)
+                        and cast(dict[str, Any], verdict).get("complete") is False
+                    ):
+                        pending[parent] = {
+                            "iteration": status.get("iteration"),
+                            "max_iterations": status.get("max_iterations"),
+                            "missing": str(cast(dict[str, Any], verdict).get("missing") or "")[
+                                :4000
+                            ],
+                        }
+                result.append(item)
+                continue
+            if (
+                kind == "MessageEvent"
+                and str(item.get("source") or "").lower() == "user"
+                and parent is not None
+                and parent in pending
+            ):
+                followup = pending.pop(parent)
+                if isinstance(followup.get("iteration"), int) and not isinstance(
+                    followup.get("iteration"), bool
+                ):
+                    item = {**item, "_flowweave_goal_followup": followup}
+            result.append(item)
+        return result
+
+    def _goal_updates_after_leaf(
+        self,
+        conversation_id: str,
+        leaf_event_id: str,
+        *,
+        base_url: str,
+        session_api_key: str,
+    ) -> list[dict[str, Any]]:
+        """Read the Goal status updates OpenHands appended after the active leaf.
+
+        A state update never becomes the leaf, so the final ``goal`` verdict
+        (complete, capped or interrupted) is written after the last real event
+        and lies past the leaf. A window anchored at the leaf walks backwards and
+        cannot see it. Read only the newest events of the log, which is where
+        such updates are, and keep the Goal ones whose parent is the leaf.
+        """
+
+        try:
+            data = self._request(
+                "GET",
+                f"/api/conversations/{conversation_id}/events/search",
+                base_url=base_url,
+                session_api_key=session_api_key,
+                params={"limit": 20, "sort_order": "TIMESTAMP_DESC"},
+                timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS,
+            )
+        except DomainError:
+            # The Goal verdict only refines the presentation. A failed side read
+            # must never fail the read of the conversation itself.
+            return []
+        raw_items = data.get("items", [])
+        if not isinstance(raw_items, list):
+            return []
+        found: list[dict[str, Any]] = []
+        for raw in cast(list[object], raw_items):
+            if not isinstance(raw, dict):
+                continue
+            item = cast(dict[str, Any], raw)
+            if self._event_identity(item)[0] == leaf_event_id:
+                break
+            if item.get("kind") == "ConversationStateUpdateEvent" and item.get("key") == "goal":
+                found.append(item)
+        return found
+
+    def _with_goal_status_events(
+        self,
+        branch: list[dict[str, Any]],
+        candidates: Iterable[dict[str, Any]],
+        *,
+        extra_parent_ids: frozenset[str] = frozenset(),
+    ) -> list[dict[str, Any]]:
+        """Re-attach OpenHands Goal status updates to a parent-walked branch.
+
+        A ``ConversationStateUpdateEvent`` is a state-sync artifact, not a tree
+        node: it hangs off the active leaf but never becomes the leaf, so the
+        parent walk skips it. The Goal chip is derived from exactly these
+        events, so keep each one whose formal ``parent_id`` is on the branch,
+        placed right after that parent (chronological order is preserved).
+        """
+
+        parents = {self._event_identity(item)[0] for item in branch} | extra_parent_ids
+        by_parent: dict[str, list[dict[str, Any]]] = {}
+        for item in candidates:
+            if item.get("kind") != "ConversationStateUpdateEvent" or item.get("key") != "goal":
+                continue
+            parent_id = self._formal_identity(
+                item.get("parent_id"), field="parent_id", required=False
+            )
+            if parent_id in parents:
+                by_parent.setdefault(parent_id, []).append(item)
+        if not by_parent:
+            return branch
+
+        def ordered(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return sorted(items, key=lambda value: str(value.get("timestamp") or ""))
+
+        result: list[dict[str, Any]] = []
+        for parent_id in sorted(extra_parent_ids):
+            result.extend(ordered(by_parent.pop(parent_id, [])))
+        for item in branch:
+            result.append(item)
+            result.extend(ordered(by_parent.pop(self._event_identity(item)[0], [])))
+        return result
+
     def _active_event_window(
         self,
         conversation_id: str,
@@ -3602,7 +4112,12 @@ class OpenHandsRuntime:
         # ``chain`` is newest-to-oldest.  The returned transcript stays in
         # chronological order, while the missing parent remains the official
         # continuation token for a user-triggered older-history read.
-        return list(reversed(chain)), current_event_id
+        return (
+            self._annotate_goal_followups(
+                self._with_goal_status_events(list(reversed(chain)), page_items)
+            ),
+            current_event_id,
+        )
 
     def _active_events_after_cursor(
         self,
@@ -3698,7 +4213,13 @@ class OpenHandsRuntime:
             current_event_id: str | None = leaf_event_id
             while current_event_id is not None:
                 if current_event_id == anchor:
-                    return list(reversed(chain))
+                    return self._annotate_goal_followups(
+                        self._with_goal_status_events(
+                            list(reversed(chain)),
+                            by_id.values(),
+                            extra_parent_ids=frozenset({anchor}),
+                        )
+                    )
                 item = by_id.get(current_event_id)
                 if item is None:
                     break
@@ -4000,6 +4521,88 @@ class OpenHandsRuntime:
             )
         digest = self._canonical_digest([action.digest for action in actions])
         return RuntimePendingConfirmation(digest, actions, cursor or leaf)
+
+    def get_pending_question(self, handle: RuntimeHandle) -> RuntimePendingQuestion | None:
+        """Read the latest unanswered ask_user on the formal active branch."""
+
+        with (
+            self._auxiliary_read_bulkhead(handle),
+            formal_read_budget(_INTERACTIVE_READ_TIMEOUT_SECONDS),
+        ):
+            state = self._conversation_state(handle, timeout=_INTERACTIVE_READ_TIMEOUT_SECONDS)
+            if str(state.get("execution_status") or "").lower() == "deleting":
+                return None
+            leaf = str(state.get("leaf_event_id") or "") or None
+            if leaf is None:
+                return None
+            history_cursor = None
+            seen_anchors: set[str] = set()
+            for _page in range(_EVENT_HISTORY_MAX_PAGES):
+                hydration_time_left()
+                anchor = history_cursor or leaf
+                if anchor in seen_anchors:
+                    raise DomainError(
+                        "RUNTIME_PROTOCOL_ERROR",
+                        "OpenHands event tree contains an invalid active branch",
+                        502,
+                        {"event_id": anchor},
+                    )
+                seen_anchors.add(anchor)
+                events, history_cursor = self._active_event_window(
+                    handle.conversation_id,
+                    leaf,
+                    history_cursor,
+                    base_url=self._base_url_for_handle(handle),
+                    session_api_key=self._session_key_for_handle(handle),
+                )
+                # A question remains open until a newer user message on this branch.
+                # Stop as soon as either is found, without restoring older history.
+                for event in reversed(events):
+                    kind = str(event.get("kind") or "")
+                    if kind == "MessageEvent" and event.get("source") == "user":
+                        return None
+                    if kind != "ActionEvent" or str(event.get("tool_name") or "") != "ask_user":
+                        continue
+                    action = event.get("action")
+                    if not isinstance(action, dict):
+                        continue
+                    options = action.get("options")
+                    recommendation = action.get("recommendation")
+                    follow_ups: list[tuple[str, tuple[str, ...], str | None]] = []
+                    for item in action.get("questions") or []:
+                        if not isinstance(item, dict) or not str(
+                            item.get("question") or ""
+                        ).strip():
+                            continue
+                        raw_options = item.get("options")
+                        follow_ups.append(
+                            (
+                                str(item["question"]),
+                                tuple(str(o) for o in raw_options)
+                                if isinstance(raw_options, list)
+                                else (),
+                                str(item["recommendation"]) if item.get("recommendation") else None,
+                            )
+                        )
+                    return RuntimePendingQuestion(
+                        follow_ups=tuple(follow_ups),
+                        action_id=str(event.get("id") or ""),
+                        tool_call_id=str(event.get("tool_call_id") or ""),
+                        question=str(action.get("question") or ""),
+                        options=tuple(str(item) for item in options)
+                        if isinstance(options, list)
+                        else (),
+                        recommendation=str(recommendation) if recommendation else None,
+                        cursor=leaf,
+                    )
+                if history_cursor is None:
+                    return None
+            raise DomainError(
+                "RUNTIME_EVENT_HISTORY_BUDGET_EXHAUSTED",
+                "OpenHands pending question exceeds the bounded interactive read budget",
+                503,
+                {"max_pages": _EVENT_HISTORY_MAX_PAGES, "page_size": _EVENT_HISTORY_PAGE_SIZE},
+            )
 
     def respond_to_confirmation(
         self,
@@ -4352,6 +4955,7 @@ class OpenHandsRuntime:
             result=self._result_from_events(handle, items, cursor),
             task_usage=self._task_usage_snapshots(state, source_cursor=state_cursor),
             usage=self._usage_snapshots(state),
+            stored_event_count=self._stored_event_count(state),
             context=self._conversation_context_from_state(state),
             readiness=self._input_readiness_from_state(state),
         )
@@ -4407,6 +5011,26 @@ class OpenHandsRuntime:
                 item for item in active_items if not self._is_legacy_autotitle_protocol_error(item)
             ]
             cursor = leaf_event_id
+            if (
+                state is not None
+                and leaf_event_id
+                and not handle.history_cursor
+                and str(state.get("execution_status") or "").lower()
+                in {"finished", "idle", "error", "stuck", "paused"}
+            ):
+                # The Goal loop's final verdict (complete, capped or interrupted)
+                # is appended after the last real event, past the leaf, so a
+                # window anchored at the leaf cannot see it. Only a run that has
+                # ended can have one, so the extra read is limited to that case.
+                active_items = self._with_goal_status_events(
+                    active_items,
+                    self._goal_updates_after_leaf(
+                        handle.conversation_id,
+                        leaf_event_id,
+                        base_url=base_url,
+                        session_api_key=session_api_key,
+                    ),
+                )
         events = tuple(
             RuntimeEvent(
                 cursor=self._event_identity(item)[0],
@@ -4450,6 +5074,7 @@ class OpenHandsRuntime:
                 else ()
             ),
             usage=self._usage_snapshots(state) if state is not None else (),
+            stored_event_count=self._stored_event_count(state),
             context=self._conversation_context_from_state(state) if state is not None else None,
             readiness=self._input_readiness_from_state(state) if state is not None else None,
         )
@@ -5287,7 +5912,7 @@ class OpenHandsRuntime:
         """Recognize the 1.54 guarantee: the user event exists but `/run` did not start."""
 
         return (
-            handle.protocol_profile == "OH_FW_V2"
+            handle.protocol_profile in {"OH_FW_V2", "OH_FW_V3", "OH_FW_V4", "OH_FW_V5"}
             and error.code == "OPENHANDS_REQUEST_FAILED"
             and error.details.get("status_code") == 429
             and error.details.get("outcome_unknown") is False
@@ -5407,6 +6032,64 @@ class OpenHandsRuntime:
                 "EXECUTOR_UNAVAILABLE", "OpenHands 工作区文件上传不可用", 503
             ) from exc
         return target
+
+    def workspace_git_operation(
+        self,
+        handle: RuntimeHandle,
+        repository_path: str,
+        action: str,
+        *,
+        ref: str = "",
+        expected_head: str = "",
+        expected_ref: str = "",
+    ) -> None:
+        values = {
+            "root": handle.workspace_root,
+            "repository": repository_path,
+            "action": action,
+            "ref": ref,
+            "expected_head": expected_head,
+            "expected_ref": expected_ref,
+        }
+        result = self._request(
+            "POST",
+            "/api/bash/execute_bash_command",
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+            json={
+                "command": "python3 -c "
+                + shlex.quote(WORKSPACE_GIT_SCRIPT)
+                + " "
+                + shlex.quote(json.dumps(values)),
+                "timeout": 15,
+            },
+            timeout=18,
+        )
+        try:
+            data = json.loads(str(result.get("stdout") or ""))
+            if result.get("exit_code") != 0 or not isinstance(data, dict):
+                raise ValueError("Invalid Git result")
+        except (TypeError, ValueError) as exc:
+            raise DomainError("AGENT_WORKSPACE_GIT_UNAVAILABLE", "Git 操作暂时不可用", 503) from exc
+        if data.get("ok") is True:
+            return
+        code = str(data.get("error", "UNAVAILABLE"))
+        messages = {
+            "REMOTE_UNAVAILABLE": "远端状态待确认，请检查工作区 Git 认证和网络后重试",
+            "BRANCH_INVALID": "请选择有效的本地或远程跟踪分支",
+            "BRANCH_MISSING": "分支已不存在，请刷新分支列表",
+            "LOCAL_EXISTS": "已存在同名本地分支，请选择该本地分支",
+            "STALE": "当前分支或提交已变化，请刷新后重新选择",
+            "BUSY": "该仓库正在切换分支，请稍后重试",
+            "SWITCH_CONFLICT": (
+                "无法切换分支，请先处理未提交或未跟踪文件、进行中的合并及其他工作树占用"
+            ),
+        }
+        raise DomainError(
+            "AGENT_WORKSPACE_GIT_" + code,
+            messages.get(code, "Git 操作未完成，请刷新仓库状态后重试"),
+            502 if code == "REMOTE_UNAVAILABLE" else 409,
+        )
 
     def workspace_git_identity(
         self,
@@ -5547,6 +6230,19 @@ class OpenHandsRuntime:
             content_type=response.headers.get("content-type", "application/octet-stream"),
             content=response.content,
         )
+
+    @staticmethod
+    def _stored_event_count(state: dict[str, Any] | None) -> int | None:
+        value = (state or {}).get("stored_event_count")
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise DomainError(
+                "RUNTIME_EVENT_COUNT_INVALID",
+                "OpenHands returned an invalid stored event count",
+                502,
+            )
+        return value
 
     @classmethod
     def _conversation_context_from_state(cls, state: dict[str, Any]) -> dict[str, int | str | None]:
@@ -5772,6 +6468,61 @@ class OpenHandsRuntime:
                     },
                 },
             )
+
+    def restore_condenser_credentials(
+        self, handle: RuntimeHandle, provider: RuntimeProvider
+    ) -> None:
+        base_url = self._base_url_for_handle(handle)
+        session_api_key = self._session_key_for_handle(handle)
+        info = self._request(
+            "GET", "/server_info", base_url=base_url, session_api_key=session_api_key
+        )
+        if "conversation_condenser_credentials_restore_v1" not in info.get("capabilities", []):
+            raise DomainError(
+                "RUNTIME_CONDENSER_RESTORE_UNSUPPORTED", "当前 Runtime 不支持摘要器认证恢复", 409
+            )
+        expected = self._llm_payload(provider, timeout_policy=handle.llm_timeout_policy)
+        result = self._request(
+            "POST",
+            f"/api/conversations/{handle.conversation_id}/switch_llm",
+            base_url=base_url,
+            session_api_key=session_api_key,
+            json={"llm": expected, "restore_missing_condenser_credentials": True},
+        )
+        state = self._conversation_state(handle)
+        agent_value = state.get("agent")
+        agent = cast(dict[str, Any], agent_value) if isinstance(agent_value, dict) else {}
+        condenser_value = agent.get("condenser")
+        condenser = (
+            cast(dict[str, Any], condenser_value) if isinstance(condenser_value, dict) else {}
+        )
+        llm_value = condenser.get("llm")
+        actual = cast(dict[str, Any], llm_value) if isinstance(llm_value, dict) else {}
+        if not (
+            result.get("condenser_credentials_present") is True
+            and actual.get("model") == expected["model"]
+            and str(actual.get("base_url") or "").rstrip("/")
+            == str(expected["base_url"]).rstrip("/")
+            and self._llm_diagnostic_matches(expected, actual)["reasoning"]
+        ):
+            raise DomainError(
+                "RUNTIME_CONDENSER_RESTORE_FAILED", "OpenHands 未确认摘要器认证恢复", 409
+            )
+
+    def conversation_marketplaces(self, handle: RuntimeHandle) -> tuple[dict[str, Any], ...]:
+        state = self._conversation_state(handle)
+        raw_agent = state.get("agent")
+        agent = cast(dict[str, Any], raw_agent) if isinstance(raw_agent, dict) else {}
+        raw_context = agent.get("agent_context")
+        context = cast(dict[str, Any], raw_context) if isinstance(raw_context, dict) else {}
+        registrations = context.get("registered_marketplaces")
+        if not isinstance(registrations, list):
+            return ()
+        return tuple(
+            dict(cast(dict[str, Any], item))
+            for item in cast(list[object], registrations)
+            if isinstance(item, dict)
+        )
 
     def load_plugin(self, handle: RuntimeHandle, plugin_ref: str) -> None:
         """Use OpenHands' formal conversation-level dynamic Plugin loader."""
@@ -6236,6 +6987,37 @@ class OpenHandsRuntime:
                 )
             time.sleep(0.1)
 
+    @staticmethod
+    def _is_user_turn_start(item: dict[str, Any]) -> bool:
+        return (
+            item.get("kind") == "MessageEvent"
+            and str(item.get("source") or "").lower() in {"user", "human"}
+        )
+
+    def _fork_boundary_precedes_active_turn(
+        self,
+        handle: RuntimeHandle,
+        *,
+        source_leaf_event_id: str,
+        fork_event_id: str | None,
+    ) -> bool:
+        """Whether a fixed fork boundary is outside the source's active turn."""
+
+        if fork_event_id is None:
+            return False
+        branch = self._active_branch_through(
+            handle.conversation_id,
+            leaf_event_id=source_leaf_event_id,
+            stop_event_id=fork_event_id,
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+        )
+        if branch is None:
+            # A visible event outside the active branch cannot belong to its
+            # currently executing turn.
+            return True
+        return any(self._is_user_turn_start(item) for item in branch[1:])
+
     def incomplete_fork_recovery(self, handle: RuntimeHandle) -> RuntimeForkRecovery | None:
         """Describe a legacy fork that never advanced beyond its copied finish.
 
@@ -6327,13 +7109,33 @@ class OpenHandsRuntime:
         source_state = self._conversation_state(handle)
         source_leaf = str(source_state.get("leaf_event_id") or "") or None
         source_status = str(source_state.get("execution_status") or "").lower()
-        if source_leaf != expected_source_leaf_event_id:
+        source_is_busy = source_status in {
+            "starting",
+            "running",
+            "executing",
+            "stopping",
+            "waiting_for_confirmation",
+        }
+        fork_precedes_active_turn = (
+            source_leaf is not None
+            and (source_leaf != expected_source_leaf_event_id or source_is_busy)
+            and self._fork_boundary_precedes_active_turn(
+                handle,
+                source_leaf_event_id=source_leaf,
+                fork_event_id=from_event_id,
+            )
+        )
+        if source_leaf != expected_source_leaf_event_id and not fork_precedes_active_turn:
             raise DomainError(
                 "RUNTIME_FORK_HEAD_DRIFT",
                 "OpenHands source HEAD changed before the native fork",
                 409,
             )
-        if source_status in {"starting", "running", "executing", "stopping"}:
+        if (
+            source_status
+            in {"starting", "running", "executing", "stopping", "waiting_for_confirmation"}
+            and not fork_precedes_active_turn
+        ):
             raise DomainError(
                 "RUNTIME_FORK_SOURCE_BUSY",
                 "OpenHands source conversation is still executing",

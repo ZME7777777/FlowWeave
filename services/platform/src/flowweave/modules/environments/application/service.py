@@ -14,6 +14,16 @@ from flowweave.runtime.base import (
     FLOWWEAVE_LLM_TIMEOUT_POLICY,
     RuntimeLLMTimeoutPolicy,
 )
+from flowweave.runtime.child_contract import (
+    V3_ARCHIVE_SHA256,
+    V3_PACKAGE_VERSION,
+    V3_SOURCE_COMMIT,
+    require_child_capability_manifest,
+)
+from flowweave.runtime.child_governance_contract import (
+    GOVERNED_CHILD_SOURCES,
+    require_governed_child_capability_manifest,
+)
 from flowweave.runtime.protocol_profiles import (
     DEFAULT_FLOW_RUN_PROTOCOL_PROFILE,
     FlowRunProtocolProfile,
@@ -168,7 +178,12 @@ def validate_runtime_manifest(
         )
     if runtime_protocol_profile is not None:
         profile = require_flow_run_protocol_profile(runtime_protocol_profile)
-        if profile is FlowRunProtocolProfile.OH_FW_V2:
+        if profile in {
+            FlowRunProtocolProfile.OH_FW_V2,
+            FlowRunProtocolProfile.OH_FW_V3,
+            FlowRunProtocolProfile.OH_FW_V4,
+            FlowRunProtocolProfile.OH_FW_V5,
+        }:
             execution_policy = document.get("execution_policy")
             execution_policy = (
                 cast(dict[str, object], execution_policy)
@@ -193,6 +208,39 @@ def validate_runtime_manifest(
                     409,
                     {"environment_version_id": environment_version_id},
                 )
+    if runtime_protocol_profile == FlowRunProtocolProfile.OH_FW_V3:
+        require_child_capability_manifest(document.get("child_conversations"))
+        if (
+            actual_commit != V3_SOURCE_COMMIT
+            or provenance.get("source_archive_digest") != V3_ARCHIVE_SHA256
+            or actual_packages != {name: V3_PACKAGE_VERSION for name in expected_package_names}
+        ):
+            raise DomainError(
+                "ENVIRONMENT_RUNTIME_INCOMPATIBLE",
+                "The V3 Runtime image does not contain the frozen child extension",
+                409,
+                {"environment_version_id": environment_version_id},
+            )
+    if runtime_protocol_profile in {
+        FlowRunProtocolProfile.OH_FW_V4,
+        FlowRunProtocolProfile.OH_FW_V5,
+    }:
+        source, archive, package = GOVERNED_CHILD_SOURCES[runtime_protocol_profile]
+        require_governed_child_capability_manifest(
+            document.get("child_conversations"), runtime_protocol_profile
+        )
+        if (
+            actual_commit != source
+            or actual_ref != source
+            or provenance.get("source_archive_digest") != archive
+            or actual_packages != {name: package for name in expected_package_names}
+        ):
+            raise DomainError(
+                "ENVIRONMENT_RUNTIME_INCOMPATIBLE",
+                "The V4 Runtime image does not contain the frozen child governance extension",
+                409,
+                {"environment_version_id": environment_version_id},
+            )
     raw_install_capabilities = build.get("install_capabilities")
     if raw_install_capabilities is not None:
         try:

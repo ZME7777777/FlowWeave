@@ -26,6 +26,7 @@ from flowweave.modules.agent_workspaces.infrastructure.models import (
     AgentWorkspaceRuntime,
     AgentWorkspaceSessionConfiguration,
 )
+from flowweave.runtime.base import RuntimeHandle
 
 process_agent_conversation_title = agent_sessions.process_agent_conversation_title
 finalize_agent_conversation_title_failure = agent_sessions.finalize_agent_conversation_title_failure
@@ -271,6 +272,69 @@ def git_repository_details(repository: Path, runtime_path: str) -> dict[str, str
     return workspace.repository_details(repository, runtime_path)
 
 
+def git_branches(
+    project_root: Path,
+    runtime_root: str,
+    file_roots: tuple[str, ...],
+    repository_path: str,
+) -> dict[str, Any]:
+    from flowweave.modules.agent_workspaces.application import workspace
+
+    return workspace.git_branches(project_root, runtime_root, file_roots, repository_path)
+
+
+def runtime_git_history(
+    handle: RuntimeHandle,
+    project_root: Path,
+    runtime_root: str,
+    file_roots: tuple[str, ...],
+    repository_path: str,
+) -> dict[str, Any]:
+    from flowweave.modules.agent_workspaces.application import workspace
+
+    return workspace.runtime_git_history(
+        handle, project_root, runtime_root, file_roots, repository_path
+    )
+
+
+def runtime_git_sync(
+    handle: RuntimeHandle,
+    project_root: Path,
+    runtime_root: str,
+    file_roots: tuple[str, ...],
+    repository_path: str,
+) -> dict[str, Any]:
+    from flowweave.modules.agent_workspaces.application import workspace
+
+    return workspace.runtime_git_sync(
+        handle, project_root, runtime_root, file_roots, repository_path
+    )
+
+
+def runtime_git_switch(
+    handle: RuntimeHandle,
+    project_root: Path,
+    runtime_root: str,
+    file_roots: tuple[str, ...],
+    repository_path: str,
+    ref: str,
+    expected_head: str,
+    expected_ref: str,
+) -> dict[str, Any]:
+    from flowweave.modules.agent_workspaces.application import workspace
+
+    return workspace.runtime_git_switch(
+        handle,
+        project_root,
+        runtime_root,
+        file_roots,
+        repository_path,
+        ref,
+        expected_head,
+        expected_ref,
+    )
+
+
 def git_sync(
     project_root: Path, runtime_root: str, file_roots: tuple[str, ...], repository_path: str
 ) -> dict[str, Any]:
@@ -372,6 +436,10 @@ __all__ = (
     "git_file_diff",
     "git_log",
     "git_sync",
+    "git_branches",
+    "runtime_git_history",
+    "runtime_git_sync",
+    "runtime_git_switch",
     "git_repository_details",
     "git_repositories",
     "git_working_changes",

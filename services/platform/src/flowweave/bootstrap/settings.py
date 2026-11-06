@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from ipaddress import IPv4Network
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -24,6 +25,11 @@ class Settings(BaseSettings):
     # Explicitly pinned catalog version and trusted endpoint, configured together.
     agent_history_mcp_capability_version_id: str = ""
     agent_history_mcp_url: str = ""
+    # Explicit opt-in for new direct sessions; existing bindings never inherit it.
+    agent_workspace_runtime_protocol_profile: Literal[
+        "OH_FW_V1", "OH_FW_V3", "OH_FW_V4", "OH_FW_V5"
+    ] = "OH_FW_V1"
+    agent_child_gateway_base_url: str = ""
     # Runtime-reachable origin plus deployment prefix of this platform (for example
     # "http://platform.internal:3000/flowweave"). The platform-managed Case MCP
     # versions are installed from it, so no version id is configured by hand.

@@ -172,6 +172,7 @@ def test_agent_conversation_schedule_delivery_creates_a_distinct_native_conversa
                 "credential_ids": (),
                 "conversation_id": run_binding_id,
                 "idempotency_key": f"schedule:{created['id']}:{occurrence.id}",
+                "interactive": False,
             }
         ]
         assert occurrence.binding_id != created["work_directory_id"]

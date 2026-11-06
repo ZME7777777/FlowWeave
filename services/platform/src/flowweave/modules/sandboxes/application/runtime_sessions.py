@@ -529,6 +529,7 @@ def acquire_runtime_replacement_lease(
     owner: str,
     lease_seconds: int,
     takeover_task_id: str | None = None,
+    node_attempt_id: str | None = None,
 ) -> tuple[FlowRunRuntime, RuntimeReplacementLease]:
     """Freeze routing and acquire or take over the durable replacement lease."""
 
@@ -539,7 +540,7 @@ def acquire_runtime_replacement_lease(
         select(FlowRunRuntime)
         .where(
             FlowRunRuntime.flow_run_id == flow_run_id,
-            FlowRunRuntime.node_attempt_id.is_(None),
+            FlowRunRuntime.node_attempt_id == node_attempt_id,
         )
         .with_for_update()
     )

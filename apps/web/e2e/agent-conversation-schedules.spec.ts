@@ -4,7 +4,8 @@ import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test, type Page, type Route } from '@playwright/test';
-import type { CaseBasics, CaseSessionConfig, CaseStage } from '../src/types';
+import type { CaseBasics, CaseSessionConfig, CaseStage, OpenHandsConversationEvent } from '../src/types';
+import { orderOpenHandsConversationEvents } from '../src/components/conversationEvents';
 
 const now = '2026-10-19T00:00:00Z';
 
@@ -139,7 +140,7 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
     if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', files: [], repositories: [], runtime: {}, ide: { gateway: { supported: false } } });
     if (path.endsWith('/model-providers')) return json(route, [{ id: 'provider-1', name: '测试供应商', connection_state: 'CONNECTED', available_for_nodes: true, models: [{ model_name: 'model-1', enabled: true, is_default: true, default_reasoning_effort: 'medium', supported_reasoning_efforts: ['low', 'medium', 'high'] }] }]);
     if (path.endsWith('/website-credentials')) return json(route, [{ id: 'credential-1', name: '测试认证', target_host: 'example.test', target_path: '/', include_subdomains: false, auth_type: 'TOKEN', has_username: false, has_secret: true, row_version: 1, environment_names: { token: 'TEST_TOKEN' }, created_at: now, updated_at: now }]);
-    if (path.endsWith('/capabilities')) return json(route, capabilities);
+    if (path.endsWith('/capabilities') || path.endsWith('/user-configurable-capabilities')) return json(route, capabilities);
     if (path.endsWith('/capability-collections')) return json(route, []);
     if (path.includes('/conversations/') && request.method() === 'GET') {
       const bindingId = path.match(/\/conversations\/([^/]+)/)?.[1];
@@ -155,6 +156,196 @@ async function openWorkspace(page: Page, events: unknown[] = [], includeSecondCo
   await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
   return writes;
 }
+
+for (const running of [false, true]) {
+  test(`unconfirmed ${running ? 'running guidance' : 'idle message'} restores after refresh and reuses its submission identity`, async ({ page }) => {
+    await openWorkspace(page);
+    if (running) {
+      const events = [{ id: 'active-user', event_type: 'MESSAGE', payload: { source: 'user', content: '正在处理的任务', timestamp: now } }];
+      await page.route('**/hydration', route => json(route, { events: { events, next_cursor: null, history_cursor: null }, context: {}, readiness: { ready: false, execution_status: 'running' } }));
+      await page.route('**/input-readiness', route => json(route, { ready: false, execution_status: 'running' }));
+      await page.route('**/events*', route => json(route, { events, next_cursor: null, history_cursor: null }));
+    }
+    await page.goto('/agent/conversations/scheduled-conversation');
+    const input = page.getByRole('textbox', { name: '发送 Agent 消息', exact: true });
+    await expect(input).toBeEnabled();
+    const identities: string[] = [];
+    let release: (() => void) | undefined;
+    await page.route('**/conversations/scheduled-conversation/messages', async route => {
+      identities.push(route.request().headers()['idempotency-key']);
+      if (identities.length === 1) {
+        await new Promise<void>(resolve => { release = resolve; });
+        return route.abort().catch(() => undefined);
+      }
+      return json(route, { error: { code: 'AGENT_MESSAGE_SUBMISSION_EXISTS', message: '此消息已提交，请勿重复发送' } }, 409);
+    });
+    await input.fill('网络波动时保留这条消息');
+    await input.press(running ? 'Alt+Enter' : 'Enter');
+    await expect.poll(() => identities.length).toBe(1);
+    await expect(input).toHaveValue('');
+    // New editing belongs to the next draft and must survive the recovery.
+    await input.fill('后续草稿');
+    await input.blur();
+    await page.reload();
+    release?.();
+    await expect(input).toHaveValue('网络波动时保留这条消息\n\n后续草稿');
+    await expect(page.getByRole('alert')).toContainText('已恢复上次未确认发送的消息');
+    await page.reload();
+    await expect(input).toHaveValue('网络波动时保留这条消息\n\n后续草稿');
+    await input.fill('网络波动时保留这条消息');
+    await input.press(running ? 'Alt+Enter' : 'Enter');
+    await expect.poll(() => identities.length).toBe(2);
+    expect(identities[1]).toBeTruthy();
+    expect(identities[1]).toBe(identities[0]);
+    await expect(input).toHaveValue('网络波动时保留这条消息');
+    await expect(page.getByRole('alert')).toContainText('此消息已提交');
+  });
+}
+
+test('submission recovery restores complete context and isolates another conversation', async ({ page }) => {
+  await openWorkspace(page, [], true);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const key = 'flowweave:agent-conversation-composer-draft:v2:agent-workspace:schedule-workspace:scheduled-conversation';
+  // Seed the same durable snapshot written synchronously before a POST, with
+  // server-authorized file metadata instead of a browser File object.
+  await page.evaluate(({ key }) => localStorage.setItem(key, JSON.stringify({
+    content: '', attachments: [], references: [], workspaceReferences: [], annotations: [],
+    submissions: [{ restored: false, message: {
+      id: 'lost-response', scope: 'scheduled-conversation', content: '带附件和引用的消息', answeredQuestion: '此前的问题',
+      items: [{ filename: 'note.txt', mime_type: 'text/plain', byte_size: 4, path: 'uploads/scheduled-conversation/note.txt' }],
+      references: [{ eventId: 'source-event', sourceBindingId: 'source-binding', content: '引用内容', title: '来源会话' }],
+      workspaceReferences: [{ kind: 'file', path: 'src/main.ts', display_name: 'main.ts' }],
+      annotations: [{ id: 'comment-1', anchor_kind: 'WORKSPACE_FILE_RANGE', anchor: { path: 'src/main.ts' }, comment: '保留评论' }],
+    } }],
+  })), { key });
+  await page.goto('/agent/conversations/scheduled-conversation-2');
+  const input = page.getByRole('textbox', { name: '发送 Agent 消息', exact: true });
+  await expect(input).toHaveValue('');
+  await page.reload();
+  await expect(input).toHaveValue('');
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await expect(input).toHaveValue('带附件和引用的消息');
+  const snapshot = await page.evaluate(key => JSON.parse(localStorage.getItem(key)!), key);
+  expect(snapshot.attachments[0].filename).toBe('note.txt');
+  expect(snapshot.references[0].eventId).toBe('source-event');
+  expect(snapshot.workspaceReferences[0].path).toBe('src/main.ts');
+  expect(snapshot.annotations[0].comment).toBe('保留评论');
+  await page.reload();
+  await expect(input).toHaveValue('带附件和引用的消息');
+  const retried: { id: string; body: Record<string, unknown> }[] = [];
+  await page.route('**/conversations/scheduled-conversation/messages', route => {
+    retried.push({ id: route.request().headers()['idempotency-key'], body: route.request().postDataJSON() });
+    return json(route, { accepted: true, event_id: 'recovered-context-user' }, 202);
+  });
+  await input.press('Enter');
+  await expect.poll(() => retried.length).toBe(1);
+  expect(retried[0].id).toBe('lost-response');
+  expect(retried[0].body.answered_question).toBe('此前的问题');
+  expect(retried[0].body.attachments).toHaveLength(1);
+  expect(retried[0].body.references).toHaveLength(1);
+  expect(retried[0].body.workspace_references).toHaveLength(1);
+  expect(retried[0].body.annotations).toHaveLength(1);
+});
+
+for (const running of [false, true]) {
+  test(`confirmed ${running ? 'running guidance' : 'idle'} submissions clear only their recovery and preserve the next draft`, async ({ page }) => {
+    await openWorkspace(page);
+    if (running) {
+      await page.route('**/hydration', route => json(route, { events: { events: [], next_cursor: null, history_cursor: null }, context: {}, readiness: { ready: false, execution_status: 'running' } }));
+      await page.route('**/input-readiness', route => json(route, { ready: false, execution_status: 'running' }));
+    }
+    await page.goto('/agent/conversations/scheduled-conversation');
+    const input = page.getByRole('textbox', { name: '发送 Agent 消息', exact: true });
+    await expect(input).toBeEnabled();
+    let confirm: (() => void) | undefined;
+    await page.route('**/conversations/scheduled-conversation/messages', async route => {
+      await new Promise<void>(resolve => { confirm = resolve; });
+      return json(route, { accepted: true, cursor: 'confirmed-user', event_id: 'confirmed-user' }, 202);
+    });
+    await input.fill('已正式提交的消息');
+    await input.press(running ? 'Alt+Enter' : 'Enter');
+    await expect.poll(() => Boolean(confirm)).toBe(true);
+    await expect(input).toHaveValue('');
+    await input.fill('下一条消息的草稿');
+    await input.blur();
+    confirm?.();
+    await expect.poll(() => page.evaluate(() => Object.entries(localStorage)
+      .filter(([key]) => key.startsWith('flowweave:agent-conversation-composer-draft:'))
+      .flatMap(([, value]) => JSON.parse(value).submissions ?? []).length)).toBe(0);
+    await page.reload();
+    await expect(input).toHaveValue('下一条消息的草稿');
+  });
+}
+
+test('failed submissions return to the composer immediately and survive refresh', async ({ page }) => {
+  await openWorkspace(page);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const input = page.getByRole('textbox', { name: '发送 Agent 消息', exact: true });
+  await expect(input).toBeEnabled();
+  await page.route('**/conversations/scheduled-conversation/messages', route => route.abort('internetdisconnected'));
+  await input.fill('发送失败也可以恢复');
+  await input.press('Enter');
+  await expect(input).toHaveValue('发送失败也可以恢复');
+  await page.reload();
+  await expect(input).toHaveValue('发送失败也可以恢复');
+});
+
+test('submission recovery storage failure leaves the input intact and prevents dispatch', async ({ page }) => {
+  await openWorkspace(page);
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const input = page.getByRole('textbox', { name: '发送 Agent 消息', exact: true });
+  await expect(input).toBeEnabled();
+  let posts = 0;
+  await page.route('**/conversations/scheduled-conversation/messages', route => { posts += 1; return json(route, { accepted: true, event_id: 'unexpected' }); });
+  await page.evaluate(() => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function(key, value) {
+      if (key.startsWith('flowweave:agent-conversation-composer-draft:') && JSON.parse(value).submissions?.length) {
+        throw new DOMException('Quota exceeded', 'QuotaExceededError');
+      }
+      return original.call(this, key, value);
+    };
+  });
+  await input.fill('本地保存失败时保留输入');
+  await input.press('Enter');
+  await expect(page.getByRole('alert')).toContainText('浏览器暂时无法保存消息');
+  await expect(input).toHaveValue('本地保存失败时保留输入');
+  expect(posts).toBe(0);
+});
+
+test('first submission persists its bootstrap identity before a refresh interrupts the request', async ({ page }) => {
+  await openWorkspace(page);
+  const input = page.getByRole('textbox', { name: '发送 Agent 消息', exact: true });
+  await expect(input).toBeEnabled();
+  const identities: string[] = [];
+  let release: (() => void) | undefined;
+  await page.route('**/agent-workspaces/schedule-workspace/conversations', async route => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    const body = route.request().postDataJSON();
+    identities.push(body.conversation_id);
+    if (identities.length === 1) {
+      await new Promise<void>(resolve => { release = resolve; });
+      return route.abort().catch(() => undefined);
+    }
+    return json(route, { conversation: {
+      id: body.conversation_id, display_title: '恢复的首条消息', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+      streaming_callback_ready: true, write_available: true, execution_status: 'idle', created_at: now, updated_at: now,
+    }, accepted: true, event_id: 'bootstrap-recovered-user', cursor: 'bootstrap-recovered-user' }, 201);
+  });
+  await input.fill('首条消息提交中刷新');
+  await input.press('Enter');
+  await expect.poll(() => identities.length).toBe(1);
+  await expect(input).toHaveValue('');
+  expect(await page.evaluate(() => sessionStorage.getItem('flowweave.agent.bootstrap-recovery.v1'))).not.toBeNull();
+  await page.reload();
+  release?.();
+  await expect.poll(() => identities.length).toBe(2);
+  expect(identities[1]).toBeTruthy();
+  expect(identities[1]).toBe(identities[0]);
+  await expect(page).toHaveURL(new RegExp(`/agent/conversations/${identities[0]}$`));
+  await expect(input).toHaveValue('');
+  expect(await page.evaluate(() => sessionStorage.getItem('flowweave.agent.bootstrap-recovery.v1'))).toBeNull();
+});
 
 
 test('a reconnecting conversation can be paused manually', async ({ page }) => {
@@ -243,6 +434,48 @@ test('fresh navigation opens case space and creates a scenario after the branch 
   await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
   await expect(page.getByRole('navigation', { name: 'Agent 工作区导航' })).toBeVisible();
 });
+
+for (const delayedCatalog of [false, true]) {
+  test(`hidden case conversation cannot redirect the AI workbench (${delayedCatalog ? 'late catalog' : 'loaded catalog'})`, async ({ page }) => {
+    await openWorkspace(page);
+    await page.clock.install();
+    const item = {
+      id: 'navigation-case', name: '导航场景', objective: '验证页面切换', state: 'ACTIVE', row_version: 1,
+      control_conversation_binding_id: 'case-binding', control_work_directory_id: 'case-directory',
+      stages: [], tasks: [], materials: [], control_plans: [], decision_proposals: [], control_rounds: [],
+      created_at: now, updated_at: now,
+    };
+    await page.route('**/api/v1/cases**', route => json(route, new URL(route.request().url()).pathname.endsWith('/cases') ? [item] : item));
+    const conversation = {
+      id: 'case-binding', display_title: '场景协调会话', title_state: 'MANUAL', lifecycle: 'ACTIVE',
+      work_directory_id: 'case-directory', write_available: true, created_at: now, updated_at: now,
+    };
+    let releaseCatalog: (() => void) | undefined;
+    const catalogGate = new Promise<void>(resolve => { releaseCatalog = resolve; });
+    let catalogStarted = false;
+    let catalogFinished = false;
+    await page.route('**/api/v1/agent-workspaces/schedule-workspace/conversations?**', async route => {
+      if (new URL(route.request().url()).searchParams.get('work_directory_id') !== 'case-directory') return route.fallback();
+      catalogStarted = true;
+      if (delayedCatalog) await catalogGate;
+      await json(route, { items: [conversation], next_cursor: null });
+      catalogFinished = true;
+    });
+    await page.route('**/api/v1/agent-workspaces/schedule-workspace/conversations/case-binding', route => json(route, conversation));
+    await page.goto('/cases/navigation-case/conversations/case-binding');
+    await expect.poll(() => catalogStarted).toBe(true);
+    await expect(page.locator('.scenario-conversation').getByLabel('发送 Agent 消息')).toBeVisible();
+    if (!delayedCatalog) await expect(page.locator('.scenario-conversation').getByRole('button', { name: '场景协调会话', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'AI 工作台', exact: true }).click();
+    releaseCatalog?.();
+    await expect.poll(() => catalogFinished).toBe(true);
+    await page.clock.fastForward(16_000);
+    await expect(page).toHaveURL(/\/agent(?:\?.*)?$/);
+    await expect(page.getByRole('button', { name: 'AI 工作台', exact: true })).toHaveClass(/active/);
+    await expect(page.getByRole('navigation', { name: 'Agent 工作区导航' })).toBeVisible();
+    await expect(page.locator('[data-page-tab="nodes"]')).toHaveCount(0);
+  });
+}
 
 test('case detail saves materials workspace ordered run cards and model capabilities', async ({ page }) => {
   await openWorkspace(page);
@@ -1896,7 +2129,7 @@ test('capability configuration toggles visible selections and filters to selecte
   await expect(selectVisible).toHaveAttribute('aria-pressed','false');
   await expect(selectVisible.locator('svg')).toHaveClass(/lucide-square$/);
   await selectVisible.click();
-  await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(3);
+  await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(2);
   await expect(dialog.getByRole('button', { name: '取消选择筛选结果', exact: true })).toBeVisible();
   await expect(dialog.getByRole('button', { name: '取消选择筛选结果', exact: true })).toHaveAttribute('aria-pressed','true');
   await expect(dialog.getByRole('button', { name: '取消选择筛选结果', exact: true }).locator('svg')).toHaveClass(/lucide-square-check/);
@@ -1907,9 +2140,8 @@ test('capability configuration toggles visible selections and filters to selecte
   await expect(dialog.getByText('周报技能', { exact: true })).toBeVisible();
 
   await dialog.getByRole('button', { name: '取消选择筛选结果', exact: true }).click();
-  await expect(dialog.getByRole('button', { name: '会话历史查询', exact: true })).toBeDisabled();
-  await expect(dialog.getByRole('button', { name: '会话历史查询', exact: true })).toContainText('read_referenced_conversation');
-  await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(1);
+  await expect(dialog.getByRole('button', { name: '会话历史查询', exact: true })).toHaveCount(0);
+  await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(0);
   await expect(dialog.locator('.agent-capability-select-visible')).toHaveAttribute('aria-pressed','false');
   await expect(dialog.locator('.agent-capability-select-visible svg')).toHaveClass(/lucide-square$/);
   await expect(dialog.getByRole('button', { name: '显示全部能力', exact: true })).toBeVisible();
@@ -1998,11 +2230,11 @@ test('credential select all excludes synced credentials and disables itself when
   const dialog = page.getByRole('dialog', { name: '会话配置' });
   await dialog.getByRole('tab', { name: '认证', exact: true }).click();
   await expect(dialog.getByRole('button', { name: '同步认证0（已同步）', exact: true })).toBeDisabled();
-  await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(2);
+  await expect(dialog.locator('.agent-capability-list > button.selected:not(.locked)')).toHaveCount(2);
   await dialog.getByRole('button', { name: '全选认证', exact: true }).click();
-  await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(3);
+  await expect(dialog.locator('.agent-capability-list > button.selected:not(.locked)')).toHaveCount(3);
   await dialog.getByRole('button', { name: '取消全选认证', exact: true }).click();
-  await expect(dialog.locator('.agent-capability-list > button.selected')).toHaveCount(0);
+  await expect(dialog.locator('.agent-capability-list > button.selected:not(.locked)')).toHaveCount(0);
   await dialog.getByRole('button', { name: '全选认证', exact: true }).click();
   await dialog.getByRole('button', { name: '同步认证', exact: true }).click();
   await expect(dialog.getByRole('button', { name: '全选认证', exact: true })).toBeDisabled();
@@ -2697,6 +2929,52 @@ test('fullscreen conversation tabs cap long titles and shrink with available spa
   await expect.poll(() => tab.evaluate(element => element.getBoundingClientRect().width)).toBeLessThan(maximumWidth);
 });
 
+for (const position of ['latest', 'history'] as const) {
+  test(`fullscreen files restore the conversation reading position (${position})`, async ({ page }) => {
+    const reply = Array.from({ length: 90 }, (_, index) => `**段落 ${index + 1}** ${'会话内容用于验证全屏文件切换后的滚动恢复。'.repeat(8)}`).join('\n\n');
+    await openWorkspace(page, [
+      { id: 'fullscreen-user', event_type: 'MESSAGE', payload: { source: 'user', parent_id: '__root__', content: '查看长回复', timestamp: now } },
+      { id: 'fullscreen-agent', event_type: 'MESSAGE', payload: { source: 'agent', parent_id: 'fullscreen-user', content: reply, timestamp: now } },
+    ]);
+    await page.goto('/agent/conversations/scheduled-conversation');
+    const surface = page.locator('.conversation-surface');
+    const gap = () => surface.evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight);
+    await expect(surface.locator('.conversation-message.assistant')).toContainText('段落 90');
+    await settleWorkspaceLayout(page);
+    await surface.evaluate(element => { element.scrollTop = element.scrollHeight; });
+    await expect.poll(gap).toBeLessThanOrEqual(2);
+    if (position === 'history') {
+      await surface.hover();
+      await page.mouse.wheel(0, -800);
+      await expect.poll(gap).toBeGreaterThan(600);
+    }
+    await settleWorkspaceLayout(page);
+    const readingTop = await surface.evaluate(element => element.scrollTop);
+    await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+    await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: '文件', exact: true }).click();
+    await page.getByRole('button', { name: '全屏查看工作区工具', exact: true }).click();
+    await expect(surface).toBeHidden();
+    const tabs = page.getByRole('navigation', { name: '工作区页签' });
+    await tabs.getByRole('button', { name: '日报会话', exact: true }).click();
+    await expect(surface).toBeVisible();
+    await settleWorkspaceLayout(page);
+    if (position === 'latest') {
+      await expect.poll(gap).toBeLessThanOrEqual(2);
+      await expect(page.getByRole('button', { name: '跳转到最新回复', exact: true })).toBeHidden();
+    } else {
+      await expect.poll(() => surface.evaluate(element => element.scrollTop)).toBe(readingTop);
+    }
+    await tabs.getByRole('button', { name: '文件', exact: true }).click();
+    await expect(surface).toBeHidden();
+    await page.getByRole('button', { name: '退出全屏', exact: true }).click();
+    await expect(surface).toBeVisible();
+    await settleWorkspaceLayout(page);
+    if (position === 'latest') await expect.poll(gap).toBeLessThanOrEqual(2);
+    else await expect.poll(() => surface.evaluate(element => element.scrollTop)).toBe(readingTop);
+    await surface.screenshot({ path: test.info().outputPath(`restored-${position}.png`) });
+  });
+}
+
 test('fullscreen tools occupy the entire workbench region and restore the conversation without extra grid rows', async ({page}) => {
   await openWorkspace(page);
   await page.goto('/agent/conversations/scheduled-conversation');
@@ -2747,6 +3025,7 @@ test('fullscreen tools occupy the entire workbench region and restore the conver
   const tabs=page.getByRole('navigation',{name:'工作区页签'});
   await tabs.getByRole('button',{name:'日报会话',exact:true}).click();
   await expect(main).toBeVisible();
+  await settleWorkspaceLayout(page);
   await expect(composer).toHaveValue('全屏切换时保留草稿');
   await expect.poll(() => page.evaluate(() => {
     const main=document.querySelector('.agent-workbench-main')!.getBoundingClientRect();
@@ -2756,6 +3035,7 @@ test('fullscreen tools occupy the entire workbench region and restore the conver
   const contentWidth=await page.locator('.agent-workbench-content').evaluate(element=>element.getBoundingClientRect().width);
   await page.getByRole('button',{name:'显示悬浮信息卡',exact:true}).click();
   await expect(page.locator('.agent-workspace-summary')).toBeVisible();
+  await settleWorkspaceLayout(page);
   expect(await page.locator('.agent-workbench-content').evaluate(element=>element.getBoundingClientRect().width)).toBe(contentWidth);
   await expect(page.locator('.agent-workspace-summary').getByText('来源', { exact: true })).toBeInViewport();
   await expect(page.locator('.agent-workspace-tab-launcher.active')).toBeHidden();
@@ -3122,7 +3402,7 @@ test('tool boundaries follow available space and small boundary movements keep t
   await expect.poll(async () => Math.abs((await splitGeometry(page)).width - afterRail.available * .75)).toBeLessThan(1);
 });
 
-test('hidden preview remains hidden on same-direction release and capture or focus ending', async ({ page }) => {
+test('tool drag settles hidden on release and capture or focus ending', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1080 });
   await openWorkspace(page);
   await page.evaluate(() => localStorage.setItem('flowweave:environment-card-open', 'false'));
@@ -3132,7 +3412,7 @@ test('hidden preview remains hidden on same-direction release and capture or foc
   const shell = page.locator('.agent-workspace-tool-shell');
   const resizer = page.getByRole('separator', { name: '调整工作区工具宽度' });
   for (const ending of ['pointerup', 'blur', 'lostpointercapture']) {
-    await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+    await page.locator('.agent-workspace-new-tab-trigger').click();
     await settleWorkspaceLayout(page);
     const { available, width: initialWidth } = await splitGeometry(page);
     const delta = initialWidth - available * .18;
@@ -3141,10 +3421,13 @@ test('hidden preview remains hidden on same-direction release and capture or foc
     await page.mouse.move(x, y);
     await page.mouse.down();
     await page.mouse.move(x + delta, y, { steps: 12 });
-    await expect(shell).toBeHidden();
+    await expect(shell).toBeVisible();
+    await expect.poll(async () => (await splitGeometry(page)).width).toBeLessThan(available * .2);
     await page.mouse.move(x + delta + available * .02, y, { steps: 8 });
     await page.mouse.move(x + delta + available * .02 - 2, y);
-    await expect(shell).toBeHidden();
+    await expect(page.locator('body')).toHaveAttribute('data-agent-workspace-snap', 'hidden');
+    await expect(shell).toBeVisible();
+    await expect.poll(async () => (await splitGeometry(page)).width).toBeLessThan(available * .2);
     if (ending === 'blur') await page.evaluate(() => window.dispatchEvent(new Event('blur')));
     if (ending === 'lostpointercapture') await resizer.evaluate(element => element.dispatchEvent(new PointerEvent('lostpointercapture', { pointerId: 1 })));
     await page.mouse.up();
@@ -3156,7 +3439,7 @@ test('hidden preview remains hidden on same-direction release and capture or foc
   }
 });
 
-test('held tool drags require deliberate reversal and keep iframe capture across both modes', async ({ page }) => {
+test('held tool drags follow the pointer and keep iframe capture across both bounds', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1080 });
   await openWorkspace(page);
   await page.route('**/browser/**', route => route.fulfill({ contentType: 'text/html; charset=utf-8', body: '<html><body style="margin:0;height:100vh">可拖过的网页</body></html>' }));
@@ -3165,7 +3448,7 @@ test('held tool drags require deliberate reversal and keep iframe capture across
   await composer.fill('两端拖回继续编辑');
   await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
   const address = page.getByRole('textbox', { name: '网页地址', exact: true });
-  await address.fill('https://resize-frame.test/');
+  await address.fill('http://localhost:3000/');
   await address.press('Enter');
   await expect(page.locator('.agent-workspace-browser-frame').contentFrame().getByText('可拖过的网页')).toBeVisible();
   const drawer = page.locator('.agent-workspace-drawer');
@@ -3180,11 +3463,13 @@ test('held tool drags require deliberate reversal and keep iframe capture across
     await page.mouse.move(x, y);
     await page.mouse.down();
     await page.mouse.move(x + direction * available * .07, y, { steps: 12 });
-    if (mode === 'fullscreen') await expect(drawer).toHaveClass(/fullscreen/);
-    else await expect(shell).toBeHidden();
+    await expect(drawer).not.toHaveClass(/fullscreen/);
+    await expect(shell).toBeVisible();
+    await expect(page.locator('body')).toHaveAttribute('data-agent-workspace-snap', mode);
     await page.mouse.move(x + direction * available * .06, y, { steps: 6 });
-    if (mode === 'fullscreen') await expect(drawer).toHaveClass(/fullscreen/);
-    else await expect(shell).toBeHidden();
+    await expect(drawer).not.toHaveClass(/fullscreen/);
+    await expect(shell).toBeVisible();
+    await expect(page.locator('body')).toHaveAttribute('data-agent-workspace-snap', mode);
     await page.mouse.move(x - direction * available * .05, y, { steps: 12 });
     await expect(drawer).not.toHaveClass(/fullscreen/);
     await expect(shell).toBeVisible();
@@ -3997,8 +4282,7 @@ test('workspace sidebar toggle and inline capability trigger preserve the active
   await input.fill('请使用@文件 后续内容');
   await expect(page.getByRole('listbox', { name: '选择引用类型' })).toHaveCount(0);
   await input.fill('请使用 @文件 后续内容');
-  await input.press('Home');
-  for (let index = 0; index < 7; index += 1) await input.press('ArrowRight');
+  for (let index = 0; index < ' 后续内容'.length; index += 1) await input.press('ArrowLeft');
   await expect(page.getByRole('listbox', { name: '选择引用类型' })).toBeVisible();
   await input.press('Escape');
   await expect(input).toHaveValue('请使用  后续内容');
@@ -4074,7 +4358,7 @@ test('workspace action menu defaults to all credentials and persists session con
   await inherited.getByRole('tab', { name: '认证', exact: true }).click();
   await expect(inherited.getByRole('button', { name: /测试认证/, exact: false })).toHaveAttribute('aria-pressed', 'true');
   await inherited.getByRole('button', { name: '取消全选认证', exact: true }).click();
-  await expect(inherited.getByText('已选择 0 项认证', { exact: true })).toBeVisible();
+  await expect(inherited.locator('.agent-capability-list > button.selected')).toHaveCount(0);
 });
 
 test('named workspaces keep session configuration separate from root defaults', async ({ page }) => {
@@ -4682,7 +4966,7 @@ for (const mode of ['success', 'failure', 'missing-old-catalog'] as const) {
       streaming_callback_ready: true, write_available: true, created_at: now, updated_at: now,
       capabilities: [{ id: active, capability_type: 'SKILL', capability_key: old.capability_key, digest: active }],
     });
-    await page.route('**/api/v1/capabilities', route => json(route, mode === 'missing-old-catalog' ? [latest] : [old, latest]));
+    await page.route('**/api/v1/user-configurable-capabilities', route => json(route, mode === 'missing-old-catalog' ? [latest] : [old, latest]));
     await page.route('**/api/v1/capability-collections', route => json(route, [{ id: 'daily-collection', name: '日报组合', members: [latest] }]));
     await page.route('**/api/v1/agent-workspaces/schedule-workspace/conversations/scheduled-conversation', route => json(route, conversation()));
     await page.route('**/capabilities/batch', route => {
@@ -4700,7 +4984,10 @@ for (const mode of ['success', 'failure', 'missing-old-catalog'] as const) {
     await expect(row).toHaveCount(1);
     await expect(row.getByText('有新版本', { exact: true })).toBeVisible();
     await dialog.getByRole('button', { name: '只看已选', exact: true }).click();
-    await dialog.getByRole('button', { name: '日报组合', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Skill 组合筛选', exact: true }).click();
+    const collections = page.getByRole('dialog', { name: '筛选 Skill 组合', exact: true });
+    await collections.getByRole('checkbox', { name: '日报组合', exact: true }).click();
+    await collections.getByRole('button', { name: '完成', exact: true }).click();
     await expect(row).toBeVisible();
     await row.getByRole('button', { name: '同步 日报技能 到 v2', exact: true }).click();
     await expect(row).toHaveCount(1);
@@ -4727,7 +5014,8 @@ for (const mode of ['success', 'failure', 'missing-old-catalog'] as const) {
     expect(registrations).toEqual(Array.from({ length: mode === 'failure' ? 2 : 1 }, () => ['daily-v2']));
     await page.getByRole('button', { name: '会话配置', exact: true }).click();
     await expect(row).toHaveCount(1);
-    await expect(row.locator('b')).toHaveText('日报技能 · v2');
+    await expect(row.locator('b')).toHaveText('日报技能');
+    await expect(row.locator('.agent-capability-version-badge')).toHaveText('v2');
     await expect(row.getByText('有新版本', { exact: true })).toHaveCount(0);
   });
 }
@@ -5192,4 +5480,339 @@ test('leaving an invalid Mermaid while its render is queued leaves no temporary 
   await expect(page.locator('body > [data-mermaid-render-container]')).toHaveCount(0);
   await expect(page.locator('body > [id^="dflowweave-mermaid"]')).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight)).toBe(true);
+});
+
+function longConversationTurns(count: number) {
+  return Array.from({ length: count }, (_, index) => {
+    const timestamp = new Date(Date.parse(now) + index * 60_000).toISOString();
+    return [
+      { id: `window-user-${index}`, event_type: 'MESSAGE', payload: { source: 'user', parent_id: index ? `window-reply-${index - 1}` : '__root__', content: `历史问题 ${index}`, timestamp } },
+      { id: `window-thought-${index}`, event_type: 'THOUGHT', payload: { parent_id: `window-user-${index}`, content: `正在核对第 ${index} 项`, timestamp } },
+      { id: `window-reply-${index}`, event_type: 'MESSAGE', payload: { source: 'agent', parent_id: `window-thought-${index}`, content: `历史答复 ${index}\n\n${'这是一段包含 **格式** 与 `代码` 的历史内容。\n\n'.repeat(6)}\n\n|字段|结果|\n|---|---|\n|序号|${index}|`, final_reply: true, timestamp } },
+    ];
+  });
+}
+
+test('long conversation windows every revealed history page and restores search and reading anchors', async ({ page }, testInfo) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  const turns = longConversationTurns(180);
+  const pageSize = 15;
+  const latest = { events: turns.slice(-pageSize).flat(), next_cursor: 'window-reply-179', history_cursor: 'older-165', result: { status: 'COMPLETED' } };
+  await openWorkspace(page, [], true);
+  const historyReads: string[] = [];
+  await page.route('**/conversations/*/hydration*', route => json(route, {
+    events: latest, context: { used_tokens: 1000, window_tokens: 128000 }, readiness: { ready: true, execution_status: 'idle' },
+  }));
+  await page.route('**/conversations/*/events*', route => {
+    const cursor = new URL(route.request().url()).searchParams.get('history_cursor');
+    if (!cursor) return json(route, latest);
+    historyReads.push(cursor);
+    const end = Number(cursor.replace('older-', ''));
+    const start = Math.max(0, end - pageSize);
+    return json(route, { events: turns.slice(start, end).flat(), next_cursor: null, history_cursor: start ? `older-${start}` : null });
+  });
+  await page.goto('/agent/conversations/scheduled-conversation');
+  const surface = page.locator('.agent-workbench-main .conversation-surface');
+  await expect(surface.locator('[data-conversation-event-id="window-reply-179"]')).toBeVisible();
+  await expect.poll(() => historyReads.length, { timeout: 30000 }).toBe(11);
+  await surface.hover();
+  await page.mouse.wheel(0, -300);
+  for (let pageNumber = 0; pageNumber < 11; pageNumber += 1) {
+    const before = await surface.locator('[data-conversation-turn]').count();
+    if (before === 180) break;
+    await surface.evaluate(element => { element.scrollTop = 0; element.dispatchEvent(new Event('scroll')); });
+    await expect.poll(() => surface.locator('[data-conversation-turn]').count()).toBeGreaterThan(before);
+  }
+  await expect(surface.locator('[data-conversation-turn]')).toHaveCount(180);
+  await expect.poll(() => surface.locator('[data-virtualized="true"]').count()).toBeGreaterThan(160);
+  const before = await surface.evaluate(element => ({ nodes: element.querySelectorAll('*').length, height: element.scrollHeight }));
+  await surface.evaluate(element => { element.scrollTop = element.scrollHeight * 0.4; });
+  await expect.poll(() => surface.locator('[data-virtualized="true"]').count()).toBeGreaterThan(160);
+  await page.waitForTimeout(300);
+  const anchor = await surface.evaluate(element => {
+    const top = element.getBoundingClientRect().top;
+    const row = [...element.querySelectorAll<HTMLElement>('[data-conversation-event-id]')].find(item => item.getBoundingClientRect().bottom > top);
+    return { id: row?.dataset.conversationEventId, offset: row ? row.getBoundingClientRect().top - top : 0, scrollTop: element.scrollTop };
+  });
+  await page.waitForTimeout(500);
+  expect(Math.abs(await surface.evaluate(element => element.scrollTop) - anchor.scrollTop)).toBeLessThan(2);
+  const input = page.getByLabel('搜索当前会话');
+  await input.fill('历史答复 120');
+  await input.press('Enter');
+  await expect(surface.locator('[data-conversation-event-id="window-reply-120"]')).toBeInViewport();
+  await expect(page.locator('.conversation-search-highlights i.is-active')).toHaveCount(1);
+  await input.press('Escape');
+  const process = surface.locator('[data-conversation-turn="window-user-120"]');
+  await process.getByLabel('展开工作过程', { exact: true }).click();
+  await expect(process.locator('[data-conversation-event-id="window-thought-120"]')).toBeVisible();
+  await page.getByRole('button', { name: '跳转到最新回复', exact: true }).click();
+  await expect(surface.locator('[data-conversation-event-id="window-reply-179"]')).toBeInViewport();
+  await expect.poll(() => process.getAttribute('data-virtualized')).toBe('true');
+  await input.fill('历史答复 120');
+  await input.press('Enter');
+  await expect(process.locator('[data-conversation-event-id="window-thought-120"]')).toBeVisible();
+  await input.press('Escape');
+  await page.waitForTimeout(300);
+  const position = await surface.evaluate(element => element.scrollTop);
+  await page.getByRole('button', { name: '周报会话', exact: true }).click();
+  await page.getByRole('button', { name: '日报会话', exact: true }).click();
+  await expect.poll(async () => Math.abs(await surface.evaluate(element => element.scrollTop) - position)).toBeLessThan(3);
+  await expect(process.locator('[data-conversation-event-id="window-thought-120"]')).toBeVisible();
+  await page.setViewportSize({ width: 1024, height: 800 });
+  await input.fill('历史答复 120');
+  await input.press('Enter');
+  await expect(surface.locator('[data-conversation-event-id="window-reply-120"]')).toBeInViewport();
+  const metrics = await surface.evaluate(element => ({ nodes: element.querySelectorAll('*').length, height: element.scrollHeight, mountedTurns: element.querySelectorAll('[data-conversation-turn]:not([data-virtualized])').length }));
+  await testInfo.attach('long-conversation-metrics', { body: JSON.stringify({ turns: 180, events: 540, historyPages: historyReads.length, before, after: metrics }), contentType: 'application/json' });
+  console.log('Long conversation metrics', JSON.stringify(metrics));
+  expect(metrics.nodes).toBeLessThan(2000);
+  expect(metrics.mountedTurns).toBeLessThan(20);
+  expect(errors).toEqual([]);
+  await page.screenshot({ path: '../../.tmp/long-conversation/history-window.png' });
+});
+
+
+test('long formal event chains keep parent order without exhausting the browser stack', () => {
+  const events: OpenHandsConversationEvent[] = Array.from({ length: 12000 }, (_, index) => ({
+    id: `deep-${index}`, event_type: 'THOUGHT',
+    payload: { parent_id: index ? `deep-${index - 1}` : '__root__', content: '正式事件' },
+  }));
+  const ordered = orderOpenHandsConversationEvents([...events].reverse());
+  expect(ordered.map(event => event.id)).toEqual(events.map(event => event.id));
+  const cycle = events.slice(0, 3).map((event, index) => ({ ...event, payload: { ...event.payload, parent_id: `deep-${(index + 1) % 3}` } }));
+  expect(new Set(orderOpenHandsConversationEvents(cycle).map(event => event.id)).size).toBe(3);
+});
+
+for (const scenario of ['local', 'remote', 'conflict'] as const) {
+  test(`Git branch menu switches and refreshes repository state (${scenario})`, async ({ page }) => {
+    await openWorkspace(page);
+    let branch = 'main';
+    let switched = false;
+    const repository = () => ({ path: '/runtime/workspace/project', branch, head: 'a'.repeat(40), upstream: `origin/${branch}`, ahead: 0, behind: 0, remote_status: 'verified' });
+    const writes: Record<string, unknown>[] = [];
+    await page.route('**/workspace?**', route => json(route, {
+      root: '/runtime/workspace/project', working_directory: '/runtime/workspace/project',
+      scope: { kind: 'ROOT', display_name: '根工作区' }, files: [], repositories: [repository()], runtime: {}, ide: { gateway: { supported: false } },
+    }));
+    await page.route('**/workspace/directory**', route => json(route, {
+      parent_path: '/runtime/workspace/project', entries: [{ path: `/runtime/workspace/project/${switched ? 'after-switch.txt' : 'before-switch.txt'}`, kind: 'file', size: 5 }], next_cursor: null,
+    }));
+    await page.route('**/workspace/git/repositories?**', route => json(route, { repositories: [repository()] }));
+    await page.route('**/workspace/git/log?**', route => json(route, {
+      repository: repository(), commits: [{ id: 'a'.repeat(40), short_id: 'aaaaaaa', author: 'Test', date: now, subject: switched ? '目标分支提交' : '原分支提交', local_only: false }],
+    }));
+    await page.route('**/workspace/git/changes?**', route => json(route, { repository: repository(), staged: [], unstaged: [] }));
+    await page.route('**/workspace/git/branches?**', route => json(route, {
+      repository: repository(), branches: [
+        { ref: 'refs/heads/main', name: 'main', remote: false },
+        { ref: 'refs/heads/feature/local', name: 'feature/local', remote: false },
+        { ref: 'refs/remotes/origin/feature/remote', name: 'origin/feature/remote', remote: true },
+      ],
+    }));
+    await page.route('**/workspace/git/switch?**', route => {
+      writes.push(route.request().postDataJSON());
+      if (scenario === 'conflict') return json(route, { error: { code: 'AGENT_WORKSPACE_GIT_SWITCH_CONFLICT', message: '无法切换分支，请先处理未提交文件' } }, 409);
+      branch = scenario === 'remote' ? 'feature/remote' : 'feature/local';
+      switched = true;
+      return json(route, repository());
+    });
+    await page.goto('/agent/conversations/scheduled-conversation');
+    await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+    await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: 'Git 历史', exact: true }).click();
+    const sidebar = page.getByRole('complementary', { name: 'Git', exact: true });
+    const trigger = sidebar.getByRole('button', { name: '切换 Git 分支', exact: true });
+    await expect(trigger).toBeEnabled();
+    await expect(trigger).toContainText('main');
+    await expect(page.getByRole('tree', { name: '工作区目录树' })).toContainText('before-switch.txt');
+    await trigger.focus();
+    await page.keyboard.press('ArrowDown');
+    await expect(page.getByRole('listbox', { name: '切换 Git 分支' })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('listbox', { name: '切换 Git 分支' })).toHaveCount(0);
+    await trigger.click();
+    await page.getByRole('listbox', { name: '切换 Git 分支' }).screenshot({ path: test.info().outputPath('branch-menu.png') });
+    const optionName = scenario === 'remote' ? '远程 · origin/feature/remote' : 'feature/local';
+    await page.getByRole('option', { name: optionName, exact: true }).click();
+    await expect.poll(() => writes.length).toBe(1);
+    expect(writes[0]).toEqual({ ref: scenario === 'remote' ? 'refs/remotes/origin/feature/remote' : 'refs/heads/feature/local', expected_head: 'a'.repeat(40), expected_ref: 'refs/heads/main' });
+    if (scenario === 'conflict') {
+      await expect(sidebar.getByRole('alert')).toContainText('请先处理未提交文件');
+      await expect(trigger).toContainText('main');
+      await expect(sidebar.getByText('原分支提交', { exact: true })).toBeVisible();
+    } else {
+      await expect(trigger).toContainText(branch);
+      await expect(sidebar.getByText('目标分支提交', { exact: true })).toBeVisible();
+      await expect(sidebar.getByText('原分支提交', { exact: true })).toHaveCount(0);
+      await expect(page.getByRole('tree', { name: '工作区目录树' })).toContainText('after-switch.txt');
+      await expect(page.getByRole('tree', { name: '工作区目录树' })).not.toContainText('before-switch.txt');
+    }
+    await trigger.click();
+    await page.getByRole('navigation', { name: '工作区页签' }).getByRole('button', { name: '文件', exact: true }).click();
+    await expect(page.getByRole('listbox', { name: '切换 Git 分支' })).toHaveCount(0);
+    await sidebar.screenshot({ path: test.info().outputPath(`git-branch-${scenario}.png`) });
+  });
+}
+
+for (const remoteStatus of ['verified', 'unverified'] as const) {
+  test(`Git only marks unpushed commits after checking the live remote (${remoteStatus})`, async ({ page }) => {
+    await openWorkspace(page);
+    const repository = { path: '/runtime/workspace/project', branch: 'main', head: 'a'.repeat(40), upstream: 'origin/main', ahead: 2, behind: 0, remote_status: remoteStatus };
+    await page.route('**/workspace?**', route => json(route, {
+      root: repository.path, working_directory: repository.path,
+      scope: { kind: 'ROOT', display_name: '根工作区' }, files: [], repositories: [repository], runtime: {}, ide: { gateway: { supported: false } },
+    }));
+    await page.route('**/workspace/git/repositories?**', route => json(route, { repositories: [repository] }));
+    await page.route('**/workspace/git/branches?**', route => json(route, { repository, branches: [{ ref: 'refs/heads/main', name: 'main', remote: false }] }));
+    let refreshed = false;
+    await page.route('**/workspace/git/sync?**', route => {
+      refreshed = true;
+      repository.remote_status = 'verified';
+      repository.ahead = 0;
+      return json(route, repository);
+    });
+    await page.route('**/workspace/git/log?**', route => json(route, {
+      repository, commits: [{ id: 'a'.repeat(40), short_id: 'aaaaaaa', author: 'Test', date: now, subject: '已存在的提交', local_only: !refreshed }],
+    }));
+    await page.goto('/agent/conversations/scheduled-conversation');
+    await page.getByRole('button', { name: '新建工作区页签', exact: true }).first().click();
+    await page.locator('.agent-workspace-tab-launcher.active').getByRole('button', { name: 'Git 历史', exact: true }).click();
+    const sidebar = page.getByRole('complementary', { name: 'Git', exact: true });
+    await expect(sidebar.getByText('已存在的提交', { exact: true })).toBeVisible();
+    if (remoteStatus === 'unverified') {
+      await expect(sidebar.getByRole('region', { name: '分支同步状态' })).toContainText('远端状态待确认');
+      await expect(sidebar.getByText('待推送', { exact: true })).toHaveCount(0);
+      await expect(sidebar.getByRole('button', { name: '仅看待推送' })).toHaveCount(0);
+      await sidebar.getByRole('button', { name: '同步远端 Git 状态', exact: true }).click();
+      await expect(sidebar.getByRole('region', { name: '分支同步状态' })).toContainText('已与远端同步');
+      await expect(sidebar.getByText('待推送', { exact: true })).toHaveCount(0);
+    } else {
+      await expect(sidebar.getByRole('region', { name: '分支同步状态' })).toContainText('2 个提交待推送');
+      await expect(sidebar.getByText('待推送', { exact: true })).toHaveCount(1);
+    }
+  });
+}
+
+for (const host of ['workspace', 'schedules', 'node'] as const) {
+  test(`child main route returns to its authorized parent without opening a child pane: ${host}`, async ({ page }) => {
+    await openWorkspace(page);
+    const childId = 'hidden-child';
+    const parentId = 'scheduled-conversation';
+    const nodeBase = '/api/v1/flow-runs/child-run/node-attempts/child-attempt/agent-sessions';
+    const routeBase = host === 'node'
+      ? '/flow-runs/child-run/nodes/child-node/attempts/child-attempt/agent-sessions'
+      : host === 'schedules' ? '/agent/schedules/conversations' : '/agent/conversations';
+    const forbiddenRequests: string[] = [];
+    await page.route('**/api/v1/**', async route => {
+      const pathname = new URL(route.request().url()).pathname;
+      const childSuffix = host === 'node' ? `${nodeBase}/${childId}` : `/conversations/${childId}`;
+      if (pathname.endsWith(childSuffix)) return json(route, { error: {
+        code: 'AGENT_CHILD_REQUIRES_PARENT', message: '请从父会话查看子会话',
+        details: { binding_id: childId, parent_binding_id: parentId },
+      } }, 409);
+      if (pathname.includes(childSuffix + '/') || (route.request().method() !== 'GET' && pathname.includes(childId))) {
+        forbiddenRequests.push(pathname);
+        return json(route, { error: { code: 'AGENT_CONVERSATION_NOT_FOUND', message: '不可访问' } }, 404);
+      }
+      if (!pathname.startsWith(nodeBase)) return route.fallback();
+      const parent = { id: parentId, display_title: '直属父会话', lifecycle: 'ACTIVE', created_at: now,
+        updated_at: now, write_available: true, execution_status: 'finished', capabilities: [] };
+      if (pathname === `${nodeBase}/host`) return json(route, { id: 'child-run', display_name: '节点工作区', desired_state: 'RUNNING', updated_at: now });
+      if (pathname === nodeBase) return json(route, { items: [parent], next_cursor: null });
+      if (pathname === `${nodeBase}/${parentId}`) return json(route, parent);
+      if (pathname.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true });
+      if (pathname.endsWith('/activity')) return json(route, { conversations: [], running_binding_ids: [] });
+      if (pathname.endsWith('/hydration')) return json(route, { events: { events: [], next_cursor: null }, readiness: { ready: true, execution_status: 'finished' }, context: {} });
+      if (pathname.endsWith('/events')) return json(route, { events: [], next_cursor: null });
+      if (pathname.endsWith('/input-readiness')) return json(route, { ready: true, execution_status: 'finished' });
+      if (pathname.endsWith('/context')) return json(route, {});
+      if (pathname.endsWith('/pending-confirmation')) return json(route, { pending: false });
+      if (pathname.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
+      if (pathname.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', files: [], repositories: [], runtime: {}, ide: { gateway: { supported: false } } });
+      return json(route, { items: [] });
+    });
+    await page.goto(`${routeBase}/${childId}`);
+    await expect(page).toHaveURL(new RegExp(`${routeBase}/${parentId}$`));
+    await expect(page.locator('[data-conversation-binding-id="hidden-child"]')).toHaveCount(0);
+    await expect(page.locator('.agent-sidebar-chat')).toHaveCount(0);
+    expect(forbiddenRequests).toEqual([]);
+  });
+}
+
+test('a late child route refusal cannot redirect a newly selected conversation', async ({ page }) => {
+  await openWorkspace(page, [], true);
+  let release: (() => void) | undefined;
+  let acknowledge: (() => void) | undefined;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  const entered = new Promise<void>(resolve => { acknowledge = resolve; });
+  await page.route('**/api/v1/agent-workspaces/**/conversations/late-child', async route => {
+    acknowledge?.();
+    await pending;
+    await json(route, { error: { code: 'AGENT_CHILD_REQUIRES_PARENT', message: '请从父会话查看子会话',
+      details: { binding_id: 'late-child', parent_binding_id: 'scheduled-conversation' } } }, 409);
+  });
+  await page.goto('/agent/conversations/late-child');
+  await entered;
+  await page.getByRole('button', { name: '周报会话', exact: true }).click();
+  await expect(page).toHaveURL(/\/agent\/conversations\/scheduled-conversation-2$/);
+  const completed = page.waitForResponse(response => response.url().endsWith('/conversations/late-child'));
+  release?.();
+  await completed;
+  await settleWorkspaceLayout(page);
+  await expect(page).toHaveURL(/\/agent\/conversations\/scheduled-conversation-2$/);
+});
+
+
+test('skill updates retain row positions and stage all updates across filters', async ({ page }) => {
+  await openWorkspace(page);
+  const old = Array.from({ length: 28 }, (_, index) => ({
+    id: `sync-${index}-v1`, capability_type: 'SKILL', capability_key: `技能${String(index).padStart(2, '0')}`,
+    revision_number: 1, is_latest: false, description: '原技能版本', filename: 'SKILL.md',
+  }));
+  const latest = old.map(item => ({ ...item, id: item.id.replace('v1', 'v2'), revision_number: 2, is_latest: true }));
+  let active = old;
+  const registrations: string[][] = [];
+  const conversation = () => ({
+    id: 'scheduled-conversation', lifecycle: 'ACTIVE', display_title: '日报会话',
+    streaming_callback_ready: true, write_available: true, created_at: now, updated_at: now,
+    capabilities: active.map(item => ({ ...item, digest: item.id })),
+  });
+  // New versions precede the old versions and use a different catalog order.
+  await page.route('**/api/v1/user-configurable-capabilities', route => json(route, [...latest].reverse().concat(old)));
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/conversations/scheduled-conversation', route => json(route, conversation()));
+  await page.route('**/capabilities/batch', route => {
+    const ids = route.request().postDataJSON().capability_version_ids as string[];
+    registrations.push(ids);
+    active = latest;
+    return json(route, { conversation: conversation(), completed: true,
+      loaded_capability_version_ids: ids, already_loaded_capability_version_ids: [], failure: null });
+  });
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await page.getByRole('button', { name: '会话配置', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '会话配置' });
+  const list = dialog.locator('.agent-capability-list');
+  const row = dialog.locator('[data-capability-key="技能26"]');
+  const order = await list.locator('[data-capability-key]').evaluateAll(rows => rows.map(item => item.getAttribute('data-capability-key')));
+  await row.scrollIntoViewIfNeeded();
+  const scroll = await list.evaluate(element => element.scrollTop);
+  expect(scroll).toBeGreaterThan(0);
+  await row.getByRole('button', { name: '同步 技能26 到 v2', exact: true }).click();
+  await expect(row.getByText('待保存', { exact: true })).toBeVisible();
+  await expect(row).toBeInViewport();
+  expect(await list.evaluate(element => element.scrollTop)).toBeCloseTo(scroll, 0);
+  expect(await list.locator('[data-capability-key]').evaluateAll(rows => rows.map(item => item.getAttribute('data-capability-key')))).toEqual(order);
+  expect(registrations).toEqual([]);
+  await dialog.getByRole('textbox', { name: '搜索能力' }).fill('技能26');
+  await dialog.getByRole('button', { name: '全部同步（27）', exact: true }).click();
+  await expect(dialog.getByRole('button', { name: '全部待保存', exact: true })).toBeDisabled();
+  expect(registrations).toEqual([]);
+  await dialog.getByRole('textbox', { name: '搜索能力' }).fill('');
+  await expect(list.getByText('待保存', { exact: true })).toHaveCount(28);
+  await page.setViewportSize({ width: 600, height: 800 });
+  await expect(dialog.getByRole('button', { name: '全部待保存', exact: true })).toBeInViewport();
+  await expect(dialog.getByRole('button', { name: '保存', exact: true })).toBeInViewport();
+  await dialog.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(registrations).toHaveLength(1);
+  expect(new Set(registrations[0])).toEqual(new Set(latest.map(item => item.id)));
 });

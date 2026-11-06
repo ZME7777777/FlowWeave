@@ -189,6 +189,7 @@ export interface WebsiteCredentialWrite {
 }
 export interface AgentConversationCredentialSyncEntry extends WebsiteCredential {
   sync_state: 'CURRENT' | 'NEW' | 'MODIFIED' | 'UNRECORDED';
+  inherited_from_binding_id?: string;
 }
 export interface AgentConversationCredentialSyncState {
   initialized_at?: string | null;
@@ -209,33 +210,48 @@ export interface NodeAssetWrite {
   executor: ExecutorConfig;
 }
 
+export type ModelProtocol = 'CHAT_COMPLETIONS' | 'RESPONSES' | 'ANTHROPIC';
 export interface ProviderModel {
   id?: string; model_name: string; enabled: boolean; is_default: boolean;
+  /** Manual override; null/undefined = FlowWeave derives it from the model name. */
+  protocol?: ModelProtocol | null;
+  /** Read-only: the protocol actually used for this model. */
+  effective_protocol?: ModelProtocol;
   default_reasoning_effort?: string | null; supported_reasoning_efforts?: string[];
   context_window?: number | null;
 }
+export interface ProviderUsageQuery {
+  url: string; method: 'GET' | 'POST'; expression: string; headers: Record<string, string>;
+}
 export interface ModelProvider {
-  id: string; name: string; base_url: string; auth_type: 'API_KEY' | 'ANTHROPIC_API_KEY' | 'CODEX_OAUTH';
-  api_protocol: 'CHAT_COMPLETIONS' | 'RESPONSES';
+  id: string; name: string; base_url: string; auth_type: 'API_KEY' | 'CODEX_OAUTH';
+  protocols: ModelProtocol[];
+  usage_query?: ProviderUsageQuery | null;
   has_api_key: boolean; api_key_hint?: string | null; oauth_connected: boolean;
   oauth_account_email?: string | null; oauth_device_pending: boolean;
   connection_state: string; reference_node_count: number; available_for_nodes: boolean;
+  /** At most one provider is primary; new conversations default to it. */
+  is_primary: boolean;
   available_for_prompt_gates: boolean;
   row_version: number; models: ProviderModel[];
   created_at: string; updated_at: string;
 }
 export interface ModelProviderWrite {
-  name: string; auth_type: 'API_KEY' | 'ANTHROPIC_API_KEY' | 'CODEX_OAUTH'; base_url: string;
-  api_protocol: 'CHAT_COMPLETIONS' | 'RESPONSES';
+  name: string; auth_type: 'API_KEY' | 'CODEX_OAUTH'; base_url: string;
   api_key?: string | null; row_version?: number | null;
+  usage_query?: ProviderUsageQuery | null;
   models: ProviderModel[];
 }
 export interface ModelProviderDiscoveryWrite {
   base_url: string; api_key?: string | null; provider_id?: string | null;
 }
 export interface ModelProviderUsage {
+  metrics?: Array<{ label: string; value: number | null; currency: boolean; percentage: boolean }>;
   status: 'AVAILABLE' | 'UNLIMITED' | 'UNAVAILABLE';
   spend?: number; max_budget?: number; remaining?: number; reason?: string;
+}
+export interface ModelProviderUsagePreviewWrite extends ModelProviderDiscoveryWrite {
+  usage_query: ProviderUsageQuery | null;
 }
 export interface CodexDeviceAuthorization {
   verification_url: string; user_code: string; expires_at: string; interval: number;
@@ -576,7 +592,7 @@ export interface CaseAgentTask {
 export interface CaseControlPlan {
   id: string; case_id: string; stage_id: string; source_binding_id?: string | null;
   execution_flow_run_id?: string | null; node_run_id?: string | null; node_attempt_id?: string | null;
-  action: 'CREATE_EXECUTION_COPY' | 'CONFIGURE_EXECUTION' | 'START_EXECUTION' | 'START_STEPWISE_NODE' | 'ACCEPT_STEPWISE_ATTEMPT' | 'REJECT_STEPWISE_ATTEMPT' | 'CANCEL_STEPWISE_ATTEMPT' | 'STOP_EXECUTION' | 'RERUN_STEPWISE_NODE' | 'COPY_CONTINUOUS_EXECUTION' | 'ADVANCE_CASE_STAGE' | 'COMPLETE_CASE';
+  action: 'CREATE_EXECUTION_COPY' | 'CONFIGURE_EXECUTION' | 'START_EXECUTION' | 'START_STEPWISE_NODE' | 'ACCEPT_STEPWISE_ATTEMPT' | 'REJECT_STEPWISE_ATTEMPT' | 'CANCEL_STEPWISE_ATTEMPT' | 'STOP_EXECUTION' | 'RERUN_STEPWISE_NODE' | 'COPY_CONTINUOUS_EXECUTION' | 'ADVANCE_CASE_STAGE' | 'COMPLETE_CASE' | 'CONCLUDE_CASE';
   state: 'PENDING' | 'VALIDATED' | 'EXECUTING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
   idempotency_key: string; retry_of_plan_id?: string | null; reason: string; input_snapshot: Record<string, unknown>; result: Record<string, unknown>;
   error_code?: string | null; created_at: string; validated_at?: string | null; executed_at?: string | null;
@@ -620,6 +636,8 @@ export interface Case {
   description?: string; materials?: CaseMaterial[]; work_directory_id?: string | null;
   session_config?: CaseSessionConfig;
   state: 'DRAFT' | 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'ARCHIVED';
+  pause_reason?: 'MANUAL' | 'WAITING_HUMAN' | 'CONCLUSION_PROPOSED' | 'EXECUTION_CANCELLED' | null;
+  pause_note?: string | null;
   control_conversation_binding_id?: string | null;
   control_work_directory_id?: string | null;
   current_control_round_id?: string | null;
@@ -745,6 +763,12 @@ export interface OpenHandsConversationEvent {
       objective: string;
       verdict?: { score: number; complete: boolean; missing: string } | null;
     };
+    /**
+     * Set on the `source=user` MessageEvent that OpenHands' Goal loop sends after
+     * the Judge finds the objective incomplete. It is loop control input, not
+     * something the person typed; `missing` is the Judge's structured verdict.
+     */
+    goal_followup?: { iteration: number; max_iterations?: number; missing: string };
     /** Server-confirmed terminal delivery for this assistant MessageEvent. */
     final_reply?: boolean;
     /** Safe projection of the formal OpenHands TaskAction/TaskObservation lifecycle. */
@@ -771,6 +795,10 @@ export interface OpenHandsConversationEvent {
       llm_response_id?: string;
     };
     display_content?: string;
+    /** The ask_user question this user reply answers (server-projected from the message envelope). */
+    answered_question?: string;
+    /** Server-projected: this user message was the first sent after the model changed. */
+    model_change?: { from: string; to: string };
     attachments?: AgentAttachment[];
     conversation_references?: AgentConversationReference[];
     workspace_references?: AgentWorkspaceReference[];
@@ -781,6 +809,7 @@ export interface OpenHandsConversationEvent {
   };
 }
 export interface OpenHandsConversationEventBatch {
+  condensation_task?: { task_id: string; state: string; failure_reason?: string | null } | null;
   events: OpenHandsConversationEvent[];
   next_cursor?: string | null;
   history_cursor?: string | null;
@@ -939,7 +968,15 @@ export interface AgentPendingConfirmation {
   pending: boolean; pending_actions_digest?: string; cursor?: string | null;
   actions?: AgentPendingConfirmationAction[];
 }
+/** The formal ask_user ActionEvent a conversation is waiting on. */
+export interface AgentPendingQuestion {
+  pending: boolean; action_id?: string; tool_call_id?: string; question?: string;
+  options?: string[]; recommendation?: string | null; cursor?: string | null;
+  /** Extra questions of the same ask_user call, answered as later steps. */
+  questions?: { question: string; options?: string[]; recommendation?: string | null }[];
+}
 export interface AgentAttachment {
+  url?: string;
   filename: string; mime_type: string; byte_size: number; path: string; image_data_url?: string | null;
 }
 /** A server-authorized local workspace entry, distinct from an uploaded attachment. */
@@ -978,6 +1015,16 @@ export interface AgentConversationContext {
   condenser_max_size?: number | null; condenser_max_tokens?: number | null;
   usage_current?: boolean;
 }
+export interface AgentConversationDeletion {
+  task_id: string;
+  state: 'PENDING' | 'RUNNING' | 'RETRY' | 'SUCCEEDED' | 'DEAD';
+  phase: 'CHILDREN' | 'PARENT' | 'FINAL' | 'RECORD' | 'COMPLETE';
+  child_binding_ids: string[];
+  completed_children: number;
+  failure_code?: string | null;
+}
+export type AgentConversationDeleteResult = (AgentConversationDeletion & { parent_binding_id: string }) | void;
+
 export interface AgentConversation {
   id: string;
   display_title?: string | null;
@@ -1006,6 +1053,8 @@ export interface AgentConversation {
   /** Server-owned effective ordering key. Untouched conversations use creation time. */
   sort_key?: string;
   usage?: TokenUsageSummary;
+  deletion?: AgentConversationDeletion | null;
+  child_summary?: AgentChildSummary;
 }
 
 export interface AgentConversationSchedule {
@@ -1059,6 +1108,8 @@ export interface AgentScheduleRunConversationPage {
 export interface ManagedAgentConversation {
   id: string;
   display_title?: string | null;
+  stored_event_count?: number | null;
+  total_tokens?: number | null;
   pinned: boolean;
   unread: boolean;
   archived_at?: string | null;
@@ -1075,9 +1126,41 @@ export interface AgentConversationManagementArchiveResult {
   skipped: Array<{ id: string; code: string }>;
 }
 export interface AgentConversationManagementDeleteResult {
+  pending_ids?: string[];
   deleted_ids: string[];
   skipped: Array<{ id: string; code: string }>;
 }
+export interface AgentChildSummary {
+  total: number;
+  unread: number;
+  running: number | null;
+  attention: number | null;
+  condensing: number | null;
+  unknown: number | null;
+  pending: number | null;
+}
+export interface AgentChildConversation {
+  id: string;
+  parent_binding_id: string;
+  display_title?: string | null;
+  lifecycle: AgentConversation['lifecycle'];
+  unread: boolean;
+  unread_origin?: 'MANUAL' | 'SYSTEM' | null;
+  final_reply_preview?: { event_id: string; content: string } | null;
+  created_at: string;
+}
+export interface AgentChildActivity {
+  id: string;
+  parent_binding_id: string;
+  execution_status: string;
+  possibly_stuck: boolean;
+  failed: boolean;
+  condensing: boolean;
+  sync_pending: boolean;
+  unread: boolean;
+  unread_origin?: 'MANUAL' | 'SYSTEM' | null;
+}
+
 export interface AgentConversationDeletionJob extends AgentConversationManagementDeleteResult {
   id: string;
   workspace_id: string;
@@ -1092,6 +1175,9 @@ export interface AgentConversationDeletionJob extends AgentConversationManagemen
   updated_at: string;
 }
 export interface AgentConversationActivity {
+  deleting_binding_ids?: string[];
+  child_activity?: AgentChildActivity[];
+  child_activity_parent_binding_ids?: string[];
   /** Complete summaries for every binding that belongs in the activity panel. */
   conversations?: AgentConversation[];
   running_binding_ids: string[];
@@ -1108,6 +1194,10 @@ export interface AgentConversationActivity {
   possibly_stuck_binding_ids?: string[];
   /** Native OpenHands execution status is `error` or `stuck`. */
   failed_binding_ids?: string[];
+  /** Native status is `waiting_for_user_input` (the agent asked via ask_user). */
+  waiting_user_input_binding_ids?: string[];
+  /** Binding id -> action id of its open ask_user question. */
+  waiting_user_input_actions?: Record<string, string>;
 }
 export interface AgentConversationSearchHit {
   binding_id: string;
@@ -1197,8 +1287,10 @@ export interface WorkspaceGitRepository {
   branch?: string;
   head?: string;
   upstream?: string;
+  remote_status?: 'verified' | 'unverified';
   ahead?: number;
   behind?: number;
+  dirty?: boolean;
 }
 export interface AgentSessionWorkspaceGitRepositories { repositories: WorkspaceGitRepository[] }
 export interface WorkspaceGitCommit {
@@ -1215,6 +1307,8 @@ export interface WorkspaceGitCommit {
   committed_at?: string;
   message?: string;
 }
+export interface WorkspaceGitBranches { repository: WorkspaceGitRepository; branches: Array<{ ref: string; name: string; remote: boolean }> }
+export interface WorkspaceGitSwitchWrite { ref: string; expected_head: string; expected_ref: string }
 export interface WorkspaceGitLog { repository: WorkspaceGitRepository; commits: WorkspaceGitCommit[] }
 export interface WorkspaceGitCommitDetails { repository: WorkspaceGitRepository; commit: WorkspaceGitCommit; files: Array<{ path: string; status: string }> }
 export type WorkspaceGitChangeKind = 'STAGED' | 'UNSTAGED';

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from flowweave.runtime.base import FLOWWEAVE_LLM_TIMEOUT_POLICY
+from flowweave.runtime.child_governance_contract import child_capability_build_evidence
 from flowweave.shared.domain.openhands import OPENHANDS_SOURCE_COMMIT
 from flowweave.shared.domain.runtime_capabilities import (
     normalize_runtime_capabilities,
@@ -1616,6 +1617,7 @@ def publish_container(
             "commands": commands,
             "runtime_provenance": runtime_provenance,
             "execution_policy": {"llm_timeouts": FLOWWEAVE_LLM_TIMEOUT_POLICY.manifest_document()},
+            **child_capability_build_evidence(runtime_provenance),
             "build": {
                 "builder": "openhands.agent_server.docker.build",
                 "target": labels.get("flowweave.openhands-build-target", "source-minimal"),
@@ -1803,6 +1805,7 @@ def publish_container(
         "commands": commands,
         "runtime_provenance": runtime_provenance,
         "execution_policy": {"llm_timeouts": FLOWWEAVE_LLM_TIMEOUT_POLICY.manifest_document()},
+        **child_capability_build_evidence(runtime_provenance),
         "build": {
             "builder": "openhands.agent_server.docker.build",
             "target": build.target,

@@ -21,6 +21,7 @@ from flowweave.shared.settings import settings_context
 
 
 @pytest.mark.parametrize("host", ["workspace", "node"])
+@pytest.mark.parametrize("forked", [False, True])
 @pytest.mark.parametrize("outcome", ["success", "failure", "running"])
 def test_registered_skill_updates_keep_current_projection_and_immutable_history(
     settings,
@@ -32,6 +33,7 @@ def test_registered_skill_updates_keep_current_projection_and_immutable_history(
     tmp_path,
     host,
     outcome,
+    forked,
 ):
     old_id = skill_capability["capability_id"]
     source = client.get(f"/api/v1/capabilities/{old_id}/source").json()["content"]
@@ -89,6 +91,41 @@ def test_registered_skill_updates_keep_current_projection_and_immutable_history(
         )
         original_identity = (original.id, original.capability_version_id, original.digest)
         native_handle = conversations._handle(db, workspace, binding)
+        marketplace_owner = binding.id
+        if forked:
+            from uuid import uuid4
+
+            fork = AgentConversationBinding(
+                workspace_id=binding.workspace_id,
+                host_kind=binding.host_kind,
+                host_id=binding.host_id,
+                conversation_scope_id=binding.conversation_scope_id,
+                runtime_session_id=binding.runtime_session_id,
+                working_directory=binding.working_directory,
+                model_provider_id=binding.model_provider_id,
+                openhands_conversation_id=str(uuid4()),
+                lifecycle="ACTIVE",
+                create_idempotency_key="skill-update-fork",
+            )
+            db.add(fork)
+            db.flush()
+            conversations._copy_frozen_capabilities(db, binding, fork)
+            runtime.fork_conversation(
+                native_handle,
+                target_conversation_id=fork.openhands_conversation_id,
+                title="分叉会话",
+                from_event_id="source-event",
+                expected_source_leaf_event_id="source-event",
+                reset_metrics=True,
+            )
+            binding = fork
+            original = db.scalar(
+                select(AgentConversationCapability).where(
+                    AgentConversationCapability.binding_id == binding.id
+                )
+            )
+            original_identity = (original.id, original.capability_version_id, original.digest)
+            native_handle = conversations._handle(db, workspace, binding)
 
         if host == "node":
             # Exercise the node registration service with controlled host location,
@@ -115,6 +152,19 @@ def test_registered_skill_updates_keep_current_projection_and_immutable_history(
             )
             monkeypatch.setattr(
                 flow_node_conversations, "_node_session_write_available", lambda *a: True
+            )
+            runtime_root = flow_node_conversations.node_capability_marketplace_paths(
+                db,
+                flow_run_id="controlled-run",
+                attempt_id="controlled-attempt",
+                binding_id=marketplace_owner,
+            )[1]
+            runtime._conversation_marketplaces[native_handle.conversation_id] = (
+                {
+                    "name": f"flowweave-{marketplace_owner}",
+                    "source": str(runtime_root / "marketplace"),
+                    "auto_load": False,
+                },
             )
 
         def register(version_ids):
@@ -143,6 +193,7 @@ def test_registered_skill_updates_keep_current_projection_and_immutable_history(
                 new_id if outcome == "success" else old_id
             ]
             assert runtime.loads[-1] != runtime.loads[0]
+            assert runtime.loads[-1].endswith(f"@flowweave-{marketplace_owner}")
 
         expected = new_id if outcome == "success" else old_id
         db.commit()
