@@ -20,6 +20,7 @@ from flowweave.modules.agent_sessions.infrastructure.models import (
     AgentSidebarConversation,
 )
 from flowweave.modules.agent_workspaces import public as agent_workspace_host
+from flowweave.modules.catalog.public import resolve_latest_version
 from flowweave.modules.tasks.public import enqueue
 from flowweave.modules.users.application.security import current_user_id
 from flowweave.runtime.dependencies import get_runtime
@@ -88,7 +89,7 @@ def create_sidebar_conversation(
 ) -> dict[str, Any]:
     source = _source_binding(db, workspace_id, source_binding_id)
     capability_version_ids = tuple(
-        item.capability_version_id
+        resolve_latest_version(db, item.capability_type, item.capability_key).version.id
         for item in current_capabilities(
             db.scalars(
                 select(AgentConversationCapability)

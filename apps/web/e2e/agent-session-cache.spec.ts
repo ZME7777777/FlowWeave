@@ -1409,6 +1409,7 @@ test('Existing conversation composers keep text and attachments isolated', async
 
 test('Sidebar chat tabs stay isolated to their source conversation', async ({ page }) => {
   let authenticated = false;
+  let sidebarLookups = 0;
   const workspace = { id: 'sidebar-chat-scope-workspace', display_name: '侧边聊天隔离工作区', desired_state: 'RUNNING', updated_at: now };
   const conversations = ['sidebar-chat-scope-a', 'sidebar-chat-scope-b'].map((id, index) => ({
     id, display_title: `侧边聊天会话 ${String.fromCharCode(65 + index)}`, title_state: 'MANUAL',
@@ -1440,6 +1441,10 @@ test('Sidebar chat tabs stay isolated to their source conversation', async ({ pa
       id: 'test-provider', name: '测试模型', connection_state: 'CONNECTED', models: [{ model_name: 'test-model', enabled: true, is_default: true }],
     }]);
     if (path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
+    if (path.endsWith('/sidebar') && request.method() === 'GET') {
+      sidebarLookups += 1;
+      return json(route, { error: { code: 'AGENT_SIDEBAR_NOT_FOUND', message: '侧边聊天不存在' } }, 404);
+    }
     if (path.includes('/conversations/') && request.method() === 'GET') return json(route, conversations.find(item => item.id === path.split('/').at(-1)));
     return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
   });
@@ -1465,6 +1470,10 @@ test('Sidebar chat tabs stay isolated to their source conversation', async ({ pa
   await expect(page.getByRole('region', { name: '侧边聊天' })).toBeVisible();
   const pane = page.getByRole('region', { name: '侧边聊天' });
   const draft = pane.getByRole('textbox', { name: '发送侧边聊天消息' });
+  const lookupsBeforeTyping = sidebarLookups;
+  await draft.pressSequentially('draft changes stay local');
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  expect(sidebarLookups).toBe(lookupsBeforeTyping);
   await draft.fill('收起后仍保留的侧边草稿');
   await page.getByRole('button', { name: '侧边聊天会话 B', exact: true }).click();
   await page.getByRole('button', { name: '侧边聊天会话 A', exact: true }).click();

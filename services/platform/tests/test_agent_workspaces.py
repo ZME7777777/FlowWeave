@@ -89,7 +89,7 @@ from flowweave.runtime.mock import MockRuntime
 from flowweave.shared.artifact_store import artifact_store_context
 from flowweave.shared.credentials_crypto import encrypt_secret
 from flowweave.shared.errors import DomainError
-from flowweave.shared.models import BackgroundTask, ManagedSandbox, TaskState
+from flowweave.shared.models import BackgroundTask, CapabilityVersion, ManagedSandbox, TaskState
 from flowweave.shared.settings import settings_context
 
 
@@ -3014,8 +3014,9 @@ def test_agent_workspace_bootstrap_starts_native_goal_without_plain_first_messag
         assert title_task.payload_json["first_message"] == objective
 
 
+@pytest.mark.parametrize("source_version_state", ["PUBLISHED", "RETIRED", "missing"])
 def test_sidebar_conversation_inherits_source_configuration_and_appends_context(
-    settings, db_session_factory, monkeypatch
+    settings, container, db_session_factory, monkeypatch, skill_capability, source_version_state
 ):
     class CapturingRuntime(MockRuntime):
         requests = []
@@ -3049,8 +3050,15 @@ def test_sidebar_conversation_inherits_source_configuration_and_appends_context(
             (workspace.id, target.id, references)
         ),
     )
-    with settings_context(settings), db_session_factory() as db, runtime_context(runtime):
+    with (
+        settings_context(settings),
+        tenant_user(FLOWWEAVE_USER_ID),
+        artifact_store_context(container.artifact_store),
+        db_session_factory() as db,
+        runtime_context(runtime),
+    ):
         workspace = _ready_workspace_for_conversation(db)
+        source_version_id = skill_capability["capability_id"]
         source = conversations.bootstrap_conversation(
             db,
             workspace.id,
@@ -3066,8 +3074,26 @@ def test_sidebar_conversation_inherits_source_configuration_and_appends_context(
                 },
             ),
             content="主会话消息",
+            capability_version_ids=(source_version_id,),
             idempotency_key="sidebar-source",
         )["conversation"]
+
+        source_version = db.get(CapabilityVersion, source_version_id)
+        latest_version = CapabilityVersion(
+            package_id=source_version.package_id,
+            blob_id=source_version.blob_id,
+            version_no=source_version.version_no + 1,
+            digest="f" * 64,
+            normalized_config_json=dict(source_version.normalized_config_json),
+            source_filename=source_version.source_filename,
+            state="PUBLISHED",
+        )
+        db.add(latest_version)
+        if source_version_state == "missing":
+            db.delete(source_version)
+        else:
+            source_version.state = source_version_state
+        db.commit()
 
         created = sidebar_conversations.create_sidebar_conversation(
             db,
@@ -3093,6 +3119,8 @@ def test_sidebar_conversation_inherits_source_configuration_and_appends_context(
             }
         ]
         assert child.working_directory == source["working_directory"]
+        assert source["capabilities"][0]["id"] == source_version_id
+        assert created["capabilities"][0]["id"] == latest_version.id
         recovered = sidebar_conversations.sidebar_conversation_for_source(
             db, workspace.id, source["id"]
         )
@@ -3107,7 +3135,8 @@ def test_sidebar_conversation_inherits_source_configuration_and_appends_context(
         assert implicit_reference["kind"] == "conversation"
         assert implicit_reference["source_binding_id"] == source["id"]
         assert (
-            implicit_reference["source_conversation_id"] == source["openhands_conversation_id"]
+            implicit_reference["source_conversation_id"]
+            == db.get(AgentConversationBinding, source["id"]).openhands_conversation_id
         )
         suffix = runtime.requests[-1].agent_spec.agent_context.system_message_suffix
         assert "已隐式授权按需读取此主会话" in suffix

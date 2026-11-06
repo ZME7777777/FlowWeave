@@ -588,6 +588,30 @@ def resolve_version(
     return PublishedCapability(package, version, blob)
 
 
+def resolve_latest_version(
+    db: Session, capability_type: str, capability_key: str
+) -> PublishedCapability:
+    version_id = db.scalar(
+        select(CapabilityVersion.id)
+        .join(CapabilityPackage, CapabilityPackage.id == CapabilityVersion.package_id)
+        .where(
+            CapabilityPackage.capability_type == capability_type,
+            CapabilityPackage.capability_key == capability_key,
+            CapabilityVersion.state == "PUBLISHED",
+        )
+        .order_by(CapabilityVersion.version_no.desc())
+        .limit(1)
+    )
+    if version_id is None:
+        raise DomainError(
+            "CAPABILITY_REFERENCE_INVALID",
+            "继承的能力暂无可用版本",
+            422,
+            {"capability_type": capability_type, "capability_key": capability_key},
+        )
+    return resolve_version(db, version_id)
+
+
 def list_versions(db: Session, package_ids: list[str] | None = None) -> list[dict[str, Any]]:
     version_ids = select(CapabilityVersion.id)
     if package_ids is not None:

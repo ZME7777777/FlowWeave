@@ -5877,14 +5877,16 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     void loadMoreConversations(scopeKey);
   }, [collapsedConversationGroups, conversationPagesByScope, loadMoreConversations, pendingSidebarRevealBindingId, scheduleRoute, sidebarRevealConversation, sidebarReveal.expandCollapsed]);
   const workspaceToolScopeKey = selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root';
+  const sidebarSourceWorkspaceId = host.id === 'agent-workspace' ? workspace?.id : undefined;
+  const selectedSidebarBindingId = selected?.id ? sidebarQuestions[selected.id]?.sidebarBindingId : undefined;
   useEffect(() => {
     // Temporary side chats belong to the Agent Workspace host. A FlowRun node
     // Binding has no workspace_id, so asking the workspace route for its side
     // chat can only answer 404 and would surface as a false session error.
-    if (host.id !== 'agent-workspace' || !workspace || !selected?.id || sidebarQuestions[selected.id]?.sidebarBindingId) return;
+    if (!sidebarSourceWorkspaceId || !selected?.id || selectedSidebarBindingId) return;
     const sourceBindingId = selected.id;
     let cancelled = false;
-    void agentWorkspaceApi.agentSidebarConversationForSource(workspace.id, sourceBindingId).then(link => {
+    void agentWorkspaceApi.agentSidebarConversationForSource(sidebarSourceWorkspaceId, sourceBindingId).then(link => {
       if (cancelled || link.expired || link.source_binding_id !== sourceBindingId) return;
       setSidebarQuestions(current => {
         const existing = current[sourceBindingId];
@@ -5904,7 +5906,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setOperationError(reason instanceof Error ? reason : new Error('侧边聊天恢复失败'));
     });
     return () => { cancelled = true; };
-  }, [host.id, selected?.id, sidebarQuestions, workspace]);
+  }, [selected?.id, selectedSidebarBindingId, sidebarSourceWorkspaceId]);
   const drawerOpen = drawerOpenByScope[workspaceToolScopeKey] ?? false;
   const setDrawerOpen = useCallback((open: boolean) => {
     setDrawerOpenByScope(current => current[workspaceToolScopeKey] === open
