@@ -5710,6 +5710,98 @@ def test_openhands_fork_preserves_the_native_source_configuration(
     assert "fork-private" not in fork_diagnostic
 
 
+def test_openhands_forks_completed_history_while_a_later_turn_is_running(
+    openhands_settings, monkeypatch
+):
+    runtime = OpenHandsRuntime(openhands_settings)
+    requests: list[tuple[str, str, object | None]] = []
+    responses = iter(
+        [
+            _state(execution_status="running", leaf_event_id="active-action"),
+            {
+                "id": "10000000-0000-4000-8000-000000000003",
+                "forked_from_conversation_id": "10000000-0000-4000-8000-000000000002",
+                "forked_from_event_id": "completed-reply",
+                "leaf_event_id": "completed-reply",
+                "agent": {},
+            },
+        ]
+    )
+
+    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+        requests.append((method, path, kwargs.get("json")))
+        return next(responses)
+
+    monkeypatch.setattr(runtime, "_request", fake_request)
+    monkeypatch.setattr(
+        runtime,
+        "_active_branch_through",
+        lambda *_args, **_kwargs: [
+            {"id": "completed-reply", "kind": "ObservationEvent", "source": "environment"},
+            {
+                "id": "active-user",
+                "kind": "MessageEvent",
+                "source": "user",
+                "parent_id": "completed-reply",
+            },
+            {"id": "active-action", "kind": "ActionEvent", "parent_id": "active-user"},
+        ],
+    )
+    monkeypatch.setattr(runtime, "_active_event_window", lambda *_args, **_kwargs: ([], None))
+
+    result = runtime.fork_conversation(
+        _handle("completed-reply"),
+        target_conversation_id="10000000-0000-4000-8000-000000000003",
+        title="Fork",
+        from_event_id="completed-reply",
+        expected_source_leaf_event_id="completed-reply",
+        reset_metrics=True,
+    )
+
+    assert result.source_event_id == "completed-reply"
+    assert requests[1] == (
+        "POST",
+        "/api/conversations/10000000-0000-4000-8000-000000000002/fork",
+        {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "title": "Fork",
+            "reset_metrics": True,
+            "from_event_id": "completed-reply",
+        },
+    )
+
+
+def test_openhands_rejects_fork_within_the_running_turn(openhands_settings, monkeypatch):
+    runtime = OpenHandsRuntime(openhands_settings)
+    monkeypatch.setattr(
+        runtime,
+        "_request",
+        lambda *_args, **_kwargs: _state(
+            execution_status="running", leaf_event_id="active-action"
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_active_branch_through",
+        lambda *_args, **_kwargs: [
+            {"id": "current-reply", "kind": "ActionEvent"},
+            {"id": "active-action", "kind": "ActionEvent", "parent_id": "current-reply"},
+        ],
+    )
+
+    with pytest.raises(DomainError) as raised:
+        runtime.fork_conversation(
+            _handle("active-action"),
+            target_conversation_id="10000000-0000-4000-8000-000000000003",
+            title="Fork",
+            from_event_id="current-reply",
+            expected_source_leaf_event_id="active-action",
+            reset_metrics=True,
+        )
+
+    assert raised.value.code == "RUNTIME_FORK_SOURCE_BUSY"
+
+
 def test_openhands_resolves_visible_finish_to_executed_fork_boundary(
     openhands_settings, monkeypatch
 ):

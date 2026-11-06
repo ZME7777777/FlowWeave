@@ -93,6 +93,18 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 ## 6. 任务清单
 
+### OPS-MERGED-RELEASE-20261106 远程增量合并与服务器发布
+
+2026-11-06。按用户授权合并 origin/feat/refactor 的四项增量，远程锚点 9a6a7efd，
+本地锚点 2686f237。ConversationSurface 的冲突同时保留历史编辑权限门控、模型变更
+分隔与子会话引用，加入 240px 自适应编辑框及运行中从已完成历史回复分叉的入口。
+Case 未提交工作树改动另行保护，发布输入仅为本次已提交合并版本。
+
+合并检查。Web typecheck、历史编辑与 Markdown 两项浏览器测试、八项 Runtime
+分叉定向测试及 diff 检查通过。Alembic 唯一 head 为 0202_add_oh_fw_v5_protocol_profile。
+受影响 Python 源码 Ruff 通过，test_openhands.py 保留三处既有 E501；新增分叉用例
+不涉及这些行。正式 runtime／web 预检通过，服务器构建与验收结果待补记。
+
 ### FIX-MERGE-REGRESSIONS 历史编辑恢复与合并遗漏复核 — DONE
 
 2026-11-06。依赖 FR-734 DONE。按用户要求复核合并提交 829afbb8 的两个父版本、

@@ -3124,15 +3124,21 @@ test('each user message can be edited and replaced on its active branch', async 
   const rewriteForm = page.locator('.conversation-message-edit');
   const rewriteSurface = page.locator('.conversation-surface');
   await rewriteEditor.fill('第一行\n第二行\n第三行\n第四行\n第五行');
-  await expect.poll(() => rewriteEditor.evaluate(editor => {
-    const textarea = editor as HTMLTextAreaElement;
-    return textarea.clientHeight > 100 && textarea.clientHeight === textarea.scrollHeight;
-  })).toBe(true);
   await expect.poll(async () => {
     const form = await rewriteForm.boundingBox();
     const surface = await rewriteSurface.boundingBox();
-    return Boolean(form && surface && form.y + form.height <= surface.y + surface.height - 8);
+    return Boolean(form && surface && form.y + form.height <= surface.y + surface.height);
   }).toBe(true);
+  await rewriteEditor.fill(Array.from({ length: 9 }, (_, index) => `第${index + 1}行`).join('\n'));
+  await expect.poll(() => rewriteEditor.evaluate(editor => {
+    const textarea = editor as HTMLTextAreaElement;
+    return textarea.scrollHeight <= 240 && getComputedStyle(textarea).overflowY === 'hidden';
+  })).toBe(true);
+  await rewriteEditor.fill(Array.from({ length: 11 }, (_, index) => `第${index + 1}行`).join('\n'));
+  await expect.poll(() => rewriteEditor.evaluate(editor => {
+    const textarea = editor as HTMLTextAreaElement;
+    return textarea.clientHeight === 240 && textarea.scrollHeight > textarea.clientHeight && getComputedStyle(textarea).overflowY === 'auto';
+  })).toBe(true);
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
   await rewriteEditor.press('Escape');
   await expect(page.locator('.conversation-message-edit')).toHaveCount(0);

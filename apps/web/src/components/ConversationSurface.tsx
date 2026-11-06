@@ -2332,6 +2332,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const [isAtLatest, setIsAtLatest] = useState(true);
   const [editingEventId, setEditingEventId] = useState<string>();
   const [editingContent, setEditingContent] = useState('');
+  const [rewriteEditorOverflowing, setRewriteEditorOverflowing] = useState(false);
   const [copiedEventId, setCopiedEventId] = useState<string>();
   const [userNavigationTarget, setUserNavigationTarget] = useState<{ eventId: string; behavior: ScrollBehavior; located?: boolean }>();
   const [condensationElapsed, setCondensationElapsed] = useState(0);
@@ -2369,8 +2370,13 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     const editor = rewriteEditor.current;
     if (!editor) return;
     editor.style.height = 'auto';
-    editor.style.height = `${Math.min(editor.scrollHeight, 160)}px`;
+    const overflowing = editor.scrollHeight > 240;
+    editor.style.height = `${Math.min(editor.scrollHeight, 240)}px`;
+    if (!overflowing && editor.scrollTop !== 0) editor.scrollTop = 0;
+    setRewriteEditorOverflowing(overflowing);
     keepRewriteEditorVisible();
+    const frame = window.requestAnimationFrame(keepRewriteEditorVisible);
+    return () => window.cancelAnimationFrame(frame);
   }, [editingContent, editingEventId, keepRewriteEditorVisible]);
 
   // Pausing a tool makes OpenHands emit one synthetic AgentErrorEvent. Keep
@@ -3252,7 +3258,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
                   : undefined;
             return <Fragment key={turn.renderKey}>
               <div className={`conversation-user-message${isContinuation ? ' continuation' : ''}`}>{message.event.payload.model_change && <ModelChangeDivider change={message.event.payload.model_change} timestamp={message.event.payload.timestamp}/>}{editingEventId === message.event.id
-                ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(message.event.id, editingContent); }}><textarea ref={rewriteEditor} aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)} onKeyDown={event => {
+                ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(message.event.id, editingContent); }}><textarea ref={rewriteEditor} data-overflowing={rewriteEditorOverflowing || undefined} aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)} onKeyDown={event => {
 
                   if (event.nativeEvent.isComposing || event.keyCode === 229) return;
                   if (event.key === 'Escape') {
@@ -3337,7 +3343,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             open={completedProcessExpanded}
             onOpenChange={setCompletedProcessExpanded}
           />)}
-          {reply && <AgentReply event={reply.event} content={reply.content} reveal={revealEventIds.has(reply.event.id)} changes={fileChanges} onFork={!isGenerating && onFork ? () => onFork?.(reply.event.id) : undefined} onQuoteReply={onQuoteReply ? () => onQuoteReply(reply.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl} workspaceRoot={workspaceRoot} annotations={reply.event.payload.collaboration_annotation_ids !== undefined ? eventAnnotations(reply.event) : turn.user ? eventAnnotations(turn.user.event) : []} onLocateAnnotation={locateAnnotation}/>}
+          {reply && <AgentReply event={reply.event} content={reply.content} reveal={revealEventIds.has(reply.event.id)} changes={fileChanges} onFork={!isCurrent && onFork ? () => onFork(reply.event.id) : undefined} onQuoteReply={onQuoteReply ? () => onQuoteReply(reply.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl} workspaceRoot={workspaceRoot} annotations={reply.event.payload.collaboration_annotation_ids !== undefined ? eventAnnotations(reply.event) : turn.user ? eventAnnotations(turn.user.event) : []} onLocateAnnotation={locateAnnotation}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl} retryStatus={isLatest ? modelRetryStatus : undefined}/>)}
         </>;
       }}</ConversationTurnWindow>)}
