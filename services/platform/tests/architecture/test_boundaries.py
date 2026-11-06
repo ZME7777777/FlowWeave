@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 from flowweave.shared import models as shared_model_exports  # noqa: F401
@@ -167,6 +168,18 @@ def test_openhands_runtime_uses_digest_locked_source_build() -> None:
     ):
         assert f'"{package}=={OPENHANDS_VERSION}"' in project
         assert f'name = "{package}"' in lockfile
+
+    project_config = tomllib.loads(project)
+    runtime_package = next(
+        package
+        for package in tomllib.loads(lockfile)["package"]
+        if package["name"] == project_config["project"]["name"]
+    )
+    # Frozen sync validates groups from lock metadata before installing the
+    # build tools required by the Dockerfile's no-build-isolation step.
+    assert "--group source-build" in dockerfile
+    assert project_config["dependency-groups"]["source-build"]
+    assert runtime_package["metadata"]["requires-dev"]["source-build"]
 
 
 def test_openhands_image_runs_installed_contract_probe() -> None:

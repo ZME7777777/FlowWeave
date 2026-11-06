@@ -3108,6 +3108,11 @@ test('each user message can be edited and replaced on its active branch', async 
   await expect(page.locator('[data-user-event-id="original-user"]')).toContainText('审计报告.md');
   const rewriteButtons = page.getByRole('button', { name: '编辑并重新思考' });
   await expect(rewriteButtons).toHaveCount(2);
+  const earlierMessage = page.locator('[data-user-event-id="earlier-user"]');
+  await earlierMessage.hover();
+  await earlierMessage.getByRole('button', { name: '编辑并重新思考' }).click();
+  await expect(page.getByLabel('编辑已发送消息')).toHaveValue('更早的问题');
+  await page.getByLabel('编辑已发送消息').press('Escape');
   await page.locator('[data-user-event-id="original-user"]').getByRole('button', { name: '编辑并重新思考' }).evaluate(button => (button as HTMLButtonElement).click());
   await expect(page.locator('.conversation-message-edit')).toBeVisible();
   const rewriteEditor = page.getByLabel('编辑已发送消息');

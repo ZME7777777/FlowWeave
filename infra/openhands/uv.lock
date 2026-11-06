@@ -794,6 +794,12 @@ requires-dist = [
     { name = "openhands-workspace", specifier = "==1.58.2" },
 ]
 
+[package.metadata.requires-dev]
+source-build = [
+    { name = "setuptools", specifier = ">=83.0.0" },
+    { name = "wheel" },
+]
+
 [[package]]
 name = "frozenlist"
 version = "1.8.0"
