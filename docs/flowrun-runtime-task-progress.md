@@ -131,7 +131,7 @@ diff 检查通过；ESLint 保留既有 bootstrap 依赖 warning。扩展 OpenHa
 diff 检查通过；测试文件原有六处行长告警保留。Alembic 唯一 head 为
 0202_add_oh_fw_v5_protocol_profile。下一可执行切片沿用 OPS-84。
 
-### OPS-MERGED-RELEASE-20261106 远程增量合并与服务器发布
+### OPS-MERGED-RELEASE-20261106 远程增量合并与服务器发布 — DONE
 
 2026-11-06。按用户授权合并 origin/feat/refactor 的四项增量，远程锚点 9a6a7efd，
 本地锚点 2686f237。ConversationSurface 的冲突同时保留历史编辑权限门控、模型变更
@@ -141,7 +141,36 @@ Case 未提交工作树改动另行保护，发布输入仅为本次已提交合
 合并检查。Web typecheck、历史编辑与 Markdown 两项浏览器测试、八项 Runtime
 分叉定向测试及 diff 检查通过。Alembic 唯一 head 为 0202_add_oh_fw_v5_protocol_profile。
 受影响 Python 源码 Ruff 通过，test_openhands.py 保留三处既有 E501；新增分叉用例
-不涉及这些行。正式 runtime／web 预检通过，服务器构建与验收结果待补记。
+不涉及这些行。正式 runtime／platform／web 预检通过。
+
+发布验收。用户明确选择 441fe1d4b32d425bfa54912fc60f610adeb01f9e，构建输入固定
+为该提交的归档。构建期间另一发布将平台与 Web 推进至 700e25d4，待其完成后按用户
+选择切回 441fe1d4，并保留 700e25d4 的平台／Web 回滚镜像。迁移退出码为 0，
+生产 Alembic head 为 0202_add_oh_fw_v5_protocol_profile。api、stream-api、worker、
+runtime-provider 和 web 均核对为本次提交的 linux/amd64 镜像且 healthy。
+平台镜像为 sha256:178c3024b605baf6e7e35145e37b31bdf3b6999ca69c378c7ed64158e582a122，
+Web 镜像为 sha256:9178a25c84c390a7a9c4cb01905a443a0558cb7958eea994f3079860b1a399ce。
+
+Runtime 镜像从同一提交的最小输入在本机构建 linux/amd64，经契约、安全与浏览器工具
+检查后传输，并在服务器复核层、配置、provenance 和契约。构建镜像为
+sha256:f2bf95fd314a53e942fb5d019159cc6c7891d7fb5959a97589cce0cbdc05deb1。
+正式 replacement 完成，Agent Workspace generation 为 61、ACTIVE 且可写。
+该工作区的 V5 parent manifest 冻结镜像为
+sha256:7ed73c052537ba2f40c847e5f936bc37bcf86d2a7ab080e25cf7109f2f244c02，
+新 generation 按正式冻结契约使用此镜像，新构建镜像已用于后续分配的受管 tag。
+实际运行镜像四包均为 1.58.2，server_info 与 provenance 的源码提交均为
+805bb3fe0a57cdc3e383e26019fa216a6892e608，归档校验值为
+eaf4322c182d2ea80202840b43834cb72697371e479eca91aaf03dc458adb208，符合本次 source lock。
+实际运行容器契约检查通过。原生状态备份在服务器内完成并校验，369 个原生会话的
+恢复核对覆盖原 conversation ID 集合、两个正式事件 ID／内容哈希和全部持久挂载。
+
+公开前缀首页、Agent 深层路由与定时任务页在全新浏览器上下文返回 200，
+JavaScript 错误和错误根路径 API 请求均为 0，根登录页返回 200。四份公开静态资源
+SHA-256 与服务器镜像一致。通过线上静态资源及隔离 API 夹具复测历史消息编辑与
+完整 Markdown 展示，两项通过。Compose／环境配置哈希核对通过，41 个非目标容器
+的镜像与启动时间核对通过。平台／Web 均完成 remote-release-finish 并记录 succeeded，
+按受管策略保留三份成功上下文、24 小时内上下文及回滚镜像。Case 暂存的七个文件
+与 700e25d4 提交内容逐一相符，任务专用保护 stash 已移除。
 
 ### FIX-MERGE-REGRESSIONS 历史编辑恢复与合并遗漏复核 — DONE
 
