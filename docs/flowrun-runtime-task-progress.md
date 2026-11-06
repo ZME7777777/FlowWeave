@@ -3,7 +3,7 @@
 > 创建日期：2026-08-21
 > 状态：`CHILD CONVERSATIONS COMPLETE`
 > 当前执行切片：`NONE`
-> 下一可执行切片：`OPS-84`
+> 下一可执行切片：`NONE`
 > 架构设计：`docs/flowrun-openhands-runtime-design.md`
 > Agent 工作台设计：`docs/agent-workbench-technical-design.md`
 > 子会话设计：`docs/agent-child-conversations-design.md`
@@ -113,6 +113,8 @@ Cron、独立模板、工作区／会话模式及更新时不可变工作区字�
 schema 的本地匹配、全部 15 个 skills 的 `quick_validate`、JS 语法与
 `git diff --check`。契约探针只加载路由生成本地 OpenAPI，未启动业务服务。
 Alembic 唯一 head 为 `0202_add_oh_fw_v5_protocol_profile`，当前无 `CURRENT` 切片。
+
+按用户确认，本轮工作已收尾，当前执行切片与下一可执行切片均为 `NONE`。
 
 ### OPS-CAPABILITY-SYNC-RELEASE 技能同步修复发布验收 — DONE
 
