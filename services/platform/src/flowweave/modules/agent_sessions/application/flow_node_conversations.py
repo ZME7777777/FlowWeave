@@ -4071,8 +4071,6 @@ def fork_node_conversation(
         db, flow_run_id=flow_run_id, attempt_id=attempt_id, binding_id=binding_id
     )
     runtime = get_runtime()
-    if not runtime.can_accept_input(source_handle):
-        raise DomainError("AGENT_CONVERSATION_BUSY", "请在当前回复完成或暂停后分叉会话", 409)
     source_identity = runtime.reload_conversation(source_handle)
     if not source_identity.event_id:
         raise DomainError("RUNTIME_EVENT_IDENTITY_INVALID", "当前会话缺少可分叉的事件身份", 409)

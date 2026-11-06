@@ -6460,6 +6460,37 @@ class OpenHandsRuntime:
                 )
             time.sleep(0.1)
 
+    @staticmethod
+    def _is_user_turn_start(item: dict[str, Any]) -> bool:
+        return (
+            item.get("kind") == "MessageEvent"
+            and str(item.get("source") or "").lower() in {"user", "human"}
+        )
+
+    def _fork_boundary_precedes_active_turn(
+        self,
+        handle: RuntimeHandle,
+        *,
+        source_leaf_event_id: str,
+        fork_event_id: str | None,
+    ) -> bool:
+        """Whether a fixed fork boundary is outside the source's active turn."""
+
+        if fork_event_id is None:
+            return False
+        branch = self._active_branch_through(
+            handle.conversation_id,
+            leaf_event_id=source_leaf_event_id,
+            stop_event_id=fork_event_id,
+            base_url=self._base_url_for_handle(handle),
+            session_api_key=self._session_key_for_handle(handle),
+        )
+        if branch is None:
+            # A visible event outside the active branch cannot belong to its
+            # currently executing turn.
+            return True
+        return any(self._is_user_turn_start(item) for item in branch[1:])
+
     def incomplete_fork_recovery(self, handle: RuntimeHandle) -> RuntimeForkRecovery | None:
         """Describe a legacy fork that never advanced beyond its copied finish.
 
@@ -6551,13 +6582,33 @@ class OpenHandsRuntime:
         source_state = self._conversation_state(handle)
         source_leaf = str(source_state.get("leaf_event_id") or "") or None
         source_status = str(source_state.get("execution_status") or "").lower()
-        if source_leaf != expected_source_leaf_event_id:
+        source_is_busy = source_status in {
+            "starting",
+            "running",
+            "executing",
+            "stopping",
+            "waiting_for_confirmation",
+        }
+        fork_precedes_active_turn = (
+            source_leaf is not None
+            and (source_leaf != expected_source_leaf_event_id or source_is_busy)
+            and self._fork_boundary_precedes_active_turn(
+                handle,
+                source_leaf_event_id=source_leaf,
+                fork_event_id=from_event_id,
+            )
+        )
+        if source_leaf != expected_source_leaf_event_id and not fork_precedes_active_turn:
             raise DomainError(
                 "RUNTIME_FORK_HEAD_DRIFT",
                 "OpenHands source HEAD changed before the native fork",
                 409,
             )
-        if source_status in {"starting", "running", "executing", "stopping"}:
+        if (
+            source_status
+            in {"starting", "running", "executing", "stopping", "waiting_for_confirmation"}
+            and not fork_precedes_active_turn
+        ):
             raise DomainError(
                 "RUNTIME_FORK_SOURCE_BUSY",
                 "OpenHands source conversation is still executing",

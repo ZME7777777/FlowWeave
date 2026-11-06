@@ -3196,7 +3196,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
             open={completedProcessExpanded}
             onOpenChange={setCompletedProcessExpanded}
           />)}
-          {reply && <AgentReply event={reply.event} content={reply.content} reveal={revealEventIds.has(reply.event.id)} changes={fileChanges} onFork={!isGenerating ? () => onFork?.(reply.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl} workspaceRoot={workspaceRoot} annotations={reply.event.payload.collaboration_annotation_ids !== undefined ? eventAnnotations(reply.event) : turn.user ? eventAnnotations(turn.user.event) : []} onLocateAnnotation={locateAnnotation}/>}
+          {reply && <AgentReply event={reply.event} content={reply.content} reveal={revealEventIds.has(reply.event.id)} changes={fileChanges} onFork={!isCurrent ? () => onFork?.(reply.event.id) : undefined} onPreviewCandidateFile={onPreviewCandidateFile} onReviewChanges={onReviewChanges} onOpenWorkspaceFile={onOpenWorkspaceFile} onOpenBrowser={onOpenBrowser} onOpenImage={onOpenImage} workspaceImageUrl={workspaceImageUrl} workspaceRoot={workspaceRoot} annotations={reply.event.payload.collaboration_annotation_ids !== undefined ? eventAnnotations(reply.event) : turn.user ? eventAnnotations(turn.user.event) : []} onLocateAnnotation={locateAnnotation}/>}
           {failures.map(item => <ConversationFailure key={item.event.id} item={item} taskControl={taskControl} retryStatus={isLatest ? modelRetryStatus : undefined}/>)}
         </>;
       }}</ConversationTurnWindow>)}
