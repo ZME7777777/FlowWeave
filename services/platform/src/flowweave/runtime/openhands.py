@@ -891,12 +891,21 @@ class OpenHandsRuntime:
                         503,
                         {"error_kind": "connection"},
                     ) from exc
-            if exc.response.status_code == 400 and path.endswith("/load_plugin"):
+            if path.endswith("/load_plugin") and exc.response.status_code in {400, 404}:
+                # The native loader also uses 404 for missing marketplaces and
+                # plugins. Confirm the Conversation before classifying that 404.
+                if exc.response.status_code == 404:
+                    self._request(
+                        "GET",
+                        path.removesuffix("/load_plugin"),
+                        base_url=base_url,
+                        session_api_key=session_api_key,
+                    )
                 raise DomainError(
-                    "AGENT_CONVERSATION_MARKETPLACE_UNAVAILABLE",
-                    "此历史会话创建时未注册能力市场，无法原地动态加载；请新建会话后继续使用能力。",
+                    "RUNTIME_PLUGIN_LOAD_REJECTED",
+                    "会话能力加载失败，请检查能力市场注册及所选版本后重试。",
                     409,
-                    {"status_code": 400, "path": path},
+                    {"status_code": exc.response.status_code},
                 ) from exc
             # OpenHands 1.44 returns 400, rather than 404, when its DELETE
             # conversation endpoint cannot find the native Conversation.  Its
@@ -6499,6 +6508,21 @@ class OpenHandsRuntime:
             raise DomainError(
                 "RUNTIME_CONDENSER_RESTORE_FAILED", "OpenHands 未确认摘要器认证恢复", 409
             )
+
+    def conversation_marketplaces(self, handle: RuntimeHandle) -> tuple[dict[str, Any], ...]:
+        state = self._conversation_state(handle)
+        raw_agent = state.get("agent")
+        agent = cast(dict[str, Any], raw_agent) if isinstance(raw_agent, dict) else {}
+        raw_context = agent.get("agent_context")
+        context = cast(dict[str, Any], raw_context) if isinstance(raw_context, dict) else {}
+        registrations = context.get("registered_marketplaces")
+        if not isinstance(registrations, list):
+            return ()
+        return tuple(
+            dict(cast(dict[str, Any], item))
+            for item in cast(list[object], registrations)
+            if isinstance(item, dict)
+        )
 
     def load_plugin(self, handle: RuntimeHandle, plugin_ref: str) -> None:
         """Use OpenHands' formal conversation-level dynamic Plugin loader."""

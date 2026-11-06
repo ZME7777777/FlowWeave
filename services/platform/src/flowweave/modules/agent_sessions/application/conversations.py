@@ -29,6 +29,9 @@ from flowweave.modules.agent_sessions.application import usage as usage_projecti
 from flowweave.modules.agent_sessions.application.activity_reconciliation import (
     read_activity_completion,
 )
+from flowweave.modules.agent_sessions.application.capability_marketplaces import (
+    registered_marketplace_paths,
+)
 from flowweave.modules.agent_sessions.application.capability_versions import (
     current_capabilities,
     validate_skill_upgrade,
@@ -2191,8 +2194,8 @@ def register_conversation_capabilities(
     runtime = get_runtime()
     if not runtime.can_accept_input(handle):
         raise DomainError("AGENT_CONVERSATION_RUNNING", "会话运行中，完成当前回复后再加载能力", 409)
-    host_root, runtime_root, marketplace_name = _capability_marketplace_paths(
-        db, workspace, binding
+    host_root, runtime_root, marketplace_name = registered_marketplace_paths(
+        handle, *_capability_marketplace_paths(db, workspace, binding)
     )
     position = max((reference.position for reference in existing), default=-1)
     loaded: list[str] = []

@@ -145,6 +145,7 @@ class MockRuntime:
         self._git_identities: dict[str, tuple[str, str]] = {}
         self._profile_git_roots: set[str] = set()
         self._loaded_plugins: dict[str, set[str]] = {}
+        self._conversation_marketplaces: dict[str, tuple[dict[str, Any], ...]] = {}
 
     def workspace_git_operation(
         self,
@@ -235,6 +236,9 @@ class MockRuntime:
         self._results[handle.job_id] = RuntimeResult(status="RUNNING", cursor="1")
         self._events[handle.job_id] = []
         self._conversation_secrets[handle.job_id] = dict(request.conversation_secrets)
+        self._conversation_marketplaces[handle.conversation_id] = (
+            request.agent_spec.agent_context.registered_marketplaces
+        )
         return handle
 
     def update_conversation_secrets(
@@ -260,6 +264,7 @@ class MockRuntime:
         self._results.pop(handle.job_id, None)
         self._events.pop(handle.job_id, None)
         self._conversation_secrets.pop(handle.job_id, None)
+        self._conversation_marketplaces.pop(handle.conversation_id, None)
 
     def start(self, request: StartAttemptRequest) -> RuntimeHandle:
         handle = RuntimeHandle(
@@ -301,6 +306,9 @@ class MockRuntime:
             )
         self._results[handle.job_id] = result
         self._conversation_secrets[handle.job_id] = dict(request.conversation_secrets)
+        self._conversation_marketplaces[handle.conversation_id] = (
+            request.agent_spec.agent_context.registered_marketplaces
+        )
         return handle
 
     def read_events(self, handle: RuntimeHandle) -> RuntimeEventBatch:
@@ -392,6 +400,9 @@ class MockRuntime:
         self, handle: RuntimeHandle, provider: RuntimeProvider
     ) -> None:
         del handle, provider
+
+    def conversation_marketplaces(self, handle: RuntimeHandle) -> tuple[dict[str, Any], ...]:
+        return self._conversation_marketplaces.get(handle.conversation_id, ())
 
     def load_plugin(self, handle: RuntimeHandle, plugin_ref: str) -> None:
         self._loaded_plugins.setdefault(handle.conversation_id or "", set()).add(plugin_ref)
@@ -606,6 +617,9 @@ class MockRuntime:
         )
         self._results[fork_handle.job_id] = RuntimeResult(status="IDLE", cursor=fork_handle.cursor)
         inherited_condenser = self._conversation_condensers.get(handle.conversation_id)
+        self._conversation_marketplaces[target_conversation_id] = self.conversation_marketplaces(
+            handle
+        )
         if inherited_condenser is not None:
             self._conversation_condensers[target_conversation_id] = inherited_condenser
         return RuntimeForkResult(

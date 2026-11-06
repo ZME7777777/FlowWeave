@@ -4966,7 +4966,7 @@ for (const mode of ['success', 'failure', 'missing-old-catalog'] as const) {
       streaming_callback_ready: true, write_available: true, created_at: now, updated_at: now,
       capabilities: [{ id: active, capability_type: 'SKILL', capability_key: old.capability_key, digest: active }],
     });
-    await page.route('**/api/v1/capabilities', route => json(route, mode === 'missing-old-catalog' ? [latest] : [old, latest]));
+    await page.route('**/api/v1/user-configurable-capabilities', route => json(route, mode === 'missing-old-catalog' ? [latest] : [old, latest]));
     await page.route('**/api/v1/capability-collections', route => json(route, [{ id: 'daily-collection', name: '日报组合', members: [latest] }]));
     await page.route('**/api/v1/agent-workspaces/schedule-workspace/conversations/scheduled-conversation', route => json(route, conversation()));
     await page.route('**/capabilities/batch', route => {
@@ -4984,7 +4984,10 @@ for (const mode of ['success', 'failure', 'missing-old-catalog'] as const) {
     await expect(row).toHaveCount(1);
     await expect(row.getByText('有新版本', { exact: true })).toBeVisible();
     await dialog.getByRole('button', { name: '只看已选', exact: true }).click();
-    await dialog.getByRole('button', { name: '日报组合', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Skill 组合筛选', exact: true }).click();
+    const collections = page.getByRole('dialog', { name: '筛选 Skill 组合', exact: true });
+    await collections.getByRole('checkbox', { name: '日报组合', exact: true }).click();
+    await collections.getByRole('button', { name: '完成', exact: true }).click();
     await expect(row).toBeVisible();
     await row.getByRole('button', { name: '同步 日报技能 到 v2', exact: true }).click();
     await expect(row).toHaveCount(1);
@@ -5011,7 +5014,8 @@ for (const mode of ['success', 'failure', 'missing-old-catalog'] as const) {
     expect(registrations).toEqual(Array.from({ length: mode === 'failure' ? 2 : 1 }, () => ['daily-v2']));
     await page.getByRole('button', { name: '会话配置', exact: true }).click();
     await expect(row).toHaveCount(1);
-    await expect(row.locator('b')).toHaveText('日报技能 · v2');
+    await expect(row.locator('b')).toHaveText('日报技能');
+    await expect(row.locator('.agent-capability-version-badge')).toHaveText('v2');
     await expect(row.getByText('有新版本', { exact: true })).toHaveCount(0);
   });
 }
@@ -5756,4 +5760,59 @@ test('a late child route refusal cannot redirect a newly selected conversation',
   await completed;
   await settleWorkspaceLayout(page);
   await expect(page).toHaveURL(/\/agent\/conversations\/scheduled-conversation-2$/);
+});
+
+
+test('skill updates retain row positions and stage all updates across filters', async ({ page }) => {
+  await openWorkspace(page);
+  const old = Array.from({ length: 28 }, (_, index) => ({
+    id: `sync-${index}-v1`, capability_type: 'SKILL', capability_key: `技能${String(index).padStart(2, '0')}`,
+    revision_number: 1, is_latest: false, description: '原技能版本', filename: 'SKILL.md',
+  }));
+  const latest = old.map(item => ({ ...item, id: item.id.replace('v1', 'v2'), revision_number: 2, is_latest: true }));
+  let active = old;
+  const registrations: string[][] = [];
+  const conversation = () => ({
+    id: 'scheduled-conversation', lifecycle: 'ACTIVE', display_title: '日报会话',
+    streaming_callback_ready: true, write_available: true, created_at: now, updated_at: now,
+    capabilities: active.map(item => ({ ...item, digest: item.id })),
+  });
+  // New versions precede the old versions and use a different catalog order.
+  await page.route('**/api/v1/user-configurable-capabilities', route => json(route, [...latest].reverse().concat(old)));
+  await page.route('**/api/v1/agent-workspaces/schedule-workspace/conversations/scheduled-conversation', route => json(route, conversation()));
+  await page.route('**/capabilities/batch', route => {
+    const ids = route.request().postDataJSON().capability_version_ids as string[];
+    registrations.push(ids);
+    active = latest;
+    return json(route, { conversation: conversation(), completed: true,
+      loaded_capability_version_ids: ids, already_loaded_capability_version_ids: [], failure: null });
+  });
+  await page.goto('/agent/conversations/scheduled-conversation');
+  await page.getByRole('button', { name: '会话配置', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '会话配置' });
+  const list = dialog.locator('.agent-capability-list');
+  const row = dialog.locator('[data-capability-key="技能26"]');
+  const order = await list.locator('[data-capability-key]').evaluateAll(rows => rows.map(item => item.getAttribute('data-capability-key')));
+  await row.scrollIntoViewIfNeeded();
+  const scroll = await list.evaluate(element => element.scrollTop);
+  expect(scroll).toBeGreaterThan(0);
+  await row.getByRole('button', { name: '同步 技能26 到 v2', exact: true }).click();
+  await expect(row.getByText('待保存', { exact: true })).toBeVisible();
+  await expect(row).toBeInViewport();
+  expect(await list.evaluate(element => element.scrollTop)).toBeCloseTo(scroll, 0);
+  expect(await list.locator('[data-capability-key]').evaluateAll(rows => rows.map(item => item.getAttribute('data-capability-key')))).toEqual(order);
+  expect(registrations).toEqual([]);
+  await dialog.getByRole('textbox', { name: '搜索能力' }).fill('技能26');
+  await dialog.getByRole('button', { name: '全部同步（27）', exact: true }).click();
+  await expect(dialog.getByRole('button', { name: '全部待保存', exact: true })).toBeDisabled();
+  expect(registrations).toEqual([]);
+  await dialog.getByRole('textbox', { name: '搜索能力' }).fill('');
+  await expect(list.getByText('待保存', { exact: true })).toHaveCount(28);
+  await page.setViewportSize({ width: 600, height: 800 });
+  await expect(dialog.getByRole('button', { name: '全部待保存', exact: true })).toBeInViewport();
+  await expect(dialog.getByRole('button', { name: '保存', exact: true })).toBeInViewport();
+  await dialog.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(registrations).toHaveLength(1);
+  expect(new Set(registrations[0])).toEqual(new Set(latest.map(item => item.id)));
 });

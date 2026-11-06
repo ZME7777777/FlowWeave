@@ -39,3 +39,5 @@
 .agent-capability-manager.session-configuration-editor{display:flex;flex-direction:column;height:min(720px,calc(100dvh - 40px));max-height:min(720px,calc(100dvh - 40px));min-height:0}
 .agent-capability-manager.session-configuration-editor>header{flex-shrink:0}
 .agent-capability-manager.session-configuration-editor>.agent-session-configuration-layout{flex:1 1 auto;min-height:0}
+
+.agent-session-configuration-content>footer>.agent-capability-sync-all{display:flex;align-items:center;gap:5px;margin-right:auto;white-space:nowrap}
