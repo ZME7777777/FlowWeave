@@ -2240,6 +2240,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
   const [isAtLatest, setIsAtLatest] = useState(true);
   const [editingEventId, setEditingEventId] = useState<string>();
   const [editingContent, setEditingContent] = useState('');
+  const [rewriteEditorOverflowing, setRewriteEditorOverflowing] = useState(false);
   const [copiedEventId, setCopiedEventId] = useState<string>();
   const [userNavigationTarget, setUserNavigationTarget] = useState<{ eventId: string; behavior: ScrollBehavior; located?: boolean }>();
   const [condensationElapsed, setCondensationElapsed] = useState(0);
@@ -2277,7 +2278,10 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     const editor = rewriteEditor.current;
     if (!editor) return;
     editor.style.height = 'auto';
-    editor.style.height = `${Math.min(editor.scrollHeight, 160)}px`;
+    const overflowing = editor.scrollHeight > 240;
+    editor.style.height = `${Math.min(editor.scrollHeight, 240)}px`;
+    if (!overflowing && editor.scrollTop !== 0) editor.scrollTop = 0;
+    setRewriteEditorOverflowing(overflowing);
     keepRewriteEditorVisible();
   }, [editingContent, editingEventId, keepRewriteEditorVisible]);
 
@@ -3117,7 +3121,7 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
                   : undefined;
             return <Fragment key={turn.renderKey}>
               <div className={`conversation-user-message${isContinuation ? ' continuation' : ''}`}>{editingEventId === message.event.id
-                ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(message.event.id, editingContent); }}><textarea ref={rewriteEditor} aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)} onKeyDown={event => {
+                ? <form className="conversation-message-edit" onSubmit={event => { event.preventDefault(); if (editingContent.trim()) onRewrite?.(message.event.id, editingContent); }}><textarea ref={rewriteEditor} data-overflowing={rewriteEditorOverflowing || undefined} aria-label="编辑已发送消息" value={editingContent} disabled={rewritePending} onChange={event => setEditingContent(event.target.value)} onKeyDown={event => {
                   if (event.nativeEvent.isComposing || event.keyCode === 229) return;
                   if (event.key === 'Escape') {
                     event.preventDefault();
