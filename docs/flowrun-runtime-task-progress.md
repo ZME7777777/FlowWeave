@@ -109,7 +109,18 @@ MCP 认证通过原生 Secret Registry 或请求传递，检测认证不进入�
 格式检查通过，新增应用模块／路由／HTTP 调度的定向 Pyright 无诊断。共享 workspace.py
 既有 17 项类型诊断、主工作台既有 Hook 依赖警告和 CSS／chunk 构建提示保留。
 原生加载由模拟 Runtime 验证，SDK 正式加载契约按固定 baseline 源码核对。
-本次待发布 Platform＋Web，包含此前 FR-733 配置与认证展示修正。
+2026-11-06 发布完成。代码 commit `118e57253bcb31d751832251532f31badaf470d6`，
+Platform＋Web 从相同 commit 的受管最小上下文构建并发布，包含此前 FR-733 配置与认证展示修正。
+平台镜像 `sha256:50e4b7f0cac6b5512ba5633134447069f1663cb74c6e7d27afead68d8b9f1616`，
+Web 镜像 `sha256:4163e05c62e9e91f47df1b244989c0cf483c5f77602b55787099988920c0475c`，
+均核对 linux/amd64 与 OCI revision。正式迁移退出码 0，API／stream-api／Worker／Web
+健康及版本核对通过，两个新增能力入口在 API 与 stream-api 镜像中均已确认。
+线上构建产物的 8 项浏览器回归通过，覆盖两宿主的能力追加／Skill 升级、认证配置、all
+筛选与子上下文统计；这些用例使用隔离 API 夹具，原生动态加载仍由模拟 Runtime 验证。
+另完成真实公开登录页、Agent 深层路由、根应用、API 前缀与未登录认证拦截验证，以及 6 项
+公开静态资源 SHA-256 核验。页面无 JavaScript 错误，截图已检查。服务器配置哈希和 43 个
+非目标容器的 image／StartedAt 核对一致；回滚镜像及服务日志已保留。
+Platform 与 Web 的正式 remote-release-finish 均通过，按既定保留规则完成受管发布资产收尾。
 
 ### FR-733 父子配置 all 一致与认证继承展示 — DONE
 
