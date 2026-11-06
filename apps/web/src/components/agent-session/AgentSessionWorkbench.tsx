@@ -32,7 +32,7 @@ import { agentWorkspaceSessionHost, type AgentSessionHost } from './session-host
 import { clearSidebarDraft, SidebarConversationPane, type SidebarConversationDraft } from './SidebarConversationPane';
 import { clearConversationSnapshots, getAgentSessionCacheIdentity, readConversationContextSnapshot, writeConversationContextSnapshot } from './conversation-cache';
 import { ConversationSurface, ConversationReferencePreview, OpenQuestionContext, ConversationTaskPlan, goalRoundDurations, type ConversationHistoryPrepend, type ConversationReference, type ConversationScrollSnapshot, type ConversationSearchLocation, type ModelRetryStatus } from '../ConversationSurface';
-import { isOpenHandsAgentReply, isOpenHandsConversationInterrupt, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, projectFlowWeaveMessageContext, projectHistoricalAgentReplies } from '../conversationEvents';
+import { isOpenHandsAgentReply, isOpenHandsConversationInterrupt, isOpenHandsConversationTerminalError, isOpenHandsEmptyResponseRecovery, orderOpenHandsConversationEvents, projectFlowWeaveMessageContext, projectHistoricalAgentReplies, userMessagePreviewContent } from '../conversationEvents';
 import { workspaceMarkdownFileHref, workspaceMarkdownLinkPath, workspaceMarkdownImagePath, workspaceFileApiPath } from './workspace-file-links';
 import { ConversationDeletionPanel } from './ConversationDeletionPanel';
 import { ChildConversationPane } from './ChildConversationPane';
@@ -7414,19 +7414,25 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     Boolean(projection.replacedEventId)
     && (!projection.canonicalEventId || !currentFormalEvents.some(event => event.id === projection.canonicalEventId))
   ));
-  const cachedHistoryUserEvents = useMemo(() => {
+  const cachedHistoryUserMessages = useMemo(() => {
     void historyCacheRevision;
     if (!selected || !eventsQuery.data?.history_cursor) return [];
     const cache = historyCacheByScope.current.get(selected.id);
     if (!cache || cache.rootCursor !== eventsQuery.data.history_cursor || (!cache.complete && cache.expiresAt <= Date.now())) return [];
     const revealed = revealedHistoryPageCounts.current.get(selected.id) ?? 0;
-    return cache.pages.slice(revealed).reverse().flatMap(page => page.events).flatMap(event => (
-      event.event_type === 'MESSAGE' && ['user', 'human'].includes(String(event.payload.source ?? '').toLowerCase())
-        ? [event]
-        : []
-    ));
+
+    // Directly extract id and content, avoid nested flatMap and full event objects
+    const messages: Array<{ id: string; content: string }> = [];
+    for (let i = revealed; i < cache.pages.length; i++) {
+      const page = cache.pages[cache.pages.length - 1 - i]; // reverse order
+      for (const event of page.events) {
+        const content = userMessagePreviewContent(event);
+        if (content !== undefined) messages.push({ id: event.id, content });
+      }
+    }
+    return messages;
   }, [eventsQuery.data?.history_cursor, historyCacheRevision, selected]);
-  const cachedHistoryMarkerCount = cachedHistoryUserEvents.length;
+  const cachedHistoryMarkerCount = cachedHistoryUserMessages.length;
   const inConversationSearchEvents = useMemo(() => {
     void historyCacheRevision;
     const events = new Map(displayedEvents.map(event => [event.id, event]));
@@ -11027,7 +11033,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         modelRetryStatus={modelRetryStatus}
         historyPending={Boolean(selected && historyLoadingBindingId === selected.id)}
         cachedHistoryMarkerCount={cachedHistoryMarkerCount}
-        cachedHistoryUserEvents={cachedHistoryUserEvents}
+        cachedHistoryUserMessages={cachedHistoryUserMessages}
         hasCachedOlderHistory={hasCachedOlderHistory}
         onRequestOlderHistory={requestNextHistoryPage}
         onRevealHistoryThrough={revealHistoryThrough}

@@ -56,6 +56,23 @@ export function projectFlowWeaveMessageContext(event: OpenHandsConversationEvent
   }
 }
 
+/**
+ * Visible text of a person-typed MESSAGE event, or undefined when the event is
+ * not a user turn (loop control, internal protocol, non-user source). Mirrors
+ * the user branch of the transcript projection without building render items.
+ */
+export function userMessagePreviewContent(event: OpenHandsConversationEvent): string | undefined {
+  if (event.event_type !== 'MESSAGE') return undefined;
+  const source = String(event.payload.source ?? '').toLowerCase();
+  if (source !== 'user' && source !== 'human') return undefined;
+  const projected = projectFlowWeaveMessageContext(event);
+  const content = typeof projected.payload.content === 'string' ? projected.payload.content : '';
+  if (isFlowWeaveInternalProtocolMessage(content)) return undefined;
+  if (projected.payload.goal_followup) return undefined;
+  if (typeof projected.payload.display_content === 'string') return projected.payload.display_content;
+  return isFlowWeaveMessageContext(content) ? '' : content;
+}
+
 export function isFlowWeaveMessageContext(value: string): boolean {
   return value.startsWith('FlowWeave message context (JSON):') || MESSAGE_CONTEXT_MARKER.test(value);
 }
