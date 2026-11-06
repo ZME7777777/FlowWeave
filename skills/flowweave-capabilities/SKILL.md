@@ -1,6 +1,6 @@
 ---
 name: flowweave-capabilities
-description: 导入、发布、查询或管理 FlowWeave Skill、MCP、Plugin、Context 等能力及其受治理版本；不直接写入 Runtime。
+description: 浏览技能与插件市场，导入、发布、查询或管理 FlowWeave Skill、MCP、Plugin、Context 等能力及版本、集合与认证；会话能力同步转对应宿主 skill。
 ---
 
 # FlowWeave 能力仓库
@@ -15,8 +15,11 @@ description: 导入、发布、查询或管理 FlowWeave Skill、MCP、Plugin、
 
 ```bash
 flowweave capability list
+flowweave capability configurable
 flowweave openapi --paths
 ```
+
+能力仓库可读取 `is_builtin` 的平台内置 MCP。用户会话、自动化模板与节点配置的候选必须来自 `capability configurable`，该接口会排除内置能力。内置能力由对应业务生命周期装配，只能在治理页面读取和按固定 Environment Version 探测，不能手工绑定、编辑、删除或通过普通导入替换。
 
 ## 导入闭环
 
@@ -32,6 +35,21 @@ flowweave capability list
 只有用户明确同意一次性导入时才使用 `flowweave capability import --type <TYPE> --file <FILE>`。提交后读取能力列表/详情，记录返回的能力 ID、版本、状态和 digest；后续绑定时始终使用平台返回的版本身份。
 
 ## 深度能力操作
+
+### 技能与插件市场来源
+
+市场来源按用户保存，先读取来源 ID、`kind`、`enabled` 和 `revision`。Skill 来源支持 `SKILL_GIT` 与 `SKILLS_SH`，Plugin 来源使用 `PLUGIN_GIT`。
+
+```bash
+flowweave capability market-sources
+flowweave capability market-skills <source-id> -q q=<关键词>
+flowweave capability market-plugins <source-id> -q q=<关键词> -q page=1 -q page_size=10
+flowweave capability market-skill-validate --data-file ./.tmp/market-skill.json --dry-run
+```
+
+技能验证体使用 `MarketSkillImportWrite`，包含来源返回的 `source_id`、`repository`、`skill_id` 及可用的完整 `commit`、`path`。执行验证后审阅报告，再以返回的 `import_token` 调用 `capability commit`。插件列表返回的固定 commit 用于现有 `marketplace-resolve` 与发布闭环。来源修改使用 `market-sources-update`，必须提交当前 `revision` 和完整目标来源列表，写后重新读取，避免覆盖其他来源。来源 URL 不得包含凭据。
+
+独立 Skill 的内容、版本差异和回滚通过公开的 `/capabilities/<version-id>/files`、`/version-comparison`、`/file-diff`、`/skill-version-comparison` 与 `/rollback` 接口操作。修改内容或回滚会创建受治理版本，先读取对应 schema 与当前版本，写后核对新版本身份。已创建会话升级到同一 Skill 的更高版本时，使用宿主的 `capabilities-register`，并检查部分成功结果。
 
 MCP 探测、OAuth secret reference、Plugin source resolve/publish、Context source 修改、Capability collection 等属于同一治理域。OpenHands Marketplace 可通过 CLI 进行受治理闭环：目录浏览会先由服务端把公开仓库 HEAD 解析为完整 commit；必须使用返回的 `source`、`commit`、`repo_path` 与插件名创建解析，再轮询同一 resolution 并以其当前 `state_version` 发布。不要以浮动分支、浏览器下载或直接复制到 Runtime 替代该路径。
 

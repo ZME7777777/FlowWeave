@@ -93,6 +93,27 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 ## 6. 任务清单
 
+### CLI-SKILL-SYNC 当前平台 CLI 与 Skills 对齐 — DONE
+
+2026-11-06。按当前公开路由与请求 schema 复核 npm CLI 和全部 FlowWeave
+skills。补齐用户技能／插件市场来源、会话能力批量注册与 Skill 升级、认证同步、
+原生上下文与压缩、归档／恢复／未读、自动化运行会话与失败 occurrence 删除、
+主要供应商、Case 复制／导入导出／提前结论确认、逐步记录配置与运行端口快捷入口。
+新增跨 Agent Workspace 和 FlowRun 节点宿主的 `child` 命令域及
+`flowweave-agent-children` skill。
+
+修正 README 和测试中仍使用来源 binding 的旧 Agent 自动化载荷，统一说明北京时间
+Cron、独立模板、工作区／会话模式及更新时不可变工作区字段。更新现有 7 个 skills，
+删除旧内置 Case MCP 手工配置说明，补充受管自动安装和可配置能力候选边界、目录递归
+删除与保留文件模式。对 npm 客户端和开发用 Python 同名入口明确区分，已安装旧 npm
+版本缺少快捷命令时沿用公开通用 API。同步本机的 8 个新增／修改 skills，原副本保留于
+忽略目录 `.tmp/skill-sync-before/`。本切片交付 CLI 源码与 skills，npm 发行待单独发布。
+
+验证通过 CLI 20 项测试、58 组 dry-run 请求与当前公开路径／方法／必需 query／JSON
+schema 的本地匹配、全部 15 个 skills 的 `quick_validate`、JS 语法与
+`git diff --check`。契约探针只加载路由生成本地 OpenAPI，未启动业务服务。
+Alembic 唯一 head 为 `0202_add_oh_fw_v5_protocol_profile`，当前无 `CURRENT` 切片。
+
 ### OPS-CAPABILITY-SYNC-RELEASE 技能同步修复发布验收 — DONE
 
 2026-11-06。用户授权提交并部署技能同步修复。发布版本为

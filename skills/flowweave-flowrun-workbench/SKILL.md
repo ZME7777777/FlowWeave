@@ -82,3 +82,13 @@ flowweave run workspace-delete <run-id> --attempt <attempt-id> \
 平台拒绝工作区根、范围外路径、隐藏路径、符号链接和特殊文件；目录会递归删除。删除 FlowRun 逻辑工作目录使用 `flowweave run work-directory-delete <run-id> --attempt <attempt-id> --work-directory <directory-id> --dry-run`。先读取目录 ID；仍被会话冻结版本引用时平台会拒绝删除。两类操作均只操作 FlowWeave 公开 API，不进入 Runtime 或宿主机直接删除。
 
 同一范围可通过 `run workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff <run-id> --attempt <attempt-id>` 增量读取目录和 Git 历史，并以 `run workspace-entry-create` 创建普通文件/目录。只有用户明确需要完整索引时才调用 `run workspace-details <run-id> --attempt <attempt-id> --full-index`。仓库路径、commit 和文件路径都必须来自公开读取结果。`run hydration <run-id> --attempt <attempt-id> --binding <binding-id>` 与 `run head` 仅读取节点会话原生状态，不会启动、恢复或写入会话。
+
+## 会话能力、原生子会话与运行端口
+
+`run readiness|context <run-id> --attempt <attempt-id> --binding <binding-id>` 读取节点会话输入与上下文状态。可写且 idle/paused 时，`run condense` 在相同范围发起原生压缩，等待正式压缩完成事件后再继续发送。
+
+`run capabilities-register` 在相同范围接受 `{"capability_version_ids":["<version-id>"]}`，支持动态注册 Skill/MCP/Plugin 与同一独立 Skill 的更高版本。候选取自 `capability configurable`，写前检查 readiness，写后检查 `completed`、已成功／已存在版本与 `failure`，只重试未成功项。原生 Task 子会话使用 `flowweave-agent-children`，父子 ID 从当前节点会话与正式子会话列表读取。
+
+逐步记录端口配置使用 `run stepwise-runtime-ports <run-id> --data-file ./.tmp/ports.json --dry-run`，携带当前 `expected_active_snapshot_version`。`node_ports` 对每个提交节点表示完整端口集合，遗漏的端口会删除；非空 `port_mappings` 会替换涉及这些节点的连接，需同时提交要保留的连接。显式删除连接使用 `remove_port_mappings`。先读取当前 Snapshot 与端口，保存后重新读取，实际节点执行继续遵守前驱门禁。
+
+逐步记录配置可用 `run stepwise-config-export|stepwise-config-import <parent-run-id> --data-file` 导出或导入。ID 必须来自当前父记录，使用平台返回的版本化文档并按在线 schema 审阅，导入后读取新记录确认配置与身份。

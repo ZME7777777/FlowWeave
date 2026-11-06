@@ -39,6 +39,6 @@ flowweave model test <provider-id>
 
 ## 主要供应商
 
-每个用户至多一个“主要供应商”：新会话与自动选择模型时优先使用它。只有已连接、且有默认模型的供应商可设为主要；设置新的主要供应商会自动取消原来的。接口为 `POST /model-providers/<provider-id>/primary`（设为主要）与 `DELETE /model-providers/<provider-id>/primary`（取消），列表与详情返回 `is_primary`。CLI 是否提供对应子命令以 `flowweave openapi --paths` 为准，不要猜测命令名。
+每个用户至多一个“主要供应商”，新会话与自动选择模型时优先使用它。只有已连接、且有默认模型的供应商可设为主要，设置新的主要供应商会自动取消原来的。先读取 `model list`，再用 `flowweave model primary <provider-id> --dry-run` 设置，或用 `flowweave model unprimary <provider-id> --dry-run` 取消。执行后重新读取列表中的 `is_primary`。
 
 删除供应商前，先读取其引用状态并提示它可能影响节点/运行；只有用户指定精确 ID 并确认后执行 `flowweave model delete <provider-id>`。

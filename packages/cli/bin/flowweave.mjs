@@ -32,7 +32,7 @@ function usage() {
 页面域原子操作：
   node <list|get|create|update|delete> [ID] [--data JSON|--data-file FILE]
   node-directory <list|create|delete|delete-many> [ID] [--id ID ...]
-  capability <list|validate|commit|import|download|marketplace|marketplace-preview|marketplace-resolve|plugin-resolution|plugin-publish> ...
+  capability <list|configurable|validate|commit|import|download|marketplace|marketplace-preview|marketplace-resolve|plugin-resolution|plugin-publish|market-sources|market-sources-update|market-skills|market-plugins|market-skill-validate> ...
   event-trigger <list|get|create|version> ...
   environment <list|get|create|update|delete|setup|publish|stop|version-delete> ...
   credential <list|create|update|delete|delete-many> ...
@@ -42,6 +42,11 @@ function usage() {
   case <list|get|create|update|delete|path|session-config|pause|resume|stage-templates|artifact-materials|material-upload|material-file|stage-state|stage-bind|attach-flow-run|stage-rerun|observe|proposal-create|proposal-execute|plan-create|plan-execute|plan-retry|start|round|round-retry|conversation-delete> ...
   model <list|create|update|delete|discover|usage|test|oauth-start|oauth-poll|oauth-status|oauth-revoke> ...
   agent <default|workspace|runtime|runtime-replace|conversations|pinned-conversations|conversation-management|conversation-management-delete|schedules|schedule-create|schedule-update|schedule-pause|schedule-resume|schedule-trigger|schedule-delete|schedule-occurrences|conversation|create|send|interrupt|resume|pin|unpin|sidebar-create|sidebar|sidebar-close|work-directories|work-directory-create|work-directory-delete|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|file-delete|history|hydration|head> ...
+  agent <activity|capabilities-register|credentials|credentials-sync|readiness|context|pending-question|condense|archive|restore|read|unread|sidebar-current|schedule-conversations|schedule-occurrence-delete|management-workspaces|work-directory-archive|work-directory-restore> ...
+  child <list|get|events|hydration|readiness|context|send|interrupt|resume|condense|model|capabilities-register|credentials|credentials-sync|read|unread|pending-confirmation|confirm> <parent-binding-id> [child-binding-id] ...
+  run <capabilities-register|readiness|context|condense|stepwise-runtime-ports|stepwise-config-export|stepwise-config-import> ...
+  model <primary|unprimary> <provider-id>
+  case <copy|export|import|conclusion-confirm|conclusion-reject> ...
 
 所有写入操作都可加 --dry-run 仅查看最终请求。运行 flowweave <命令> --help 查看该命令说明。`;
 }
@@ -364,6 +369,14 @@ async function nodeDirectory(args) {
 async function capability(args) {
   const [action, id] = positional(args);
   if (action === 'list') return request('GET', '/capabilities', args);
+  if (action === 'configurable') return request('GET', '/user-configurable-capabilities', args);
+  if (action === 'market-sources') return request('GET', '/market-sources', args);
+  if (action === 'market-sources-update') return request('PUT', '/market-sources', args);
+  if (action === 'market-skill-validate') return request('POST', '/market-skill-imports/validate', args);
+  if (action === 'market-skills' || action === 'market-plugins') {
+    if (!id) throw new CliError(`capability ${action} 需要市场来源 ID`);
+    return request('GET', `/market-sources/${id}/${action === 'market-skills' ? 'skills' : 'plugins'}`, args);
+  }
   if (action === 'download') {
     if (!id) throw new CliError('capability download 需要能力 ID');
     const output = option(args, '--output');
@@ -430,7 +443,7 @@ async function capability(args) {
     if (!token) throw new CliError('capability commit 需要 --import-token');
     return request('POST', '/capability-imports', args, { body: { import_token: token } });
   }
-  throw new CliError('capability 支持 list|validate|commit|import|download|marketplace|marketplace-preview|marketplace-resolve|plugin-resolution|plugin-publish');
+  throw new CliError('capability 支持 list|configurable|validate|commit|import|download|marketplace|marketplace-preview|marketplace-resolve|plugin-resolution|plugin-publish|market-sources|market-sources-update|market-skills|market-plugins|market-skill-validate');
 }
 
 async function eventTrigger(args) {
@@ -558,6 +571,13 @@ async function run(args) {
     return request('POST', `/node-attempts/${id}/reconcile-runtime-completion`, args, { body: await objectPayload(args) });
   }
   if (!id) throw new CliError(`run ${action || ''} 需要 FlowRun ID`);
+  if (action === 'stepwise-runtime-ports') {
+    return request('PUT', `/flow-runs/${id}/stepwise-runtime-ports`, args);
+  }
+  if (action === 'stepwise-config-export' || action === 'stepwise-config-import') {
+    const operation = action === 'stepwise-config-export' ? 'config-exports' : 'config-imports';
+    return request('POST', `/flow-runs/${id}/stepwise-runs/${operation}`, args);
+  }
   if (action === 'automatic-config-export') {
     return request('POST', `/flow-runs/${id}/automatic-runs/config-exports`, args, { body: await objectPayload(args) });
   }
@@ -616,11 +636,19 @@ async function run(args) {
       return request('POST', `${workspaceBase}/workspace/entries`, args, { body: await objectPayload(args), query: workspaceScope(args) });
     }
   }
-  if (action === 'hydration' || action === 'head') {
+  if (['hydration', 'head', 'readiness', 'context', 'condense', 'capabilities-register'].includes(action)) {
     if (!workspaceBase) throw new CliError(`run ${action} 需要 --attempt <attempt-id>`);
     const bindingId = option(args, '--binding');
     if (!bindingId) throw new CliError(`run ${action} 需要 --binding <binding-id>`);
-    return request('GET', `${workspaceBase}/${bindingId}/${action}`, args);
+    const route = {
+      hydration: ['GET', 'hydration'],
+      head: ['GET', 'head'],
+      readiness: ['GET', 'input-readiness'],
+      context: ['GET', 'context'],
+      condense: ['POST', 'condense'],
+      'capabilities-register': ['POST', 'capabilities/batch'],
+    }[action];
+    return request(route[0], `${workspaceBase}/${bindingId}/${route[1]}`, args);
   }
   if (action === 'workspace-delete') {
     const paths = optionValues(args, '--path');
@@ -654,7 +682,7 @@ async function run(args) {
   if (action === 'cancel') return request('POST', `/flow-runs/${id}/cancel`, args, { body: {} });
   if (action === 'complete') return request('POST', `/flow-runs/${id}/complete`, args, { body: {} });
   if (action === 'events') return request('GET', `/flow-runs/${id}/events`, args);
-  throw new CliError('run 支持 list|get|start|delete|runtime|replace|pause|resume|cancel|complete|events|node|node-copy|node-delete|pin|unpin|stepwise-draft|stepwise-start|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|workspace-delete|work-directory-delete|hydration|head|automatic-config-export|automatic-config-import|reconcile-runtime-completion');
+  throw new CliError('run 支持 list|get|start|delete|runtime|replace|pause|resume|cancel|complete|events|node|node-copy|node-delete|pin|unpin|stepwise-draft|stepwise-start|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|workspace-delete|work-directory-delete|hydration|head|readiness|context|condense|capabilities-register|stepwise-runtime-ports|stepwise-config-export|stepwise-config-import|automatic-config-export|automatic-config-import|reconcile-runtime-completion');
 }
 
 async function schedule(args) {
@@ -712,6 +740,8 @@ async function model(args) {
       : request('POST', '/model-providers/discover-models', args);
   }
   if (!id) throw new CliError(`model ${action || ''} 需要模型供应商 ID`);
+  if (action === 'primary') return request('POST', `/model-providers/${id}/primary`, args);
+  if (action === 'unprimary') return request('DELETE', `/model-providers/${id}/primary`, args);
   if (action === 'usage') return request('GET', `/model-providers/${id}/usage`, args);
   if (action === 'update') return request('PUT', `/model-providers/${id}`, args);
   if (action === 'delete') return request('DELETE', `/model-providers/${id}`, args);
@@ -720,7 +750,7 @@ async function model(args) {
   if (action === 'oauth-poll') return request('POST', `/model-providers/${id}/oauth/device/poll`, args, { body: await objectPayload(args) });
   if (action === 'oauth-status') return request('GET', `/model-providers/${id}/oauth/status`, args);
   if (action === 'oauth-revoke') return request('DELETE', `/model-providers/${id}/oauth`, args);
-  throw new CliError('model 支持 list|create|update|delete|discover|usage|test|oauth-start|oauth-poll|oauth-status|oauth-revoke');
+  throw new CliError('model 支持 list|create|update|delete|discover|usage|test|oauth-start|oauth-poll|oauth-status|oauth-revoke|primary|unprimary');
 }
 
 async function agent(args) {
@@ -735,6 +765,8 @@ async function agent(args) {
     return request('POST', `${base}/runtime/replacements`, args, { body: {} });
   }
   if (action === 'conversations') return request('GET', `${base}/conversations`, args);
+  if (action === 'activity') return request('GET', `${base}/conversation-activity`, args);
+  if (action === 'management-workspaces') return request('GET', `${base}/conversation-management/workspaces`, args);
   if (action === 'pinned-conversations') return request('GET', `${base}/pinned-conversations`, args);
   if (action === 'conversation-management') {
     const workDirectoryId = option(args, '--work-directory');
@@ -763,6 +795,12 @@ async function agent(args) {
     if (!binding) throw new CliError(`agent ${action} 需要调度 ID`);
     const scheduleBase = `${base}/conversation-schedules/${binding}`;
     if (action === 'schedule-occurrences') return request('GET', `${scheduleBase}/occurrences`, args);
+    if (action === 'schedule-conversations') return request('GET', `${scheduleBase}/run-conversations`, args);
+    if (action === 'schedule-occurrence-delete') {
+      const occurrence = option(args, '--occurrence');
+      if (!occurrence) throw new CliError('agent schedule-occurrence-delete 需要 --occurrence <occurrence-id>');
+      return request('DELETE', `${scheduleBase}/occurrences/${occurrence}`, args);
+    }
     if (action === 'schedule-update') {
       const body = await objectPayload(args);
       if (!Number.isSafeInteger(body.expected_row_version) || body.expected_row_version < 1) {
@@ -789,6 +827,11 @@ async function agent(args) {
   if (action === 'work-directory-delete') {
     if (!binding) throw new CliError('agent work-directory-delete 需要工作目录 ID');
     return request('DELETE', `${base}/work-directories/${binding}`, args);
+  }
+  if (action === 'work-directory-archive' || action === 'work-directory-restore') {
+    if (!binding) throw new CliError(`agent ${action} 需要工作目录 ID`);
+    const operation = action === 'work-directory-archive' ? 'archive' : 'restore';
+    return request('POST', `${base}/work-directories/${binding}/${operation}`, args);
   }
   if (action === 'workspace-details') {
     return request('GET', `${base}/workspace`, args, { query: workspaceDetailsQuery(args) });
@@ -832,13 +875,71 @@ async function agent(args) {
     });
   }
   if (action === 'sidebar') return request('GET', `${base}/sidebars/${binding}`, args);
+  if (action === 'sidebar-current') return request('GET', `${base}/conversations/${binding}/sidebar`, args);
   if (action === 'sidebar-close') return request('DELETE', `${base}/sidebars/${binding}`, args);
   if (action === 'conversation') return request('GET', `${base}/conversations/${binding}`, args);
   if (action === 'history' || action === 'hydration' || action === 'head') return request('GET', `${base}/conversations/${binding}/${action}`, args);
+  const conversationRoutes = {
+    'capabilities-register': ['POST', 'capabilities/batch'],
+    credentials: ['GET', 'credential-sync'],
+    'credentials-sync': ['POST', 'credential-sync'],
+    readiness: ['GET', 'input-readiness'],
+    context: ['GET', 'context'],
+    'pending-question': ['GET', 'pending-question'],
+    condense: ['POST', 'condense'],
+    archive: ['POST', 'archive'],
+    restore: ['POST', 'restore'],
+  };
+  if (Object.hasOwn(conversationRoutes, action)) {
+    const [method, suffix] = conversationRoutes[action];
+    return request(method, `${base}/conversations/${binding}/${suffix}`, args);
+  }
+  if (action === 'read' || action === 'unread') {
+    return request('PUT', `${base}/conversations/${binding}/unread`, args, {
+      body: { unread: action === 'unread', unread_origin: 'MANUAL' },
+    });
+  }
   if (action === 'send') return request('POST', `${base}/conversations/${binding}/messages`, args);
   if (action === 'interrupt') return request('POST', `${base}/conversations/${binding}/interrupt`, args, { body: {} });
   if (action === 'resume') return request('POST', `${base}/conversations/${binding}/resume`, args, { body: {} });
-  throw new CliError('agent 支持 default|workspace|runtime|runtime-replace|conversations|pinned-conversations|conversation-management|conversation-management-delete|schedules|schedule-create|schedule-update|schedule-pause|schedule-resume|schedule-trigger|schedule-delete|schedule-occurrences|conversation|create|send|interrupt|resume|pin|unpin|sidebar-create|sidebar|sidebar-close|work-directories|work-directory-create|work-directory-delete|workspace-details|workspace-directory|workspace-git-repositories|workspace-git-log|workspace-git-commit|workspace-git-diff|workspace-entry-create|file-delete|history|hydration|head');
+  throw new CliError('agent 子命令无效；运行 flowweave agent --help 查看支持的操作');
+}
+
+async function child(args) {
+  const [action, parentId, childId] = positional(args);
+  if (!parentId) throw new CliError(`child ${action || ''} 需要父会话 binding ID`);
+  const base = `/agent-session-children/${parentId}`;
+  if (action === 'list') {
+    if (childId) throw new CliError('child list 不接受子会话 ID');
+    return request('GET', base, args);
+  }
+  if (!childId) throw new CliError(`child ${action || ''} 需要子会话 binding ID`);
+  const path = `${base}/${childId}`;
+  if (['interrupt', 'resume', 'condense'].includes(action)) {
+    return request('POST', `${path}/control`, args, { body: { operation: action } });
+  }
+  if (action === 'read' || action === 'unread') {
+    return request('PUT', `${path}/unread`, args, {
+      body: { unread: action === 'unread', unread_origin: 'MANUAL' },
+    });
+  }
+  const routes = {
+    get: ['GET', ''],
+    events: ['GET', '/events'],
+    hydration: ['GET', '/hydration'],
+    readiness: ['GET', '/input-readiness'],
+    context: ['GET', '/context'],
+    send: ['POST', '/messages'],
+    model: ['POST', '/model'],
+    'capabilities-register': ['POST', '/capabilities/batch'],
+    credentials: ['GET', '/credentials'],
+    'credentials-sync': ['POST', '/credentials/sync'],
+    'pending-confirmation': ['GET', '/pending-confirmation'],
+    confirm: ['POST', '/pending-confirmation/decision'],
+  };
+  if (!Object.hasOwn(routes, action)) throw new CliError('child 子命令无效；运行 flowweave child --help 查看支持的操作');
+  const route = routes[action];
+  return request(route[0], `${path}${route[1]}`, args);
 }
 
 async function upload(args) {
@@ -909,9 +1010,16 @@ async function caseSpace(args) {
   };
   if (action === 'list') return request('GET', base, args);
   if (action === 'create') return request('POST', base, args);
+  if (action === 'export') return request('POST', `${base}/export`, args);
+  if (action === 'import') return request('POST', `${base}/import`, args);
   need(id, '场景 ID');
   const c = `${base}/${id}`;
   if (action === 'get') return request('GET', c, args);
+  if (action === 'copy') return request('POST', `${c}/copy`, args);
+  if (action === 'conclusion-confirm' || action === 'conclusion-reject') {
+    const operation = action === 'conclusion-confirm' ? 'confirm' : 'reject';
+    return request('POST', `${c}/conclusion/${operation}`, args);
+  }
   if (action === 'update') return request('PUT', c, args);
   if (action === 'delete') return request('DELETE', c, args);
   if (action === 'path') return request('PUT', `${c}/path`, args);
@@ -971,7 +1079,7 @@ async function caseSpace(args) {
   if (action === 'plan-retry') return request('POST', `${c}/control-plans/${need(sub, '计划 ID')}/retry`, args, { body: {} });
   if (action === 'round') return request('GET', `${c}/control-rounds/${need(sub, '轮次 ID')}`, args);
   if (action === 'round-retry') return request('POST', `${c}/control-rounds/${need(sub, '轮次 ID')}/retry`, args, { body: {} });
-  throw new CliError('case 支持 list|get|create|update|delete|path|session-config|pause|resume|stage-templates|artifact-materials|material-upload|material-file|stage-state|stage-bind|attach-flow-run|stage-rerun|observe|proposal-create|proposal-execute|plan-create|plan-execute|plan-retry|start|round|round-retry|conversation-delete');
+  throw new CliError('case 支持 list|get|create|copy|export|import|update|delete|path|session-config|pause|resume|conclusion-confirm|conclusion-reject|stage-templates|artifact-materials|material-upload|material-file|stage-state|stage-bind|attach-flow-run|stage-rerun|observe|proposal-create|proposal-execute|plan-create|plan-execute|plan-retry|start|round|round-retry|conversation-delete');
 }
 
 async function main(argv) {
@@ -1001,6 +1109,7 @@ async function main(argv) {
   else if (command === 'case') result = caseSpace(args);
   else if (command === 'model') result = model(args);
   else if (command === 'agent') result = agent(args);
+  else if (command === 'child') result = child(args);
   else throw new CliError(`未知命令：${command}`);
   print(await result);
 }

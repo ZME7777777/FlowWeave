@@ -1,6 +1,6 @@
 ---
 name: flowweave-cases
-description: 创建、配置、启动和监控 FlowWeave 场景空间（Case）：路径阶段、资料、协调 Agent 会话、暂停/恢复与控制计划；单个 FlowRun 的节点处理转 flowweave-flowrun-workbench。
+description: 创建、复制、导入导出、配置和监控 FlowWeave 场景空间（Case），处理协调会话、阶段、控制计划与提前结论确认；节点执行转 flowweave-flowrun-workbench。
 ---
 
 # FlowWeave 场景空间（Case）
@@ -39,15 +39,11 @@ flowweave case material-file <case-id> --value <资料引用> [--download]
 
 `session.json` 含 `expected_row_version`、`model_provider_id`、`model_name`、可选 `reasoning_effort`、`capability_version_ids`、`credential_ids`；模型供应商先按 `flowweave-model-providers` 确认可用，认证只能是当前用户的。路径中的 FlowRun 必须是完整配置的逐步/连续记录。
 
-## 平台内置 MCP 的发布（运维）
+## 平台内置能力
 
-协调会话依赖三个平台内置 MCP：`flowweave-case-context`、`flowweave-case-flows`、`flowweave-case-materials`。缺失时 `case start` 的轮次以 `CASE_TOOL_CAPABILITY_UNAVAILABLE` 失败。仅超级管理员可发布，且必须经受管路径：
+协调会话依赖 `flowweave-case-context`、`flowweave-case-flows` 和 `flowweave-case-materials` 三个内置 MCP，由平台按部署配置的 `PLATFORM_MCP_BASE_URL` 自动治理安装，并由 Case 生命周期装配。它们在能力仓库显示为只读 `is_builtin` 项，不进入普通会话或用户可配置能力候选。
 
-```bash
-flowweave capability import --type MCP --file ./flowweave-case-context.json --platform-managed
-```
-
-配置只含 `url`（以对应 `/api/v1/case-tools-mcp`、`/case-flow-tools-mcp`、`/case-material-tools-mcp` 结尾）、`transport=streamable-http` 和占位符头 `Bearer ${FLOWWEAVE_CASE_ACCESS}` / `${FLOWWEAVE_CASE_FLOW_ACCESS}` / `${FLOWWEAVE_CASE_MATERIAL_ACCESS}`。发布后把版本 ID 与 URL 写入服务器私有环境的 `CASE_TOOLS_MCP_*`、`CASE_FLOW_TOOLS_MCP_*`、`CASE_MATERIAL_TOOLS_MCP_*` 并重建 api/stream-api/worker。
+出现 `CASE_TOOL_CAPABILITY_UNAVAILABLE` 时读取轮次失败码并交由受管部署流程诊断配置和安装状态。手工受管发布限超级管理员按治理契约操作，普通 Case 操作继续通过业务入口完成。
 
 ## 启动场景（唯一入口）
 
@@ -71,7 +67,7 @@ flowweave case plan-retry   <case-id> <plan-id>
 flowweave case proposal-create|proposal-execute ...
 ```
 
-控制计划 `action` 白名单：`CREATE_EXECUTION_COPY`、`CONFIGURE_EXECUTION`、`START_EXECUTION`、`START_STEPWISE_NODE`、`ACCEPT_STEPWISE_ATTEMPT`、`REJECT_STEPWISE_ATTEMPT`、`CANCEL_STEPWISE_ATTEMPT`、`STOP_EXECUTION`、`RERUN_STEPWISE_NODE`、`COPY_CONTINUOUS_EXECUTION`、`ADVANCE_CASE_STAGE`、`COMPLETE_CASE`。`idempotency_key` 须匹配 `^[a-z][a-z0-9._:-]{0,139}$`。正常情况下这些动作由协调 Agent 经原生 MCP 工具发起；人工通过 CLI 调用属于接管，需用户授权，且只作用于活动 `current_execution_flow_run_id`，不可作用于模板、历史副本或其他阶段。
+控制计划 `action` 以在线 `CaseControlPlanWrite` 为准，包括执行副本创建与配置、逐步节点启动／接受／拒绝／取消／重跑、停止执行、连续或逐步记录复制、阶段推进、完成及 `CONCLUDE_CASE`。请求还必须包含当前 `stage_id`，`idempotency_key` 须匹配 `^[a-z][a-z0-9._:-]{0,139}$`。正常情况下动作由协调 Agent 经原生 MCP 工具发起，人工接管须符合用户授权，执行目标只能是活动 `current_execution_flow_run_id`。
 
 执行结果以持久记录为准：看计划/提案的状态、失败码，并复读对应 FlowRun；不要把"HTTP 返回了"当作"已启动"。
 
@@ -82,7 +78,17 @@ flowweave case pause  <case-id> --expected-row-version <n>
 flowweave case resume <case-id> --expected-row-version <n>
 ```
 
-暂停只阻止新的自主动作，不中断原生会话，也不取消已启动的 FlowRun。原生会话的中断/继续用 `flowweave agent interrupt|resume <binding-id>`；停止 FlowRun 用 `flowweave run cancel`（终态，不可靠改回场景状态恢复）。
+暂停只阻止新的自主动作，不中断原生会话，也不取消已启动的 FlowRun。原生会话的中断/继续用 `flowweave agent interrupt|resume <workspace-id> <binding-id>`，两个 ID 均从当前 Case 和会话公开读取结果取得。停止 FlowRun 用 `flowweave run cancel`，取消后保留终态记录。
+
+## 提前结论与待回答问题
+
+`CONCLUDE_CASE` 会提出提前结束结论并暂停场景，等待用户确认。先 `case get` 审阅结论、暂停原因和当前 `row_version`，再用 `case conclusion-confirm <case-id> --data-file ./.tmp/conclusion.json --dry-run` 确认，或用 `case conclusion-reject` 拒绝。请求使用当前 `expected_row_version` 与可选 `note`，仅在用户明确选择后执行。
+
+协调 Agent 的人类提问来自原生 `ask_user`。通过其主 binding 的 `agent pending-question <workspace-id> <binding-id>` 读取问题，再按会话消息契约回答，场景判断以正式会话与平台结论状态为准。
+
+## 复制与导入导出
+
+`case copy <case-id>` 通过服务器复制场景配置。`case export --data '{"case_ids":["<case-id>"]}'` 返回 `flowweave.case-bundle` 版本 1 文档，`case import --data-file ./.tmp/cases.json --dry-run` 审阅后创建新场景。先读取精确 Case ID，复用平台导出的结构，检查资料缺失与模板引用可见性。复制和导入会创建配置副本，完成后重新读取路径、资料及会话配置，再决定是否启动协调会话。
 
 ## 删除
 
