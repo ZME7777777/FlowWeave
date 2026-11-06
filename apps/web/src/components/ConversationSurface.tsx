@@ -2283,6 +2283,8 @@ export const ConversationSurface = memo(function ConversationSurface({ events, i
     if (!overflowing && editor.scrollTop !== 0) editor.scrollTop = 0;
     setRewriteEditorOverflowing(overflowing);
     keepRewriteEditorVisible();
+    const frame = window.requestAnimationFrame(keepRewriteEditorVisible);
+    return () => window.cancelAnimationFrame(frame);
   }, [editingContent, editingEventId, keepRewriteEditorVisible]);
 
   // Pausing a tool makes OpenHands emit one synthetic AgentErrorEvent. Keep

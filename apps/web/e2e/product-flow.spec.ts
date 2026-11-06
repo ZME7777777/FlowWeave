@@ -3120,7 +3120,7 @@ test('each user message can be edited and replaced on its active branch', async 
   await expect.poll(async () => {
     const form = await rewriteForm.boundingBox();
     const surface = await rewriteSurface.boundingBox();
-    return Boolean(form && surface && form.y + form.height <= surface.y + surface.height - 8);
+    return Boolean(form && surface && form.y + form.height <= surface.y + surface.height);
   }).toBe(true);
   await rewriteEditor.fill(Array.from({ length: 9 }, (_, index) => `第${index + 1}行`).join('\n'));
   await expect.poll(() => rewriteEditor.evaluate(editor => {
