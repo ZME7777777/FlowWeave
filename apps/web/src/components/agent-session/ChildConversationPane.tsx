@@ -8,6 +8,7 @@ import type {
   AgentAttachment,
   AgentChildConversation,
   AgentConversation,
+  AgentConversationContext,
   AgentConversationReference,
   OpenHandsConversationEvent,
 } from '../../types';
@@ -16,6 +17,7 @@ import { isOpenHandsAgentReply } from '../conversationEvents';
 import { AgentComposerInput, type ComposerSuggestion } from './AgentComposerInput';
 import { type ComposerHandle, transferredFiles } from './agentComposerInputUtils';
 import { ComposerModelMenu } from './ComposerModelMenu';
+import { ConversationContextUsage } from './ConversationContextUsage';
 import { SideConversationSurface } from './SideConversationSurface';
 import { getAgentSessionCacheIdentity } from './conversation-cache';
 import { conversationComposerSuggestions, defaultConversationModel } from './conversation-composer';
@@ -168,6 +170,28 @@ export function ChildConversationPane({
     refetchOnWindowFocus: false,
     retry: false,
   });
+  const contextKey = useMemo(() => ['agent-child', scope, 'context'], [scope]);
+  const context = useQuery({
+    queryKey: contextKey,
+    queryFn: async ({ signal }) => {
+      const incoming = await api.agentChildContext(parentId!, childId!, signal);
+      const previous = queryClient.getQueryData<AgentConversationContext>(contextKey);
+      return {
+        ...incoming,
+        used_tokens: typeof incoming.used_tokens === 'number' && incoming.used_tokens >= 0
+          ? incoming.used_tokens : previous?.used_tokens,
+        view_event_count: typeof incoming.view_event_count === 'number' && incoming.view_event_count >= 0
+          ? incoming.view_event_count : previous?.view_event_count,
+      };
+    },
+    enabled: Boolean(active && scope && child?.lifecycle === 'ACTIVE' && hydration.data),
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+  useEffect(() => {
+    if (active && scope && hydration.data)
+      void queryClient.invalidateQueries({ queryKey: contextKey });
+  }, [active, contextKey, hydration.data, queryClient, scope]);
   const providers = useQuery({ queryKey: ['model-providers'], queryFn: api.providers });
   const capabilities = useQuery({ queryKey: ['capabilities'], queryFn: api.capabilities });
   const model = defaultConversationModel(
@@ -709,6 +733,8 @@ export function ChildConversationPane({
                 childParentId={parentId}
                 conversationCapabilities={details.data?.capabilities}
                 credentialSyncDisabled={!writable || nativeBusy || mutating}
+                capabilityRegistrationDisabled={!writable || nativeBusy || condensing || mutating}
+                onChildConversationChange={(conversation) => queryClient.setQueryData(detailsKey, conversation)}
                 onClose={() => setConfigurationScope(undefined)}
               />,
               document.body,
@@ -953,6 +979,7 @@ export function ChildConversationPane({
                 }}
                 onSubmit={() => enqueue()}
                 onDirectSubmit={() => enqueue(true)}
+                onManageCapabilities={() => setConfigurationScope(scope)}
                 onNativeAction={(action) => {
                   if (action === 'CONDENSE' && suggestions[0].available) void control('condense');
                 }}
@@ -986,6 +1013,11 @@ export function ChildConversationPane({
                   >
                     <Settings size={15} />
                   </button>
+                  <ConversationContextUsage
+                    context={context.data}
+                    loading={hydration.loading || context.isLoading}
+                    error={Boolean(hydration.error) || context.isError}
+                  />
                 </div>
                 <div className="agent-composer-actions">
                   <ComposerModelMenu

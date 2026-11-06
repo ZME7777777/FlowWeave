@@ -85,6 +85,11 @@
   .agent-composer-status-slot,.agent-composer-note-slot{display:none!important}
 }
 
+.agent-child-conversation-panel .agent-composer footer{flex-wrap:wrap}
+.agent-child-conversation-panel .agent-composer-context{flex-basis:100%;flex-wrap:wrap;overflow:visible}
+.agent-child-conversation-panel .agent-context-progress.events{display:inline-flex!important}
+.agent-child-conversation-panel .agent-composer-actions{margin-left:auto}
+
 /* The transcript is centered at 860px. The index needs 44px of left whitespace
    (17px inset + 19px hit area + 8px gap), so hide it below 860 + 2 * 44px.
    Container width responds to both split-pane and window resizing. */

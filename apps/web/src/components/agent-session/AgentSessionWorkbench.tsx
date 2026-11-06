@@ -14,6 +14,7 @@ import { isValidElement, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import { createPortal, flushSync } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import { ComposerModelMenu } from './ComposerModelMenu';
+import { ConversationContextUsage } from './ConversationContextUsage';
 import { ConversationErrorNotice } from './ConversationErrorNotice';
 import { InConversationSearch, type InConversationSearchHit } from './InConversationSearch';
 import { AgentComposerInput, type ComposerSuggestion } from './AgentComposerInput';
@@ -116,9 +117,6 @@ const SESSION_PERFORMANCE_MARK_PREFIX = 'flowweave.agent-session.';
 // they are not a wall-clock deadline for the whole child task.
 const MODEL_REQUEST_TIMEOUT_SECONDS = 120;
 const MODEL_REQUEST_MAX_RETRIES = 3;
-const PRODUCT_CONTEXT_WINDOW_TOKENS = 512_000;
-const CONTEXT_COMPACTION_TRIGGER_PERCENT = 80;
-const CONTEXT_COMPACTION_TRIGGER_TOKENS = 409_600;
 type StreamStatus = 'connecting' | 'live' | 'recovering' | 'disabled';
 type TurnState = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming' | 'reconnecting';
 type ComposerControlMode = 'idle' | 'running' | 'pausing' | 'paused' | 'resuming' | 'reconnecting' | 'rewriting' | 'reconciling' | 'read-only' | 'condensing';
@@ -1355,10 +1353,6 @@ function stringValues(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0) : [];
 }
 
-
-function exactCount(value: number): string {
-  return value.toLocaleString('en-US');
-}
 
 function configuredModelName(provider: ModelProvider | undefined, runtimeModel: string | null | undefined): string | undefined {
   if (!provider || !runtimeModel) return undefined;
@@ -10098,63 +10092,8 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
     ?? conversationProviderInfo?.models.find(model => model.enabled && model.is_default);
   const availableConversationModels = conversationProviderInfo?.models.filter(model => model.enabled) ?? [];
   const supportedEfforts = conversationModel?.supported_reasoning_efforts ?? [];
-  // Show the product context window, not the lower native trigger used to
-  // leave room for OpenHands to summarize. Provider-reported physical windows
-  // are intentionally not displayed here because they are model-dependent.
-  const visibleContextWindow = PRODUCT_CONTEXT_WINDOW_TOKENS;
   const currentContextTokens = currentContext?.used_tokens;
   const hasCurrentContextUsage = typeof currentContextTokens === 'number' && currentContextTokens >= 0;
-  const contextUsagePending = Boolean(
-    selected && (!hasCurrentContextUsage || (currentContext?.usage_current === false && contextQuery.data?.used_tokens === currentContextTokens)),
-  );
-  const visibleContextTokens = hasCurrentContextUsage ? currentContextTokens : undefined;
-  const contextProgress = typeof visibleContextWindow === 'number' && visibleContextWindow > 0
-    && typeof visibleContextTokens === 'number'
-    ? {
-      used: visibleContextTokens,
-      window: visibleContextWindow,
-      usedLabel: exactCount(visibleContextTokens),
-      windowLabel: exactCount(visibleContextWindow),
-      percentage: Math.min(100, Math.round((visibleContextTokens / visibleContextWindow) * 100)),
-    }
-    : undefined;
-  // This is a passive View indicator only. OpenHands owns the actual
-  // condensation decision and the resulting event history.
-  const currentViewEventCount = currentContext?.view_event_count;
-  const hasCurrentViewEventCount = typeof currentViewEventCount === 'number' && currentViewEventCount >= 0;
-  const eventLimit = typeof currentContext?.condenser_max_size === 'number'
-    && currentContext.condenser_max_size > 0
-    ? currentContext.condenser_max_size
-    : 10_000;
-  const eventProgress = hasCurrentViewEventCount
-    ? Math.min(100, Math.round((currentViewEventCount / eventLimit) * 100))
-    : undefined;
-  const contextTitle = contextProgress
-    ? `Token：OpenHands 当前 View ${contextProgress.used.toLocaleString()} / 上下文窗口 ${contextProgress.window.toLocaleString()}（${contextProgress.percentage}%）；达到 ${CONTEXT_COMPACTION_TRIGGER_PERCENT}%（${CONTEXT_COMPACTION_TRIGGER_TOKENS.toLocaleString()} Token）时自动压缩`
-    : undefined;
-  const tokenPendingLabel = contextQuery.isLoading
-    ? '读取中'
-    : contextQuery.isError
-      ? '暂不可用'
-      : contextUsagePending
-        ? '待模型更新'
-        : '压缩阈值未知';
-  const tokenPendingTitle = contextUsagePending
-    ? 'OpenHands 尚未返回可确认的当前 View 用量；不会将缺失数据显示为 0。'
-    : '当前会话尚未提供可验证的自动压缩阈值；不会显示估算值。';
-  const eventPendingLabel = contextQuery.isLoading
-    ? '读取中'
-    : contextQuery.isError
-      ? '暂不可用'
-      : selected
-        ? '待 Runtime 更新'
-        : '待会话创建';
-  const eventPendingTitle = selected
-    ? '当前 Runtime 尚未返回 OpenHands 压缩后活动 View 的事件数；不会用完整历史事件数代替。'
-    : '创建会话后显示 OpenHands 当前活动 View 的正式事件数。';
-  const activityTitle = hasCurrentViewEventCount
-    ? `OpenHands 当前活动 View 事件 ${currentViewEventCount.toLocaleString()} / 自动压缩阈值 ${eventLimit.toLocaleString()}。`
-    : undefined;
   const composerNote = visibleQueuedMessages.length > 0
     ? queueModeEnabled ? `已排队 ${visibleQueuedMessages.length} 条` : `队列已关闭 · 保留 ${visibleQueuedMessages.length} 条`
     : '';
@@ -11050,8 +10989,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
         <footer>
           <div className="agent-composer-context">
             {features.attachments && (selected || conversationDraft) && <><input ref={attachmentInput} aria-label="上传附件" type="file" multiple hidden onChange={event => { Array.from(event.target.files ?? []).forEach(startAttachmentUpload); event.currentTarget.value = ''; }}/><button type="button" aria-label="添加附件" disabled={!canCompose || Boolean(pendingConfirmation)} onClick={() => attachmentInput.current?.click()}><Plus size={17}/></button></>}
-            {selected && (contextProgress ? <span className="agent-context-progress token" title={contextTitle} aria-label={`Token 上下文用量 ${contextProgress.percentage}%`}><i style={{ '--context-progress': `${contextProgress.percentage}%` } as CSSProperties}/><em><small>Token</small>{contextProgress.usedLabel} / {contextProgress.windowLabel}</em></span> : <span className="agent-context-progress token pending" title={tokenPendingTitle} aria-label={`Token 上下文用量${tokenPendingLabel}`}><i style={{ '--context-progress': '0%' } as CSSProperties}/><em><small>Token</small>{tokenPendingLabel}</em></span>)}
-            {selected && (hasCurrentViewEventCount && eventProgress !== undefined ? <span className="agent-context-progress activity events" title={activityTitle} aria-label={`OpenHands 当前活动 View 事件 ${currentViewEventCount} 条，自动压缩阈值 ${eventLimit} 条`}><i style={{ '--context-progress': `${eventProgress}%` } as CSSProperties}/><em><small>事件</small>{exactCount(currentViewEventCount)} / {exactCount(eventLimit)}</em></span> : <span className="agent-context-progress activity events pending" title={eventPendingTitle} aria-label={`事件上下文用量${eventPendingLabel}`}><i style={{ '--context-progress': '0%' } as CSSProperties}/><em><small>事件</small>{eventPendingLabel}</em></span>)}
+            {selected && <ConversationContextUsage context={currentContext} loading={contextQuery.isLoading} error={contextQuery.isError} usagePending={!hasCurrentContextUsage || (currentContext?.usage_current === false && contextQuery.data?.used_tokens === currentContextTokens)}/>}
             <span className="agent-composer-status agent-composer-status-slot" aria-hidden={!composerStatus}>{composerStatus}</span>
             <span className="agent-composer-note agent-composer-note-slot" aria-hidden={!composerNote}>{composerNote}</span>
           </div>

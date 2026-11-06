@@ -21,7 +21,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from flowweave.bootstrap.container import Container
-from flowweave.modules.agent_sessions.application import child_activity, credential_sync
+from flowweave.modules.agent_sessions.application import (
+    child_activity,
+    child_capabilities,
+    credential_sync,
+)
 from flowweave.modules.agent_sessions.application import child_sessions as children
 from flowweave.modules.agent_sessions.infrastructure.models import AgentConversationBinding
 from flowweave.modules.credentials.application.service import (
@@ -52,6 +56,10 @@ ContainerDep = Annotated[Container, Depends(get_container)]
 
 class Write(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class CapabilityBatchWrite(Write):
+    capability_version_ids: list[UUID] = Field(min_length=1, max_length=100)
 
 
 class AttachmentReference(Write):
@@ -245,6 +253,46 @@ async def context(parent_id: str, child_id: str, container: ContainerDep) -> dic
         read,
         lambda db, loc, value: (children.revalidate(db, loc), value)[1],
         history=False,
+    )
+
+
+@child_router.post("/capabilities/batch")
+async def register_capabilities(
+    parent_id: str,
+    child_id: str,
+    payload: CapabilityBatchWrite,
+    container: ContainerDep,
+) -> dict[str, Any]:
+    return await run_formal_events(
+        container,
+        lambda db: child_capabilities.prepare_registration(
+            db,
+            parent_id,
+            child_id,
+            tuple(str(value) for value in payload.capability_version_ids),
+        ),
+        child_capabilities.load_registration,
+        child_capabilities.project_registration,
+        history=False,
+        timeout_seconds=30.0 * (len(payload.capability_version_ids) + 3),
+        operation_guard=lambda: child_capabilities.registration_guard(parent_id, child_id),
+    )
+
+
+@child_router.post("/capabilities/{version_id}/mcp-readiness")
+async def mcp_readiness(
+    parent_id: str,
+    child_id: str,
+    version_id: UUID,
+    container: ContainerDep,
+) -> dict[str, Any]:
+    return await run_formal_events(
+        container,
+        lambda db: child_capabilities.prepare_probe(db, parent_id, child_id, str(version_id)),
+        child_capabilities.probe_mcp,
+        lambda db, plan, value: (children.revalidate(db, plan.locator), value)[1],
+        history=False,
+        timeout_seconds=45,
     )
 
 

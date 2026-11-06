@@ -93,6 +93,24 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 ## 6. 任务清单
 
+### FR-734 子会话能力注册与上下文统计 — DONE
+
+2026-11-06。子会话复用主会话能力配置，从当前用户有权访问的仓库追加 SKILL／MCP／PLUGIN，
+支持 Skill 升级、MCP 检测与部分成功后的重试。Context／Agent／Hook 保持创建时冻结。
+两宿主共用直属子会话授权入口，继承原生 Marketplace，以子 binding 命名空间隔离物化包。
+同一子会话注册串行执行，共享市场清单加锁合并，Runtime I/O 不占用 DB 连接。
+MCP 认证通过原生 Secret Registry 或请求传递，检测认证不进入物化文件。
+子发送框复用主会话 Token／活动 View 事件指示器，独立读取子 `/context`，支持压缩后下降、
+未知状态与标签隔离；窄侧栏同时显示两项统计。
+
+验证。后台共 185 项用例通过，其中全量回归 181 项通过，1 项测试数据库清理超时后复测通过，
+另通过并发 Marketplace 与两个普通会话原生加载入口用例。前端 32 项用例通过，其中 4 项
+页面打开超时后单独复测通过。Web typecheck、production build、定向 ESLint、Python Ruff／
+格式检查通过，新增应用模块／路由／HTTP 调度的定向 Pyright 无诊断。共享 workspace.py
+既有 17 项类型诊断、主工作台既有 Hook 依赖警告和 CSS／chunk 构建提示保留。
+原生加载由模拟 Runtime 验证，SDK 正式加载契约按固定 baseline 源码核对。
+本次待发布 Platform＋Web，包含此前 FR-733 配置与认证展示修正。
+
 ### FR-733 父子配置 all 一致与认证继承展示 — DONE
 
 2026-11-06。修复普通会话 all 隐藏已装配 Context／Agent／Hook、子会话 all 却

@@ -5882,6 +5882,7 @@ def resume(db: Session, workspace_id: str, binding_id: str) -> dict[str, Any]:
 ATTACHMENT_PATH = _ATTACHMENT_PATH
 enqueue_title_task = _enqueue_title_task
 frozen_runtime_capability = _frozen_runtime_capability
+validated_session_capabilities = _validated_capabilities
 history_runtime_handle = _handle
 history_capability_marketplace_paths = _capability_marketplace_paths
 initial_user_event_id = _initial_user_event_id

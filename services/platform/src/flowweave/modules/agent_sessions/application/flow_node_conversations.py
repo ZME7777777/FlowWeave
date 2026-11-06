@@ -3838,6 +3838,31 @@ def cancel_resumable_node_attachment_upload(
     resumable_attachments.close_upload(db, upload, status="CANCELLED")
 
 
+def node_capability_marketplace_paths(
+    db: Session,
+    *,
+    flow_run_id: str,
+    attempt_id: str,
+    binding_id: str,
+) -> tuple[Path, Path, str]:
+    attempt = _attempt(db, attempt_id)
+    _, _, snapshot = _attempt_context(db, attempt)
+    host_root = _node_capability_root(
+        db,
+        flow_run_id=flow_run_id,
+        attempt_id=attempt_id,
+        manifest_digest=snapshot.runtime_manifest_hash,
+        relative_parts=("conversations", binding_id),
+    )
+    runtime_root = Path(
+        sandboxes.openhands_flow_run_capability_path(
+            snapshot.runtime_manifest_hash, "conversations", binding_id
+        )
+    )
+    marketplace_name = agent_workspace_capability_marketplace_name(binding_id)
+    return host_root, runtime_root, marketplace_name
+
+
 def register_node_conversation_capabilities(
     db: Session,
     *,
@@ -3916,21 +3941,12 @@ def register_node_conversation_capabilities(
     runtime = get_runtime()
     if not runtime.can_accept_input(handle):
         raise DomainError("AGENT_CONVERSATION_RUNNING", "会话运行中，完成当前回复后再加载能力", 409)
-    attempt = _attempt(db, attempt_id)
-    _, _, snapshot = _attempt_context(db, attempt)
-    host_root = _node_capability_root(
+    host_root, runtime_root, marketplace_name = node_capability_marketplace_paths(
         db,
         flow_run_id=flow_run_id,
         attempt_id=attempt_id,
-        manifest_digest=snapshot.runtime_manifest_hash,
-        relative_parts=("conversations", binding.id),
+        binding_id=binding.id,
     )
-    runtime_root = Path(
-        sandboxes.openhands_flow_run_capability_path(
-            snapshot.runtime_manifest_hash, "conversations", binding.id
-        )
-    )
-    marketplace_name = agent_workspace_capability_marketplace_name(binding.id)
     position = max((reference.position for reference in existing), default=-1)
     loaded: list[str] = []
     failure: dict[str, str] | None = None

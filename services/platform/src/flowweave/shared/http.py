@@ -5,6 +5,7 @@ import contextvars
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import AbstractContextManager, nullcontext
 from time import monotonic
 from typing import Annotated, TypeVar, cast
 
@@ -365,6 +366,7 @@ async def run_formal_events(
     *,
     history: bool,
     timeout_seconds: float | None = None,
+    operation_guard: Callable[[], AbstractContextManager[object]] = nullcontext,
 ) -> T:
     """Keep one real worker slot, but close DB sessions during Runtime I/O."""
 
@@ -372,7 +374,7 @@ async def run_formal_events(
         container.database.history_sessions if history else container.database.blocking_sessions
     )
 
-    def execute() -> T:
+    def phases() -> T:
         prepared = _observe_event_phase(
             container, "prepare_db", lambda: _run_session_operation(session_factory, prepare)
         )
@@ -387,6 +389,10 @@ async def run_formal_events(
                 session_factory, lambda session: project(session, prepared, snapshot)
             ),
         )
+
+    def execute() -> T:
+        with operation_guard():
+            return phases()
 
     started_at = monotonic()
     outcome = "error"

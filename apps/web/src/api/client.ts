@@ -569,12 +569,18 @@ export const api = {
     request<{ accepted: boolean }>(`${childSessionBase(parentId, childId)}/pending-confirmation/decision`, json('POST', { expected_pending_digest, accept, reason })),
   agentChildCredentials: (parentId: string, childId: string) =>
     request<import('../types').AgentConversationCredentialSyncState>(`${childSessionBase(parentId, childId)}/credentials`),
+  registerAgentChildCapabilities: (parentId: string, childId: string, capability_version_ids: string[]) =>
+    request<import('../types').AgentConversationCapabilityRegistration>(`${childSessionBase(parentId, childId)}/capabilities/batch`, json('POST', { capability_version_ids })),
+  agentChildMcpReadiness: (parentId: string, childId: string, versionId: string) =>
+    request<import('../types').AgentSessionMcpReadiness>(`${childSessionBase(parentId, childId)}/capabilities/${encodeURIComponent(versionId)}/mcp-readiness`, json('POST', {})),
   syncAgentChildCredentials: (parentId: string, childId: string, credential_ids: string[]) =>
     request<import('../types').AgentConversationCredentialSyncState>(`${childSessionBase(parentId, childId)}/credentials/sync`, json('POST', { credential_ids })),
   agentChildConversations: (parentId: string, signal?: AbortSignal) =>
     request<import('../types').AgentChildConversation[]>(`/agent-session-children/${encodeURIComponent(parentId)}`, { signal }),
   agentChildConversation: (parentId: string, childId: string, signal?: AbortSignal) =>
     request<AgentConversation>(`${childSessionBase(parentId, childId)}`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
+  agentChildContext: (parentId: string, childId: string, signal?: AbortSignal) =>
+    request<AgentConversationContext>(`${childSessionBase(parentId, childId)}/context`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
   agentChildHydration: (parentId: string, childId: string, signal?: AbortSignal, cursor?: string) =>
     request<import('../types').AgentConversationHydration>(`${childSessionBase(parentId, childId)}/hydration${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`, { signal, timeoutMs: INTERACTIVE_REQUEST_TIMEOUT_MS }),
   agentChildEvents: (parentId: string, childId: string, historyCursor: string, signal?: AbortSignal) =>

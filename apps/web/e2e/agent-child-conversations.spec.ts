@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route, type WebSocketRoute } from '@playwright/test';
+import type { AgentConversationContext, AgentSessionCapability } from '../src/types';
 
 const now = '2026-11-05T00:00:00Z';
 const parentId = 'child-product-parent';
@@ -24,6 +25,15 @@ async function openParent(page: Page, host: 'workspace' | 'node', delayFirst = f
   const messages: Array<{ childId: string; payload: Record<string, unknown> }> = [];
   const childWrites: Array<{ childId: string; action: string; payload: Record<string, unknown> }> = [];
   const models = new Map<string, string>();
+  const contexts = new Map<string, AgentConversationContext>();
+  const childCapabilities = new Map<string, AgentSessionCapability[]>();
+  const catalog = [
+    { id: 'frozen-SKILL', capability_type: 'SKILL', capability_key: '子会话SKILL', revision_number: 1, is_latest: false },
+    { id: 'latest-SKILL', capability_type: 'SKILL', capability_key: '子会话SKILL', revision_number: 2, is_latest: true },
+    { id: 'unrelated-SKILL', capability_type: 'SKILL', capability_key: '其他能力', is_latest: true },
+    { id: 'extra-MCP', capability_type: 'MCP', capability_key: '新增MCP', is_latest: true },
+  ];
+  const childDetails = (childId: string) => ({ ...children.find(child => child.id === childId), working_directory: '/runtime/workspace/project', model_provider_id: 'child-provider', model_name: models.get(childId) ?? 'child-model', capabilities: childCapabilities.get(childId) ?? ['CONTEXT', 'SKILL', 'MCP'].map(type => ({ id: `frozen-${type}`, capability_key: `子会话${type}`, capability_type: type })), write_available: true, streaming_callback_ready: true });
   const streams = new Map<string, WebSocketRoute>();
   const held: { nextSend: boolean; release?: () => void; failSend: boolean; hideAccepted: boolean } = { nextSend: false, failSend: false, hideAccepted: false };
   const providers = [{ id: 'child-provider', name: '测试模型', connection_state: 'CONNECTED', provider_type: 'OPENAI', models: ['child-model', 'child-model-two'].map((model_name, index) => ({ model_name, enabled: true, is_default: index === 0, supported_reasoning_efforts: ['low', 'high'], default_reasoning_effort: 'low' })) }];
@@ -97,7 +107,17 @@ async function openParent(page: Page, host: 'workspace' | 'node', delayFirst = f
         return;
       }
       if (suffix[2] === 'events') return json(route, { events: [], next_cursor: `${childId}-answer` });
-      return json(route, { ...children.find(child => child.id === childId), working_directory: '/runtime/workspace/project', model_provider_id: providers[0].id, model_name: models.get(childId) ?? 'child-model', capabilities: ['CONTEXT', 'SKILL', 'MCP'].map(type => ({ id: `frozen-${type}`, capability_key: `子会话${type}`, capability_type: type })), write_available: true, streaming_callback_ready: true });
+      if (suffix[2] === 'context') return json(route, contexts.get(childId) ?? {});
+      if (suffix[2] === 'capabilities') {
+        if (suffix[3] !== 'batch') return json(route, { state: 'READY', tools: ['read'], checked_at: now });
+        childWrites.push({ childId, action: 'capabilities', payload });
+        const ids = payload.capability_version_ids as string[];
+        const added = ids.map(id => catalog.find(item => item.id === id)!) as AgentSessionCapability[];
+        const previous = childDetails(childId).capabilities as AgentSessionCapability[];
+        childCapabilities.set(childId, [...previous.filter(item => !added.some(next => next.capability_type === item.capability_type && next.capability_key === item.capability_key)), ...added]);
+        return json(route, { conversation: childDetails(childId), completed: true, loaded_capability_version_ids: ids, already_loaded_capability_version_ids: [], failure: null });
+      }
+      return json(route, childDetails(childId));
     }
     if (path.endsWith('/default') || path.endsWith('/agent-sessions/host')) return json(route, workspace);
     if (path.endsWith('/runtime')) return json(route, { state: 'ACTIVE', write_available: true, updated_at: now });
@@ -111,7 +131,7 @@ async function openParent(page: Page, host: 'workspace' | 'node', delayFirst = f
     if (path.endsWith('/work-directories')) return json(route, { root: { kind: 'ROOT', display_name: '根工作区', working_directory: '/runtime/workspace/project' }, items: [] });
     if (path.endsWith('/workspace')) return json(route, { root: '/runtime/workspace/project', scope: { kind: 'ROOT', display_name: '根工作区' }, working_directory: '/runtime/workspace/project', files: [], repositories: [], runtime: {}, ide: { gateway: { supported: false } } });
     if (path.endsWith('/model-providers')) return json(route, providers);
-    if (path.endsWith('/user-configurable-capabilities')) return json(route, [{ id: 'frozen-SKILL', capability_type: 'SKILL', capability_key: '子会话SKILL', revision_number: 1, is_latest: false }, { id: 'latest-SKILL', capability_type: 'SKILL', capability_key: '子会话SKILL', revision_number: 2, is_latest: true }, { id: 'unrelated-SKILL', capability_type: 'SKILL', capability_key: '其他能力', is_latest: true }]);
+    if (path.endsWith('/user-configurable-capabilities')) return json(route, catalog);
     if (path.endsWith('/pinned-conversations') || path.endsWith('/capabilities') || path.endsWith('/capability-collections')) return json(route, []);
     if (path.includes('/conversations/') || path.includes('/agent-sessions/')) return json(route, parents.find(parent => path.endsWith(parent.id)) ?? parents[0]);
     return json(route, { error: { code: 'RESOURCE_NOT_FOUND', message: 'not found' } }, 404);
@@ -122,7 +142,7 @@ async function openParent(page: Page, host: 'workspace' | 'node', delayFirst = f
   await page.getByRole('button', { name: '进入工作空间' }).click();
   await page.goto(`${root}/${parentId}`);
   await expect(page.getByRole('list', { name: '子会话列表', exact: true })).toBeVisible();
-  return { writes, requests, root, unread, parents, messages, childWrites, statuses, nativeEvents, eventsFor, streams, signal, held, release: () => release?.(), hasPending: () => Boolean(release), peak: () => peak };
+  return { writes, requests, root, unread, parents, messages, childWrites, statuses, nativeEvents, eventsFor, streams, signal, held, contexts, release: () => release?.(), hasPending: () => Boolean(release), peak: () => peak };
 }
 async function chooseChild(page: Page, childId: string) {
   const showCard = page.getByRole('button', { name: '显示悬浮信息卡' });
@@ -131,6 +151,73 @@ async function chooseChild(page: Page, childId: string) {
   await list.locator(`[data-child-binding-id="${childId}"]`).click();
 }
 for (const host of ['workspace', 'node'] as const) {
+  test(`child can add catalog capabilities and upgrade its inherited Skill (${host})`, async ({ page }) => {
+    const state = await openParent(page, host);
+    await chooseChild(page, children[0].id);
+    const pane = page.locator('.agent-child-conversation-panel.active');
+    await pane.getByRole('button', { name: '子会话配置', exact: true }).click();
+    const config = page.getByRole('dialog', { name: '子会话配置', exact: true });
+    await config.getByRole('button', { name: /同步 子会话SKILL 到 v2/ }).click();
+    await config.getByRole('button', { name: /^其他能力/ }).click();
+    await config.getByRole('button', { name: /^新增MCP/ }).click();
+    await expect(config.getByRole('button', { name: /^新增MCP/ })).toContainText('已连接');
+    await config.getByRole('button', { name: '保存', exact: true }).click();
+    await expect(config).toHaveCount(0);
+    expect(state.childWrites.filter(write => write.action === 'capabilities')).toEqual([{
+      childId: children[0].id, action: 'capabilities',
+      payload: { capability_version_ids: ['latest-SKILL', 'unrelated-SKILL', 'extra-MCP'] },
+    }]);
+    await pane.getByRole('button', { name: '子会话配置', exact: true }).click();
+    await expect(config.getByRole('button', { name: '其他能力（已注册）', exact: true })).toBeDisabled();
+    await expect(config.locator('[data-capability-key="子会话SKILL"]')).toContainText('v2');
+    await expect(config.getByRole('button', { name: /同步 子会话SKILL/ })).toHaveCount(0);
+    await config.getByRole('button', { name: '关闭子会话配置' }).click();
+    await chooseChild(page, children[1].id);
+    await pane.getByRole('button', { name: '子会话配置', exact: true }).click();
+    await expect(config.getByRole('button', { name: '其他能力（已注册）', exact: true })).toHaveCount(0);
+    await expect(config.getByRole('button', { name: /^其他能力/ })).toBeEnabled();
+    await expect(config.getByRole('button', { name: /同步 子会话SKILL 到 v2/ })).toBeVisible();
+    await config.screenshot({ path: test.info().outputPath('child-capability-catalog.png') });
+    expect(state.requests.filter(path => /mcp-readiness/.test(path)).every(path => path.includes('/agent-session-children/'))).toBe(true);
+    expect(state.writes.filter(path => /capabilities\/batch/.test(path)).every(path => path.includes('/agent-session-children/'))).toBe(true);
+  });
+
+  test(`child context usage follows its formal View across updates and tab switches (${host})`, async ({ page }) => {
+    const state = await openParent(page, host);
+    state.contexts.set(children[0].id, { used_tokens: 128_000, view_event_count: 320, condenser_max_size: 800, usage_current: true });
+    await chooseChild(page, children[0].id);
+    const pane = page.locator('.agent-child-conversation-panel.active');
+    await expect(pane.locator('.agent-context-progress.token')).toHaveText('Token128,000 / 512,000');
+    await expect(pane.getByLabel('OpenHands 当前活动 View 事件 320 条，自动压缩阈值 800 条')).toBeVisible();
+    await expect(pane.locator('.agent-context-progress.token')).toHaveAttribute('aria-label', 'Token 上下文用量 25%');
+    await expect.poll(() => state.streams.has(children[0].id)).toBe(true);
+    state.contexts.set(children[0].id, { used_tokens: 32_000, view_event_count: 80, condenser_max_size: 800, usage_current: true });
+    state.signal(children[0].id);
+    await expect(pane.locator('.agent-context-progress.token')).toContainText('32,000 / 512,000');
+    await expect(pane.locator('.agent-context-progress.events')).toHaveText('事件80 / 800');
+    state.contexts.set(children[0].id, { used_tokens: null, view_event_count: null, condenser_max_size: 800, usage_current: false });
+    const priorReads = state.requests.filter(path => path.endsWith(`/${children[0].id}/context`)).length;
+    state.signal(children[0].id);
+    await expect.poll(() => state.requests.filter(path => path.endsWith(`/${children[0].id}/context`)).length).toBeGreaterThan(priorReads);
+    await expect(pane.locator('.agent-context-progress.token')).toContainText('32,000 / 512,000');
+    await chooseChild(page, children[1].id);
+    await expect(pane.locator('.agent-context-progress.token')).toHaveText('Token待模型更新');
+    await expect(pane.locator('.agent-context-progress.events')).toHaveText('事件待 Runtime 更新');
+    await expect.poll(() => state.streams.has(children[1].id)).toBe(true);
+    state.contexts.set(children[1].id, { used_tokens: 0, view_event_count: 0, condenser_max_size: 800, usage_current: true });
+    state.signal(children[1].id);
+    await expect(pane.locator('.agent-context-progress.token')).toHaveText('Token0 / 512,000');
+    await expect(pane.locator('.agent-context-progress.events')).toHaveText('事件0 / 800');
+    await page.setViewportSize({ width: 1100, height: 900 });
+    await expect(pane.locator('.agent-context-progress.token')).toBeVisible();
+    await expect(pane.locator('.agent-context-progress.events')).toBeVisible();
+    const bounds = await pane.locator('.agent-composer').evaluate(element => ({ client: element.clientWidth, scroll: element.scrollWidth }));
+    expect(bounds.scroll).toBeLessThanOrEqual(bounds.client);
+    await page.screenshot({ path: test.info().outputPath('child-context-usage.png') });
+    await page.getByRole('navigation', { name: '工作区页签' }).getByRole('button', { name: children[0].display_title, exact: true }).click();
+    await expect(pane.locator('.agent-context-progress.token')).toContainText('32,000 / 512,000');
+  });
+
   test(`child card opens independent titled side tabs and closes only views (${host})`, async ({ page }) => {
     const state = await openParent(page, host);
     const parent = page.locator(`[data-conversation-binding-id="${parentId}"]:visible`);
@@ -408,13 +495,13 @@ for (const host of ['workspace', 'node'] as const) {
     await pane.getByRole('button', { name: '子会话配置', exact: true }).click();
     const config = page.getByRole('dialog', { name: '子会话配置', exact: true });
     await expect(config).toHaveClass(/session-configuration-editor/);
-    await expect(config.locator('.agent-capability-frozen-badge')).toHaveCount(3);
+    await expect(config.locator('.agent-capability-frozen-badge')).toHaveCount(1);
     await expect(config.getByRole('button', { name: '子会话CONTEXT（已装配）', exact: true })).toBeDisabled();
-    await expect(config.getByRole('button', { name: '子会话SKILL（已装配）', exact: true })).toBeDisabled();
-    await expect(config.getByRole('button', { name: '子会话MCP（已装配）', exact: true })).toBeDisabled();
-    await expect(config.getByRole('button', { name: '保存', exact: true })).toHaveCount(0);
-    await expect(config.getByText('其他能力', {exact:true})).toHaveCount(0);
-    await expect(config.getByRole('button', { name: /同步 子会话SKILL/ })).toHaveCount(0);
+    await expect(config.getByRole('button', { name: '子会话SKILL（已注册）', exact: true })).toBeDisabled();
+    await expect(config.getByRole('button', { name: '子会话MCP（已注册）', exact: true })).toBeDisabled();
+    await expect(config.getByRole('button', { name: '保存', exact: true })).toBeVisible();
+    await expect(config.getByText('其他能力', {exact:true})).toBeVisible();
+    await expect(config.getByRole('button', { name: /同步 子会话SKILL/ })).toBeVisible();
     await config.screenshot({ path: test.info().outputPath('child-config-capabilities.png') });
     await config.getByRole('tab', { name: '认证', exact: true }).click();
     await expect(config.getByRole('button', { name: /测试认证/ })).toHaveAttribute('aria-pressed', 'true');
@@ -425,8 +512,9 @@ for (const host of ['workspace', 'node'] as const) {
     await expect.poll(() => state.childWrites.filter(write => write.action === 'credentials').length).toBe(1);
     expect(state.childWrites.at(-1)?.payload).toEqual({ credential_ids: ['credential-one'] });
     await config.getByRole('button', { name: '关闭子会话配置' }).click();
-    expect(state.requests.filter(path => /credential-sync|mcp-readiness|capability-collections/.test(path))).toEqual([]);
-    expect(state.writes.filter(path => /capabilities/.test(path))).toEqual([]);
+    expect(state.requests.filter(path => /credential-sync/.test(path))).toEqual([]);
+    expect(state.requests.filter(path => /mcp-readiness/.test(path)).every(path => path.includes('/agent-session-children/'))).toBe(true);
+    expect(state.writes.filter(path => /capabilities\/batch/.test(path))).toEqual([]);
     await pane.getByRole('button', { name: '子会话配置', exact: true }).click();
     await page.keyboard.press('Escape');
     await expect(config).toHaveCount(0);
