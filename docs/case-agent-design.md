@@ -138,7 +138,7 @@ Agent 通过四条渠道获知全局，信息逐层加深：
 | 动作 | 用途 | 关键前置 |
 | --- | --- | --- |
 | `CREATE_EXECUTION_COPY` | 从阶段模板复制出独立执行副本（启动流程的第一步） | 阶段 ACTIVE，无当前副本 |
-| `CONFIGURE_EXECUTION` | 配置副本（连续用 `automatic_draft`，逐步用 `stepwise_draft`） | 仅未启动节点 |
+| `CONFIGURE_EXECUTION` | 配置副本，三选一：连续用 `automatic_draft`，逐步用 `stepwise_draft`，或逐步记录的 `runtime_ports`（新增/删除未启动节点的运行时端口，端口间连线与断线） | 仅未启动节点；只能动运行时新增的端口，流程定义自带的端口和图结构不可改 |
 | `START_EXECUTION` / `START_STEPWISE_NODE` | 启动连续运行 / 逐步节点 | 草稿版本匹配 |
 | `ACCEPT_/REJECT_/CANCEL_STEPWISE_ATTEMPT` | 复核节点结果 | 冻结的 NodeRun/Attempt 身份与 Attempt 状态版本 |
 | `RERUN_STEPWISE_NODE` | 重跑节点（新 NodeRun/Attempt/会话，旧历史保留） | 冻结的节点身份 |

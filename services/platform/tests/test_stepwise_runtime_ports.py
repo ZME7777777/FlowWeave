@@ -100,3 +100,93 @@ def test_runtime_ports_reject_unknown_and_started_nodes(client, skill_capability
     )
     assert missing.status_code == 409, missing.text
     assert missing.json()["error"]["code"] == "STEPWISE_RERUN_EDIT_MISSING"
+
+
+def _put(client, record, version, node_ports, **extra):
+    return client.put(
+        f"/api/v1/flow-runs/{record['id']}/stepwise-runtime-ports",
+        json={"expected_active_snapshot_version": version, "node_ports": node_ports, **extra},
+    )
+
+
+def _mapping(source, target):
+    return {
+        "source_instance_key": source,
+        "source_output_key": "extra_output",
+        "target_instance_key": target,
+        "target_input_key": "extra_input",
+    }
+
+
+def test_runtime_ports_accept_their_own_saved_shape_then_delete_and_disconnect(
+    client, skill_capability
+):
+    flow, _parent, record = _record(client, skill_capability)
+    source, target = [node["instance_key"] for node in flow["nodes"]]
+    out = {"field_key": "extra_output", "display_name": "Out", "data_type": "URL"}
+    inp = {"field_key": "extra_input", "display_name": "In", "data_type": "URL"}
+    first = _put(
+        client,
+        record,
+        _active(record)["version"],
+        {source: {"outputs": [out]}, target: {"inputs": [inp]}},
+        port_mappings=[_mapping(source, target)],
+    )
+    assert first.status_code == 200, first.text
+    nodes = {n["instance_key"]: n for n in _active(first.json())["definition"]["nodes"]}
+    # The browser re-submits the ports as read, including server-owned markers.
+    saved_out = nodes[source]["runtime_port_overrides"]["outputs"]
+    saved_in = nodes[target]["runtime_port_overrides"]["inputs"]
+    assert saved_out[0]["runtime_port"] is True and saved_in[0]["required"] is False
+    again = _put(
+        client,
+        first.json(),
+        _active(first.json())["version"],
+        {source: {"outputs": saved_out}, target: {"inputs": saved_in}},
+        port_mappings=[_mapping(source, target)],
+    )
+    assert again.status_code == 200, again.text
+
+    # Disconnect only: the ports stay, the connection goes.
+    cut = _put(
+        client,
+        again.json(),
+        _active(again.json())["version"],
+        {},
+        remove_port_mappings=[_mapping(source, target)],
+    )
+    assert cut.status_code == 200, cut.text
+    assert not [
+        m for m in _active(cut.json())["definition"]["port_mappings"] if m.get("runtime_port")
+    ]
+    # Removing a connection that is not there is an explicit error.
+    missing = _put(
+        client,
+        cut.json(),
+        _active(cut.json())["version"],
+        {},
+        remove_port_mappings=[_mapping(source, target)],
+    )
+    assert missing.status_code == 422, missing.text
+
+    # Reconnect, then delete the target port: its connection disappears with it.
+    joined = _put(
+        client,
+        cut.json(),
+        _active(cut.json())["version"],
+        {},
+        port_mappings=[_mapping(source, target)],
+    )
+    assert joined.status_code == 200, joined.text
+    gone = _put(
+        client,
+        joined.json(),
+        _active(joined.json())["version"],
+        {target: {"inputs": []}},
+    )
+    assert gone.status_code == 200, gone.text
+    definition = _active(gone.json())["definition"]
+    assert not [m for m in definition["port_mappings"] if m.get("runtime_port")]
+    nodes = {n["instance_key"]: n for n in definition["nodes"]}
+    assert nodes[target]["runtime_port_overrides"]["inputs"] == []
+    assert nodes[source]["runtime_port_overrides"]["outputs"][0]["field_key"] == "extra_output"

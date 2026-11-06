@@ -5878,7 +5878,10 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
   }, [collapsedConversationGroups, conversationPagesByScope, loadMoreConversations, pendingSidebarRevealBindingId, scheduleRoute, sidebarRevealConversation, sidebarReveal.expandCollapsed]);
   const workspaceToolScopeKey = selected?.id ?? pendingCreatedId ?? conversationDraft?.id ?? 'workspace-root';
   useEffect(() => {
-    if (!workspace || !selected?.id || sidebarQuestions[selected.id]?.sidebarBindingId) return;
+    // Temporary side chats belong to the Agent Workspace host. A FlowRun node
+    // Binding has no workspace_id, so asking the workspace route for its side
+    // chat can only answer 404 and would surface as a false session error.
+    if (host.id !== 'agent-workspace' || !workspace || !selected?.id || sidebarQuestions[selected.id]?.sidebarBindingId) return;
     const sourceBindingId = selected.id;
     let cancelled = false;
     void agentWorkspaceApi.agentSidebarConversationForSource(workspace.id, sourceBindingId).then(link => {
@@ -5901,7 +5904,7 @@ function AgentSessionWorkbenchContent({ onNavigate, onReturnToSource, onHostStat
       setOperationError(reason instanceof Error ? reason : new Error('侧边聊天恢复失败'));
     });
     return () => { cancelled = true; };
-  }, [selected?.id, sidebarQuestions, workspace]);
+  }, [host.id, selected?.id, sidebarQuestions, workspace]);
   const drawerOpen = drawerOpenByScope[workspaceToolScopeKey] ?? false;
   const setDrawerOpen = useCallback((open: boolean) => {
     setDrawerOpenByScope(current => current[workspaceToolScopeKey] === open

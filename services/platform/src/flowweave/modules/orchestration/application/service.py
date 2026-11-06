@@ -5305,43 +5305,74 @@ def save_stepwise_runtime_ports(
             field.pop("template_url", None)
         nodes[node_key]["runtime_port_overrides"] = {"inputs": inputs, "outputs": outputs}
 
-    runtime_mappings: list[dict[str, Any]] = []
-    if payload.port_mappings:
-        configured_nodes = set(payload.node_ports)
-        runtime_mappings = [
-            {**item.model_dump(), "runtime_port": True} for item in payload.port_mappings
-        ]
-        mapping_nodes = {item["source_instance_key"] for item in runtime_mappings} | {
-            item["target_instance_key"] for item in runtime_mappings
-        }
-        unknown_mapping_nodes = sorted(mapping_nodes - set(nodes))
-        if unknown_mapping_nodes:
-            raise DomainError(
-                "RUN_PORTS_INVALID",
-                "runtime mappings reference an unknown node",
-                422,
-                {"nodes": unknown_mapping_nodes},
+    def _identity(item: Any) -> tuple[str, str, str, str]:
+        get = item.get if isinstance(item, dict) else lambda key: getattr(item, key)
+        return (
+            str(get("source_instance_key") or ""),
+            str(get("source_output_key") or ""),
+            str(get("target_instance_key") or ""),
+            str(get("target_input_key") or ""),
+        )
+
+    runtime_mappings: list[dict[str, Any]] = [
+        {**item.model_dump(), "runtime_port": True} for item in payload.port_mappings
+    ]
+    removals = {_identity(item) for item in payload.remove_port_mappings}
+    touched_nodes = {item["source_instance_key"] for item in runtime_mappings} | {
+        item["target_instance_key"] for item in runtime_mappings
+    }
+    touched_nodes |= {key for identity in removals for key in (identity[0], identity[2])}
+    unknown_mapping_nodes = sorted(touched_nodes - set(nodes))
+    if unknown_mapping_nodes:
+        raise DomainError(
+            "RUN_PORTS_INVALID",
+            "runtime mappings reference an unknown node",
+            422,
+            {"nodes": unknown_mapping_nodes},
+        )
+    changed_mapping_nodes = sorted(touched_nodes & started_nodes)
+    if changed_mapping_nodes:
+        raise DomainError(
+            "RUN_PORTS_STARTED_NODE_IMMUTABLE",
+            "runtime mappings cannot change nodes that already have execution records",
+            409,
+            {"node_keys": changed_mapping_nodes},
+        )
+    existing_runtime = {
+        _identity(item)
+        for item in definition.get("port_mappings", [])
+        if isinstance(item, dict) and item.get("runtime_port")
+    }
+    missing_removals = sorted(removals - existing_runtime)
+    if missing_removals:
+        raise DomainError(
+            "RUN_PORTS_INVALID",
+            "a runtime mapping to remove does not exist",
+            422,
+            {"mappings": [list(identity) for identity in missing_removals]},
+        )
+
+    def _port_exists(node_key: str, key: str, *, output: bool) -> bool:
+        node = nodes.get(node_key) or {}
+        fields = _runtime_output_fields(node) if output else _runtime_input_fields(node)
+        return any(str(field.get("field_key") or "") == key for field in fields)
+
+    configured_nodes = set(payload.node_ports)
+    kept: list[dict[str, Any]] = []
+    for item in definition.get("port_mappings", []):
+        if isinstance(item, dict) and item.get("runtime_port"):
+            identity = _identity(item)
+            replaced = bool(runtime_mappings) and (
+                identity[0] in configured_nodes or identity[2] in configured_nodes
             )
-        changed_mapping_nodes = sorted(mapping_nodes & started_nodes)
-        if changed_mapping_nodes:
-            raise DomainError(
-                "RUN_PORTS_STARTED_NODE_IMMUTABLE",
-                "runtime mappings cannot change nodes that already have execution records",
-                409,
-                {"node_keys": changed_mapping_nodes},
+            # Deleting a run-level port also deletes the connections that used it.
+            dangling = not _port_exists(identity[0], identity[1], output=True) or not _port_exists(
+                identity[2], identity[3], output=False
             )
-        definition["port_mappings"] = [
-            item
-            for item in definition.get("port_mappings", [])
-            if isinstance(item, dict)
-            and (
-                not item.get("runtime_port")
-                or (
-                    str(item.get("source_instance_key") or "") not in configured_nodes
-                    and str(item.get("target_instance_key") or "") not in configured_nodes
-                )
-            )
-        ] + runtime_mappings
+            if identity in removals or replaced or dangling:
+                continue
+        kept.append(item)
+    definition["port_mappings"] = kept + runtime_mappings
     _validate_runtime_definition_ports(definition)
     environment = lock_referenceable_version(db, run.environment_version_id or "")
     if environment is None:

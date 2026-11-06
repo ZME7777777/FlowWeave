@@ -27,7 +27,6 @@ class ApiModel(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
 
-
 class WorkspaceGitSwitchWrite(ApiModel):
     ref: str = Field(min_length=1, max_length=1024, pattern=r"^refs/(heads|remotes)/")
     expected_head: str = Field(pattern=r"^[0-9a-fA-F]{40,64}$")
@@ -141,6 +140,17 @@ class IOFieldWrite(ApiModel):
     # Kept only to accept older saved clients during rollout. It is ignored and
     # never persisted, projected, or passed to the Runtime.
     template_url: str = Field(default="", exclude=True)
+
+
+class RuntimePortFieldWrite(IOFieldWrite):
+    """A run-level port as clients echo it back.
+
+    Saved runtime ports carry server-owned markers (``required``, ``runtime_port``).
+    A client that re-submits the ports it read must not be rejected for them; the
+    service always re-derives those markers.
+    """
+
+    model_config = ConfigDict(extra="ignore")
 
 
 def _empty_io_fields() -> list[IOFieldWrite]:
@@ -1144,8 +1154,15 @@ class StepwiseRuntimePortMappingWrite(ApiModel):
 
 class StepwiseRuntimePortsWrite(ApiModel):
     expected_active_snapshot_version: int = Field(ge=1)
-    node_ports: dict[str, dict[str, list[IOFieldWrite]]] = Field(default_factory=dict)
+    # Per node, the COMPLETE set of run-level ports: a port left out is deleted.
+    node_ports: dict[str, dict[str, list[RuntimePortFieldWrite]]] = Field(default_factory=dict)
+    # When non-empty, run-level connections touching the nodes in node_ports are replaced by
+    # this list (send the ones to keep too). A target input takes one connection.
     port_mappings: list[StepwiseRuntimePortMappingWrite] = Field(
+        default_factory=list, max_length=500
+    )
+    # Run-level connections to delete. A connection whose port was deleted is dropped too.
+    remove_port_mappings: list[StepwiseRuntimePortMappingWrite] = Field(
         default_factory=list, max_length=500
     )
 

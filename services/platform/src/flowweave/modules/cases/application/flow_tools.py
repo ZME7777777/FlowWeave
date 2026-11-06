@@ -42,7 +42,10 @@ from flowweave.shared.errors import DomainError, conflict
 from flowweave.shared.schemas import (
     AutomaticRunDraftUpdateWrite,
     CaseControlPlanWrite,
+    RuntimePortFieldWrite,
     StepwiseNodeDraftWrite,
+    StepwiseRuntimePortMappingWrite,
+    StepwiseRuntimePortsWrite,
 )
 
 
@@ -66,6 +69,35 @@ class NodeSessionArguments(BaseModel):
     view: Literal["summary", "steps"] = "summary"
     offset: int = Field(default=0, ge=0, le=100_000)
     limit: int = Field(default=20, ge=1, le=40)
+
+
+class RuntimePortsEdit(BaseModel):
+    """Run-level ports and connections of unstarted nodes in the current stepwise record.
+
+    Read the current state from read_case_flow (sections nodes and edges) first.
+    ``node_ports`` lists, per node, the COMPLETE set of run-level inputs/outputs the node
+    should have afterwards: a port you leave out is deleted, together with its connections.
+    ``port_mappings`` adds connections (output of one node to a same-type input of another).
+    When it is non-empty, the run-level connections that touch the nodes in ``node_ports`` are
+    replaced by it, so repeat the ones to keep. ``remove_port_mappings`` deletes connections.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    node_ports: dict[str, dict[str, list[RuntimePortFieldWrite]]] = Field(
+        default_factory=dict, max_length=50
+    )
+    port_mappings: list[StepwiseRuntimePortMappingWrite] = Field(
+        default_factory=list, max_length=200
+    )
+    remove_port_mappings: list[StepwiseRuntimePortMappingWrite] = Field(
+        default_factory=list, max_length=200
+    )
+
+    @model_validator(mode="after")
+    def validate_edit(self) -> RuntimePortsEdit:
+        if not (self.node_ports or self.port_mappings or self.remove_port_mappings):
+            raise ValueError("runtime_ports must change at least one port or connection")
+        return self
 
 
 class FlowActionArguments(BaseModel):
@@ -109,6 +141,7 @@ class FlowActionArguments(BaseModel):
     draft_row_version: int | None = Field(default=None, ge=1)
     automatic_draft: AutomaticRunDraftUpdateWrite | None = None
     stepwise_draft: StepwiseNodeDraftWrite | None = None
+    runtime_ports: RuntimePortsEdit | None = None
     retry_of_plan_id: str | None = Field(default=None, min_length=1, max_length=36)
 
     @model_validator(mode="after")
@@ -116,10 +149,17 @@ class FlowActionArguments(BaseModel):
         if not self.reason.strip():
             raise ValueError("reason is required")
         configuring = self.action == "CONFIGURE_EXECUTION"
-        if configuring != (self.automatic_draft is not None or self.stepwise_draft is not None):
-            raise ValueError("configuration is required only for CONFIGURE_EXECUTION")
-        if self.automatic_draft and self.stepwise_draft:
-            raise ValueError("choose one draft mode")
+        chosen = [
+            item is not None
+            for item in (self.automatic_draft, self.stepwise_draft, self.runtime_ports)
+        ]
+        if configuring != any(chosen):
+            raise ValueError(
+                "automatic_draft, stepwise_draft or runtime_ports is required only for "
+                "CONFIGURE_EXECUTION"
+            )
+        if sum(chosen) > 1:
+            raise ValueError("choose one of automatic_draft, stepwise_draft, runtime_ports")
         node_actions = {
             "START_STEPWISE_NODE",
             "ACCEPT_STEPWISE_ATTEMPT",
@@ -131,7 +171,9 @@ class FlowActionArguments(BaseModel):
         if node_action != (self.flow_node_key is not None):
             raise ValueError("flow_node_key is required only for a stepwise node action")
         if (self.action == "START_STEPWISE_NODE") != (self.draft_row_version is not None):
-            raise ValueError("draft_row_version is required only for START_STEPWISE_NODE")
+            raise ValueError(
+                "draft_row_version is required for START_STEPWISE_NODE and forbidden otherwise"
+            )
         review_actions = {
             "ACCEPT_STEPWISE_ATTEMPT",
             "REJECT_STEPWISE_ATTEMPT",
@@ -142,11 +184,17 @@ class FlowActionArguments(BaseModel):
             and self.node_attempt_id is not None
             and self.expected_attempt_state_version is not None
         ):
-            raise ValueError("review actions require frozen node and Attempt identities")
+            raise ValueError(
+                "ACCEPT/REJECT/CANCEL_STEPWISE_ATTEMPT require node_run_id, node_attempt_id and "
+                "expected_attempt_state_version; other actions must not carry them"
+            )
         if (self.action == "RERUN_STEPWISE_NODE") != (
             self.node_run_id is not None and self.node_attempt_id is None
         ):
-            raise ValueError("rerun requires only the accepted node_run_id")
+            raise ValueError(
+                "RERUN_STEPWISE_NODE requires flow_node_key and the ACCEPTED node_run_id, and no "
+                "node_attempt_id or draft_row_version"
+            )
         if self.action != "REJECT_STEPWISE_ATTEMPT" and self.copy_input_bindings is not None:
             raise ValueError("copy_input_bindings is available only when rejecting an Attempt")
         if (
@@ -223,7 +271,12 @@ TOOLS = [
     ),
     _tool(
         "manage_case_flow",
-        "Create or configure the current stage copy, review/rerun stepwise work, cancel a stepwise "
+        "Create or configure the current stage copy (CONFIGURE_EXECUTION takes exactly one of "
+        "stepwise_draft, automatic_draft, or runtime_ports - add/delete run-level ports of "
+        "unstarted nodes and connect/disconnect them; see the runtime_ports schema), "
+        "review/rerun stepwise work (an ACCEPTED node "
+        "whose successors have not started is reopened with RERUN_STEPWISE_NODE; REJECT applies "
+        "only to WAITING_ACCEPTANCE), cancel a stepwise "
         "Attempt blocked by RUNTIME_DELIVERY_FAILED and start the node again from its unchanged "
         "draft, copy a completed continuous execution (COPY_CONTINUOUS_EXECUTION) or a completed "
         "stepwise record (COPY_STEPWISE_EXECUTION) into a new current draft that keeps every "
@@ -705,7 +758,10 @@ def validate_action_preconditions(
                     "execution_state": run.state,
                 },
             )
-    if plan.action == "CONFIGURE_EXECUTION" and stage.execution_mode == "STEPWISE":
+    if args.runtime_ports is not None:
+        if stage.execution_mode != "STEPWISE" or run.run_mode != "MANUAL":
+            raise conflict("runtime ports can only be edited on a stepwise execution record")
+    elif plan.action == "CONFIGURE_EXECUTION" and stage.execution_mode == "STEPWISE":
         if not args.stepwise_draft or not args.flow_node_key:
             raise conflict("stepwise configuration requires a node draft")
         materialized = db.scalar(
@@ -871,7 +927,19 @@ def configure_execution(db: Session, stage: CaseStage, plan: CaseControlPlan) ->
     requested = plan.input_snapshot_json["requested"]
     run_id = stage.current_execution_flow_run_id
     assert run_id is not None
-    if stage.execution_mode == "CONTINUOUS":
+    if requested.get("runtime_ports") is not None:
+        edit = RuntimePortsEdit.model_validate(requested["runtime_ports"])
+        snapshot_version = requested.get("expected_snapshot_version")
+        if not isinstance(snapshot_version, int):
+            raise conflict("runtime port edit lacks a frozen snapshot version")
+        projection = service.orchestration.save_stepwise_runtime_ports(
+            db,
+            run_id,
+            StepwiseRuntimePortsWrite(
+                expected_active_snapshot_version=snapshot_version, **edit.model_dump()
+            ),
+        )
+    elif stage.execution_mode == "CONTINUOUS":
         raw = requested.get("automatic_draft")
         if raw is None or requested.get("stepwise_draft") is not None:
             raise conflict("continuous configuration requires an automatic draft")
