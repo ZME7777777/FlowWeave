@@ -93,6 +93,37 @@ FR-01–FR-11 不运行任何业务行为单元测试、集成测试、迁移 up
 
 ## 6. 任务清单
 
+### OPS-CAPABILITY-SYNC-RELEASE 技能同步修复发布验收 — DONE
+
+2026-11-06。用户授权提交并部署技能同步修复。发布版本为
+cc4959c386e680d5ab8ddb4aea39571b41a5d8ad，包含 FIX-CAPABILITY-SYNC，
+及其前一条已提交的 FIX-SEND-RECOVERY。发布前四个服务实际运行版本均为
+98c32172193b9d633a42c0d102db078748931548。子会话补充排查的 15 项本地
+回归通过，覆盖两宿主的动态加载、升级、部分重试、权限隔离及父能力分叉门禁。
+
+platform／web 正式预检、受管最小上下文和 linux/amd64 镜像构建通过。
+平台源码包 SHA-256 为 27b54f11e27ba864e52e663855990d83b63c9bcec427c83527402b204b8f7cd0，
+Web 源码包为 e324d2903734ad541043ef2c49334e33fc0f23b46c521c79d7925a5d4d54c52c。
+平台镜像为 sha256:df377d0cb735686b6116127e8280de0e47d928bbb762365c46e3501515866b07，
+Web 镜像为 sha256:1e295657217a837ddde832966efeca201ffc1bec7f81a60cbe05c7c0dfe43b42。
+
+迁移命令成功，数据库 head 为 0202_add_oh_fw_v5_protocol_profile。
+api、stream-api、worker、web 实际镜像 revision 全部为发布提交且健康，
+api／stream-api 的 health 和 readiness 通过。六个受影响平台源码文件在三个
+平台容器中的 18 份 SHA-256 与固定发布上下文逐一匹配。
+
+公网首页、Agent 深层路由、定时任务及根应用返回成功，126 个 JS／CSS 资源
+SHA-256 与实际 Web 镜像一致，认证边界返回 401。全新浏览器验证两个应用
+登录页及 Agent 深层路由通过，FlowWeave 请求使用部署前缀，页面错误为 0。
+取回实际 Web 镜像静态资源后，以隔离 API 夹具运行技能同步四项浏览器回归，
+覆盖成功、失败重试、旧版不在目录、28 技能滚动与跨筛选全部同步，全部通过。
+此功能验收使用发布资源与受控接口，线上既有会话的真实同步仍由用户操作确认。
+
+两种范围均完成 remote-release-finish，保留三份成功上下文、24 小时内受管
+上下文及受管回滚镜像。44 个非目标容器镜像与启动时间、服务器配置哈希核对通过。
+收尾后再次确认四服务版本、健康和成功发布记录。下一可执行切片沿用 OPS-84。
+
+
 ### FIX-CAPABILITY-SYNC 会话技能同步与继承市场定位 — DONE
 
 依赖 FIX-SEND-RECOVERY DONE。修复原生分叉会话继承来源能力市场后，平台仍按新 binding
@@ -116,7 +147,7 @@ ConversationInfo 读取注册并核对规范 UUID、同一受控能力根与 aut
 Web typecheck、定向 ESLint、受影响 Python Ruff 与 git diff --check 通过。
 Python 定向 Pyright 与原 HEAD 隔离源码对比均为 152 条既有诊断，无新增诊断。
 Alembic 唯一 head 仍为 0202_add_oh_fw_v5_protocol_profile，无迁移。下一切片沿用 OPS-84。
-本片完成本地源码及验证，尚待发布验收。
+本片完成源码及本地验证，发布验收见 OPS-CAPABILITY-SYNC-RELEASE。
 
 
 ### FIX-SEND-RECOVERY 消息提交确认前的浏览器恢复 — DONE
